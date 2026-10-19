@@ -34,6 +34,15 @@ def acquire_update_lock(root: Path = ROOT, *, expected_owner: int = 0,
     unprivileged isolated tests; production always calls with default owner.
     """
     parent = root.parent
+    # The immediate directory is not sufficient if a service UID can rename
+    # that directory through an unsafe ancestor. The trusted production path
+    # must also have a root-controlled /opt and filesystem root.
+    if expected_owner == 0 and root == ROOT:
+        for ancestor in (Path("/"), Path("/opt")):
+            entry = ancestor.lstat()
+            if (not stat.S_ISDIR(entry.st_mode) or entry.st_uid != 0
+                    or stat.S_IMODE(entry.st_mode) & 0o022):
+                raise RecoveryError("Unsafe updater lock ancestor directory")
     try:
         parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY |
                             os.O_NOFOLLOW | os.O_CLOEXEC)
