@@ -217,13 +217,6 @@ def test_upgrade_api_enters_lock_before_preflight(monkeypatch, tmp_path):
     tmp_path.chmod(0o700)
     monkeypatch.setattr(updater, "ROOT", tmp_path)
     monkeypatch.setattr(updater, "_require_service_account", lambda: None)
-    original_lock = updater.recovery.acquire_update_lock
-    monkeypatch.setattr(updater.recovery, "acquire_update_lock",
-        lambda root: original_lock(root, expected_owner=os.geteuid(),
-                                   expected_group=os.getegid()))
-    lock = tmp_path / ".updater.lock"
-    lock.touch(mode=0o440)
-    lock.chmod(0o440)
     observed = []
     monkeypatch.setattr(updater, "recover_transaction",
                         lambda: observed.append(("recovery", updater._TX_LOCAL.active)))
