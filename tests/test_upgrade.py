@@ -94,16 +94,16 @@ def test_explicit_os_support_and_unknown_downgrades():
         with pytest.raises(upgrade.UpgradeError, match="OS"):
             upgrade._policy(policy(), VERSION, PREVIOUS, system)
     target = policy()
-    target["compatible_from"].append("0.4.0")
+    target["compatible_from"].append("0.5.0")
     with pytest.raises(upgrade.UpgradeError, match="Downgrade"):
-        upgrade._policy(target, VERSION, {"version": "0.4.0"}, DEBIAN13)
-    older = {"version": "0.4.0", "release_policy": {
+        upgrade._policy(target, VERSION, {"version": "0.5.0"}, DEBIAN13)
+    older = {"version": "0.5.0", "release_policy": {
         "downgrade_from": [VERSION], "config_schema": 1, "api_schema": 1}}
     assert upgrade._policy(target, VERSION, older, DEBIAN13)["version"] == VERSION
 
 
 @pytest.mark.parametrize("bad", [
-    {"version": "0.4.0"}, {"schema": 2}, {"compatible_from": []},
+    {"version": "0.5.0"}, {"schema": 2}, {"compatible_from": []},
     {"targets": [{"id": "debian", "major": "12"}]}, {"config_schema": 999}
 ])
 def test_invalid_policy_fails_closed(bad):
