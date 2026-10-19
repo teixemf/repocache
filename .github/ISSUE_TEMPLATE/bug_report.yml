@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible problem in the server, client, dashboard or release bundle.
+title: "bug: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Please write in English. Do not include credentials, tokens, internal domains, private logs or personal data."
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server CLI
+        - Server TUI
+        - REPOCACHE Client
+        - Packaging and installer
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: REPOCACHE version
+      placeholder: "e.g. v0.3.0"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include exact commands with any sensitive values replaced by placeholders.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and diagnostic information
+      description: Linux distribution, Python version, terminal type and sanitized output, if relevant.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing Issues and confirmed this is not a duplicate.
+        - label: I removed secrets and private operational information from this report.
+          required: true

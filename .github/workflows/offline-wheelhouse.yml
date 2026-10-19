@@ -1,0 +1,41 @@
+name: Offline wheelchain validation
+
+on:
+  pull_request:
+  push:
+    branches: [release/v0.4.0]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-offline-wheels:
+    name: Offline wheels (${{ matrix.os }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['debian:trixie-slim', 'almalinux:10']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build as nonroot, verify in networkless container
+        run: bash scripts/smoke_offline_wheels.sh '${{ matrix.os }}'
+
+  signed-publisher-rehearsal:
+    name: Signed release and native offline dependency artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build exact source release archive (no tag or publication)
+        run: python3 scripts/build_release.py --output dist
+      - name: Build pinned wheels and install with network disabled on both Linux platforms
+        run: bash scripts/build_release_wheels.sh dist
+      - name: Verify ephemeral publisher signature, SBOM and tampered wheel rejection
+        run: python3 scripts/rehearse_signed_publisher.py dist
