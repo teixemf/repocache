@@ -42,6 +42,27 @@ test ! -e .git && test ! -e tests
 launcher_sha="$(sha256sum scripts/repocache-launcher.sh | cut -d " " -f1)"
 recovery_sha="$(sha256sum src/repocache/recovery.py | cut -d " " -f1)"
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
+# The service UID must never unlink or replace this root-owned inode.
+lock=/opt/repocache-cli/.updater.lock
+test "$(stat -c %u "$lock")" = 0
+test "$(stat -c %a "$lock")" = 440
+test "$(stat -c %h "$lock")" = 1
+inode_before="$(stat -c %d:%i "$lock")"
+if /usr/sbin/runuser -u repocache -- rm -f "$lock"; then
+  echo "Service UID replaced the trusted update lock" >&2
+  exit 1
+fi
+test "$(stat -c %d:%i "$lock")" = "$inode_before"
+/usr/sbin/runuser -u repocache -- /usr/bin/python3 -I -c '\''import os,fcntl
+fd=os.open("/opt/repocache-cli/.updater.lock",os.O_RDONLY|os.O_NOFOLLOW)
+fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+fcntl.flock(fd,fcntl.LOCK_UN)
+os.close(fd)
+'\''
+# A second root bootstrap must retain the existing inode.
+/bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
+test "$(stat -c %d:%i "$lock")" = "$inode_before"
+
 # Source-only v0.4.0 installs are deliberately forbidden: the audited
 # release path must use independently authenticated offline dependencies.
 chown -R repocache:repocache .
