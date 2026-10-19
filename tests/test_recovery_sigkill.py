@@ -29,6 +29,9 @@ updater.CURRENT = root / "current"
 updater.MANIFEST = root / "installed.json"
 updater.EXECUTABLE = root / "current/bin/repocache"
 updater._require_service_account = lambda: None
+original_lock = updater.recovery.acquire_update_lock
+updater.recovery.acquire_update_lock = lambda root: original_lock(
+    root, expected_owner=os.geteuid(), expected_group=os.getegid())
 updater._safe_links = lambda: None
 
 def stub(argv, **kwargs):
@@ -121,9 +124,16 @@ raise SystemExit("Expected to be killed at a filesystem boundary")
 
 
 @pytest.fixture
-def setup(tmp_path):
+def setup(tmp_path, monkeypatch):
     root = tmp_path / "managed"
     root.mkdir(mode=0o700)
+    lock = tmp_path / ".updater.lock"
+    lock.touch(mode=0o440)
+    lock.chmod(0o440)
+    original_lock = updater.recovery.acquire_update_lock
+    monkeypatch.setattr(updater.recovery, "acquire_update_lock",
+        lambda root: original_lock(root, expected_owner=os.geteuid(),
+                                   expected_group=os.getegid()))
     old = root / "releases" / "0.2.0-initial"
     (old / "bin").mkdir(parents=True)
     (old / "bin/repocache").write_text("trusted old")
