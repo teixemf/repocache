@@ -137,31 +137,18 @@ def test_tampered_or_truncated_source_fails_before_install(tmp_path):
         upgrade._extract_verified(fileobj.getvalue(), VERSION, tmp_path/"out", PREVIOUS, DEBIAN13)
 
 
-def test_no_credential_to_external_redirect(monkeypatch):
+def test_public_release_assets_refuse_legacy_credentials_before_network(monkeypatch):
     requests = []
-    class Reply:
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            return False
-        def read(self, size):
-            return b"ok"
-    class FakeOpener:
+    class UnexpectedNetwork:
         def open(self, request, timeout):
-            requests.append((request.full_url, dict(request.header_items())))
-            if request.full_url.startswith("https://api.github.com"):
-                raise urllib.error.HTTPError(
-                    request.full_url, 302, "redirect",
-                    {"Location": "https://release-assets.githubusercontent.com/signed?q=abc"}, None)
-            return Reply()
-    monkeypatch.setattr(upgrade.urllib.request, "build_opener", lambda *args: FakeOpener())
-    data = upgrade._request_bytes(
-        "https://api.github.com/repos/teixemf/repocache/releases/assets/123",
-        100, token="ghp_private")
-    assert data == b"ok"
-    assert len(requests) == 2
-    assert any(k.lower() == "authorization" for k in requests[0][1])
-    assert not any(k.lower() == "authorization" for k in requests[1][1])
+            requests.append(request.full_url)
+            raise AssertionError("Request must be blocked without contacting GitHub")
+    monkeypatch.setattr(upgrade.urllib.request, "build_opener", lambda *args: UnexpectedNetwork())
+    with pytest.raises(upgrade.UpgradeError, match="credentials"):
+        upgrade._request_bytes(
+            "https://api.github.com/repos/teixemf/repocache/releases/assets/123",
+            100, token="synthetic-old-private-token")
+    assert not requests
 
 
 def test_no_arbitrary_cdn_or_unofficial_mirrors():
@@ -239,20 +226,18 @@ def test_public_remote_release_upgrade_uses_only_verified_assets(monkeypatch, tm
     assert seen == [303, 304, 301, 302, 305]
 
 
-def test_private_asset_download_anonymous_first(monkeypatch, tmp_path):
-    credential = tmp_path / "protected-token"
-    credential.write_text("ghp_example_only")
-    credential.chmod(0o600)
+def test_unavailable_public_asset_never_falls_back_to_a_private_token(monkeypatch, tmp_path):
+    token_file = tmp_path / "obsolete-private-token"
+    token_file.write_text("synthetic-old-token")
+    token_file.chmod(0o600)
     calls = []
-    def fetch(url, limit, token=None):
+    def unavailable(url, limit, token=None):
         calls.append(token)
-        if token is None:
-            raise releases.DiscoveryError("authentication-required", "private or missing")
-        return b"TEST"
-    monkeypatch.setattr(upgrade, "_request_bytes", fetch)
-    got = upgrade._download_asset({"id": 55, "size": 4}, credential, 100)
-    assert got == b"TEST"
-    assert calls == [None, "ghp_example_only"]
+        raise releases.DiscoveryError("authentication-required", "not available")
+    monkeypatch.setattr(upgrade, "_request_bytes", unavailable)
+    with pytest.raises(releases.DiscoveryError):
+        upgrade._download_asset({"id": 55, "size": 4}, token_file, 100)
+    assert calls == [None]
 
 
 def test_bad_or_expired_asset_token_does_not_retry_untrusted_hosts(monkeypatch, tmp_path):
@@ -266,7 +251,7 @@ def test_bad_or_expired_asset_token_does_not_retry_untrusted_hosts(monkeypatch, 
     monkeypatch.setattr(upgrade, "_request_bytes", unavailable)
     with pytest.raises(releases.DiscoveryError):
         upgrade._download_asset({"id": 7, "size": 100}, credential, 200)
-    assert len(seen) == 2
+    assert len(seen) == 1
     assert all("api.github.com/repos/teixemf/repocache/releases/assets/" in u
                for u, _ in seen)
 
