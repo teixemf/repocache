@@ -42,22 +42,20 @@ test ! -e .git && test ! -e tests
 launcher_sha="$(sha256sum scripts/repocache-launcher.sh | cut -d " " -f1)"
 recovery_sha="$(sha256sum src/repocache/recovery.py | cut -d " " -f1)"
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
+# Source-only v0.4.0 installs are deliberately forbidden: the audited
+# release path must use independently authenticated offline dependencies.
 chown -R repocache:repocache .
-/usr/sbin/runuser -u repocache -- /bin/bash install.sh
-repocache --version | grep -F "${REPOCACHE_VERSION#v}"
-repocache status --json >/tmp/status.json
-/usr/bin/python3 -c "import json; d=json.load(open(\"/tmp/status.json\")); assert isinstance(d.get(\"repos\"),list)"
-# An unsigned artifact and checksum must not authorize an upgrade.
-if repocache update --version "${REPOCACHE_VERSION#v}" \
-  --bundle "/artifacts/repocache-$REPOCACHE_VERSION.tar.gz" \
-  --checksum "/artifacts/repocache-$REPOCACHE_VERSION.tar.gz.sha256" \
-  --json >/tmp/unsigned.json; then
-  echo "Unsigned upgrade unexpectedly accepted" >&2
-  exit 1
+if /usr/sbin/runuser -u repocache -- /bin/bash install.sh > /tmp/rejected-source.log 2>&1; then
+    echo "Unsigned source-only installation unexpectedly succeeded." >&2
+    exit 1
 fi
-/usr/sbin/runuser -u repocache -- /opt/repocache-cli/managed/current/bin/python -I /tmp/smoke_tui.py
+grep -F "authenticated, hash-pinned offline release dependencies" /tmp/rejected-source.log
+test ! -e /opt/repocache-cli/managed/current
+# Independently exercise the stand-alone client without configuring repositories.
+/usr/bin/python3 -m py_compile client/repocache_client.py src/repocache/upgrade.py
 /bin/bash client/install.sh --server https://cache.example.org
-repocache-client --json repos list >/tmp/client-repos.json
+repocache-client --json repos list > /tmp/client-repos.json
 /usr/bin/python3 -c "import json; assert isinstance(json.load(open(\"/tmp/client-repos.json\"))[\"repositories\"],list)"
-echo "PASS: disposable native $REPOCACHE_VERSION smoke"
+
+echo "PASS: disposable native $REPOCACHE_VERSION bundle layout, unsigned-source refusal and client smoke"
 '
