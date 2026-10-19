@@ -124,3 +124,41 @@ def test_tui_recent_activity_never_exposes_raw_paths_or_malformed_text():
     malformed = RepoCacheApp._short_event("token=TOP_SECRET from /private")
     assert "TOP_SECRET" not in malformed
     assert "token=" not in malformed
+
+def test_reads_bounded_numbered_rotation_history(tmp_path):
+    current = tmp_path / "metrics.jsonl"
+    current.write_text(json.dumps(_record("/debian/new", cache="MISS")) + "\n")
+    (tmp_path / "metrics.jsonl.1").write_text(
+        json.dumps(_record("/debian/older")) + "\n")
+    result = metrics(Settings(metrics_log=current), hours=24, repo="/debian/", now=NOW)
+    assert result["requests"] == 2
+    assert result["hit"] == 1
+    assert result["miss"] == 1
+    assert result["history_files_read"] == 2
+    assert result["rotation_incomplete"] is False
+
+
+def test_rotation_gaps_and_compressed_history_remain_explicitly_partial(tmp_path):
+    current = tmp_path / "metrics.jsonl"
+    current.write_text(json.dumps(_record("/debian/new")) + "\n")
+    (tmp_path / "metrics.jsonl.3").write_text(
+        json.dumps(_record("/debian/old")) + "\n")
+    (tmp_path / "metrics.jsonl.2.gz").write_bytes(b"not actually gzip")
+    result = metrics(Settings(metrics_log=current), now=NOW)
+    assert result["requests"] == 2
+    assert result["coverage"] == "partial"
+    assert result["rotation_incomplete"] is True
+
+
+@pytest.mark.parametrize("hours", [1, 6, 24, 168, 720])
+def test_window_boundaries_do_not_invent_out_of_range_samples(tmp_path, hours):
+    from datetime import timedelta
+    in_window = (NOW - timedelta(minutes=25)).isoformat()
+    outside = (NOW - timedelta(hours=hours, minutes=1)).isoformat()
+    settings = _write(tmp_path, [
+        _record("/debian/inside", when=in_window),
+        _record("/debian/outside", when=outside)
+    ])
+    result = metrics(settings, hours=hours, now=NOW, repo="/debian/")
+    assert result["requests"] == 1
+    assert result["series_unit"] == ("hour" if hours <= 24 else "day")
