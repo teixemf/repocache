@@ -10,7 +10,7 @@ be described as complete history on the basis of a partial file read.
 
 This first implementation step hardens route attribution, quality reporting
 and TUI event redaction. It **does not configure NGINX**, enable a new listener,
-retroactively recover rotated logs, or close issue #14.
+recover compressed or unlimited historical rotated logs, or close issue #14.
 
 ## Optional logging format proposal
 
@@ -64,7 +64,7 @@ The `--json` output retains the existing machine-readable keys and adds:
 
 The `coverage` label is a data-quality signal **not a proof that all
 requests in the requested period were captured**. `sampled` still means the
-current logfile was sampled up to 8 MB; other rotated files may exist.
+active logfile and up to seven numbered uncompressed rotations were sampled (8 MiB each); older or compressed history can be missing.
 `truncated` means the initial portion of the current logfile was omitted;
 `partial` means malformed records were ignored; `invalid` means no
 valid records were found among malformed lines. Missing/unreadable/symlink
@@ -85,7 +85,7 @@ instant; day charts have partial boundary days.
 2. Prepare generated NGINX logging separately from the running service;
    `nginx -t` must succeed before opt-in activation, with a reversible
    managed-file backup and recovery plan. Do not adopt unrelated logs.
-3. Test rotation, out-of-order timestamps, sparse/malformed content, more
+3. Test rotation gaps, compressed rotation exclusion, out-of-order timestamps, sparse/malformed content, more
    than 8 MB of data, prefix collisions, multiple approved routes and
    1h/6h/24h/7d/30d representations. Record the exact CI SHA and results.
 4. Test native Debian 13/Python 3.13 and AlmaLinux 10/Python 3.12 scenarios.
