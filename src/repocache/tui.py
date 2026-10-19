@@ -17,7 +17,7 @@ from textual.widgets import DataTable, Footer, Header, Sparkline, Static, Tabbed
 from repocache.rendering import safe_markup
 from repocache.cli import human_bytes
 from repocache.core import (
-    Settings, _tail_bytes, disk_status, health, metrics, probe_upstream, service_status, snapshot,
+    Settings, _tail_bytes, disk_status, health, metrics, probe_upstream, service_status, snapshot, timestamp,
 )
 
 
@@ -160,17 +160,24 @@ class RepoCacheApp(App):
 
     @staticmethod
     def _short_event(line: str) -> str:
+        """Display only validated telemetry fields; raw requests can contain secrets."""
         try:
             obj = json.loads(line)
             if isinstance(obj, dict):
-                when = str(obj.get("time_iso8601") or obj.get("timestamp") or obj.get("time") or "?")
-                code = str(obj.get("status") or obj.get("http_status") or "?")
-                cache = str(obj.get("upstream_cache_status") or obj.get("cache_status") or "-")
-                uri = str(obj.get("request_uri") or obj.get("uri") or obj.get("request") or "")
-                return f"{when[11:19]:8}  {code:3}  {cache:10}  {uri[:95]}"
+                stamp = timestamp(obj.get("time_iso8601") or obj.get("timestamp") or obj.get("time"))
+                when = stamp.strftime("%H:%M:%S") if stamp else "?"
+                raw_code = str(obj.get("status") or obj.get("http_status") or "")
+                code = raw_code if (len(raw_code) == 3 and raw_code.isascii()
+                                    and raw_code.isdigit() and 100 <= int(raw_code) <= 599) else "?"
+                raw_cache = str(obj.get("upstream_cache_status") or obj.get("cache_status") or "")
+                cache = raw_cache.upper() if raw_cache.upper() in {
+                    "HIT", "MISS", "BYPASS", "EXPIRED", "STALE",
+                    "UPDATING", "REVALIDATED"
+                } else "-"
+                return f"{when:8}  {code:3}  {cache:10}"
         except (ValueError, TypeError):
             pass
-        return line[:128]
+        return "Malformed log record (details suppressed)"
 
     def _error(self, message: str) -> None:
         self._busy = False
@@ -201,7 +208,7 @@ class RepoCacheApp(App):
             info = "[yellow]Disk unavailable[/yellow]\n" + escape(str(disk.get("reason", "")))
         self.query_one("#disk", Static).update(safe_markup(info))
         cache_info = (f"[bold cyan]CACHE STATISTICS[/bold cyan]\n"
-                      f"HIT: {m['hit']}  |  MISS: {m['miss']}\n"
+                      f"HIT: {m['hit']}  |  MISS: {m['miss']}  |  BYPASS: {m.get('bypass', 0)}\n"
                       f"HTTP 5xx: {m['errors_5xx'] if m['available'] else 'N/A'}\n"
                       f"[dim]Other cache statuses are included in the HIT-rate denominator[/dim]")
         self.query_one("#cache", Static).update(safe_markup(cache_info))
@@ -217,7 +224,7 @@ class RepoCacheApp(App):
         metric_info = (f"[bold cyan]METRICS · Last {self.period_labels[self.period_index]}[/]\n"
                        f"Requests (sample): {m['requests'] if m['available'] else 'N/A'}    "
                        f"HIT rate: {str(m['hit_rate']) + '%' if m['hit_rate'] is not None else 'N/A'}\n"
-                       f"HIT: {m['hit']}    MISS: {m['miss']}    Cache status observed: {m['cache_observed']}\n"
+                       f"HIT: {m['hit']}    MISS: {m['miss']}    BYPASS: {m.get('bypass', 0)}\n"
                        f"5xx: {m['errors_5xx'] if m['errors_5xx'] is not None else 'N/A'}    "
                        f"Bytes served*: {human_bytes(m['bytes_sent']) if m['available'] else 'N/A'}\n"
                        f"Average duration*: {str(m['avg_request_ms']) + ' ms' if m['avg_request_ms'] is not None else 'N/A'}\n"
@@ -226,6 +233,7 @@ class RepoCacheApp(App):
         period_note = ("[bold]Observed time range[/bold]\n" +
                        f"First record: {escape(m['first_seen'] or 'N/A')}\n"
                        f"Last record: {escape(m['last_seen'] or 'N/A')}\n"
+                       f"Sample quality: {escape(m.get('coverage', 'unknown'))}\n" +
                        f"[dim]{escape(m['detail'])}[/dim]" +
                        ("\n[yellow]Sample truncated to 8 MB![/yellow]" if m["truncated"] else ""))
         self.query_one("#metric-details", Static).update(safe_markup(period_note))
