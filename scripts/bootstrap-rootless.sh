@@ -57,6 +57,19 @@ printf '%s  %s\n' "$2" "$launcher" | sha256sum -c --status ||
 for path in /opt /opt/repocache-cli /usr/local /usr/local/bin /usr/local/libexec; do
   [[ ! -L "$path" ]] || { echo "Unsafe symlinked system path: $path" >&2; exit 1; }
 done
+# Root must own every ancestor leading to the service-visible lock location.
+# A writable /opt would let another UID rename even a root-owned child dir.
+for trusted in / /opt; do
+  [[ -d "$trusted" && ! -L "$trusted" &&
+      "$(stat -c %u "$trusted")" = 0 ]] ||
+    { echo "Untrusted system path: $trusted" >&2; exit 1; }
+  mode="$(stat -c %a "$trusted")"
+  if (( (8#$mode & 0022) != 0 )); then
+    echo "Writable trusted ancestor: $trusted" >&2
+    exit 1
+  fi
+done
+
 if [[ -e /usr/local/bin/repocache || -L /usr/local/bin/repocache ]]; then
   if [[ ! -f /usr/local/bin/repocache || -L /usr/local/bin/repocache ]] ||
       ! grep -Fq 'REPOCACHE ROOTLESS LAUNCHER' /usr/local/bin/repocache; then
