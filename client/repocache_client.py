@@ -19,6 +19,7 @@ import stat
 import socket
 import ssl
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from urllib.error import HTTPError, URLError
@@ -333,7 +334,7 @@ def _send_submission(server: str, payload: dict, credential: Path) -> dict:
                      ensure_ascii=True).encode("ascii")
     if not 0 < len(raw) <= 65536:
         raise ClientError("Submission exceeds the maximum size")
-    timestamp = str(int(__import__("time").time()))
+    timestamp = str(int(time.time()))
     nonce = base64.urlsafe_b64encode(secrets.token_bytes(16)).decode().rstrip("=")
     target = server + "/v1/repository-submissions"
     canonical = (f"repocache-v1\nPOST\n/v1/repository-submissions\n{timestamp}\n{nonce}\n"
