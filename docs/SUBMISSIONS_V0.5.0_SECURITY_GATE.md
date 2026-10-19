@@ -30,9 +30,9 @@ The remote client is untrusted. Authentication must precede JSON interpretation;
 | Bounded body/headers, concurrent requests, retries and rate limits | NOT VERIFIED | HTTP/request tests added; live NGINX resource controls are absent |
 | Listener disabled by default and stoppable | NOT VERIFIED | Local test listener requires explicit opt-in, no installed service; stop test added |
 | Root-authorized TUI and immutable audit evidence | NOT VERIFIED | UID-gated local actions and version checks exist, but SQLite audit is NOT cryptographically immutable; native service UID and privilege boundary untested |
-| Database retention, backup, growth cap and recovery | **FAIL** | Nonce/audit/history retention, complete quota enforcement, backup/restore and crash recovery have not been implemented |
+| Database retention, backup, growth cap and recovery | **FAIL** | An explicit root-authorized retention method, bounded store growth and non-overwriting SQLite online backup with tests now exist in #17; **operator-approved policy, end-to-end restore, native permissions and failure-injection recovery still missing** |
 | Real NGINX TLS endpoint, firewall, systemd and SELinux | NOT VERIFIED | No native deployment or production endpoint has been provisioned |
-| Redaction of secrets and request-path identifiers throughout the TUI | NOT VERIFIED | Metrics privacy branch #42 not integrated with submission TUI branch #23 |
+| Redaction of secrets and request-path identifiers throughout the TUI | NOT VERIFIED | Sensitive recent-request rendering fix ported to #23/#17 with a regression test; still need reviewed integration of all #14 metrics UI and deployed log formats |
 | Key custody, rotation/revocation, account permissions and restoration | NOT VERIFIED | No operator-reviewed policy nor clean-host service installation |
 | Independent adversarial security review | NOT VERIFIED | Developer-generated tests and code review are not independent |
 | Separate explicit maintainer production activation approval | NOT VERIFIED | No activation authorized |
@@ -50,3 +50,25 @@ Any FAIL or mandatory NOT VERIFIED condition blocks integration readiness and li
 ## Release boundary
 
 All related branches stay draft and unmerged. The existing v0.4.0 release candidate does not gain a submission listener, a new service or altered APT/DNF configuration. Green CI is evidence for selected tests only, not a waiver of #17's unresolved operational and security requirements.
+
+## Implementation additions and continued blockers
+
+The gate branch now includes an explicit root-only maintenance method that
+retains **all PENDING rows**, prunes expired nonces only beyond their replay
+window and purges previously decided items only after an approved, bounded
+retention duration. Queue growth limits bound DB size, all proposal rows,
+pending rows and audit entries; capacity failure rejects intake safely.
+An operator-only SQLite backup uses a private destination directory,
+non-overwriting atomic hard-link publication and a database integrity check.
+A disposable non-root test simulates destination ownership for its *positive*
+backup path; it does **not** prove real root-owned backup or SELinux behavior.
+
+Restoration/rotation of backed-up state and permissions, storage corruption,
+backup media custody, operator-approved retention and full host crash/rollback
+remain **NOT VERIFIED**. No periodic purge or backup daemon is started by the
+code and no pending proposal is automatically deleted.
+
+The TUI review branch #23 and this security branch now independently redact
+URI/request paths in recent-event output, reducing dependence on merge order
+with the metrics PR #42. The full cross-branch TUI changes still require a
+combined, reviewed integration diff before any security sign-off.
