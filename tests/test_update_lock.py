@@ -38,7 +38,8 @@ def test_nested_update_uses_one_process_lock(lock_root):
 def test_untrusted_lock_symlink_fails_closed(lock_root, tmp_path):
     target = tmp_path / "elsewhere"
     target.write_text("do not touch")
-    (lock_root / ".updater.lock").symlink_to(target)
+    (lock_root.parent / ".updater.lock").unlink()
+    (lock_root.parent / ".updater.lock").symlink_to(target)
     with pytest.raises(updater.UpdateError, match="lock"):
         with updater.update_transaction():
             pytest.fail("Insecure symlink acquired")
@@ -62,7 +63,8 @@ def test_second_process_rejected_and_lock_recovers_after_termination(lock_root):
         "from pathlib import Path; "
         "from repocache import updater; "
         "updater.ROOT=Path(sys.argv[1]); "
-        "updater._require_service_account=lambda:None; "\n        "original=updater.recovery.acquire_update_lock; "\n        "updater.recovery.acquire_update_lock=lambda root:original(root,expected_owner=os.geteuid(),expected_group=os.getegid()); "
+        "updater._require_service_account=lambda:None; "
+        "original=updater.recovery.acquire_update_lock; "\n        "updater.recovery.acquire_update_lock=lambda root:original(root,expected_owner=os.geteuid(),expected_group=os.getegid()); "
         "ctx=updater.update_transaction(); ctx.__enter__(); "
         "print('LOCKED',flush=True); time.sleep(60)"
     )
