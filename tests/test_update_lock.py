@@ -64,7 +64,8 @@ def test_second_process_rejected_and_lock_recovers_after_termination(lock_root):
         "from repocache import updater; "
         "updater.ROOT=Path(sys.argv[1]); "
         "updater._require_service_account=lambda:None; "
-        "original=updater.recovery.acquire_update_lock; "\n        "updater.recovery.acquire_update_lock=lambda root:original(root,expected_owner=os.geteuid(),expected_group=os.getegid()); "
+        "original=updater.recovery.acquire_update_lock; "
+        "updater.recovery.acquire_update_lock=lambda root:original(root,expected_owner=os.geteuid(),expected_group=os.getegid()); "
         "ctx=updater.update_transaction(); ctx.__enter__(); "
         "print('LOCKED',flush=True); time.sleep(60)"
     )
