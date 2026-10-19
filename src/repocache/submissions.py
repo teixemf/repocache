@@ -98,7 +98,9 @@ def validate_payload(raw: bytes) -> dict:
     if not isinstance(platform, dict) or set(platform) != {"id", "version"}:
         raise SubmissionError("invalid_platform")
     os_id, version = platform["id"], platform["version"]
-    if not ((os_id, version) in {("debian", "13"), ("almalinux", "10")}):
+    if (not isinstance(os_id, str) or not isinstance(version, str)
+            or not ((os_id == "debian" and re.fullmatch(r"13(?:\\.[0-9]{1,4})?", version))
+                    or (os_id == "almalinux" and re.fullmatch(r"10(?:\\.[0-9]{1,4})?", version)))):
         raise SubmissionError("invalid_platform")
     repos = doc["repositories"]
     if not isinstance(repos, list) or not 1 <= len(repos) <= 32:
