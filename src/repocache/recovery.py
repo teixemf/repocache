@@ -20,6 +20,67 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path("/opt/repocache-cli/managed")
+LOCK_FILE = ROOT.parent / ".updater.lock"
+
+
+def acquire_update_lock(root: Path = ROOT, *, expected_owner: int = 0,
+                        expected_group: int | None = None) -> int:
+    """Open one root-owned immutable-by-service inode and acquire exclusive flock.
+
+    This trusted helper must also be installed root-owned by bootstrap. The
+    caller is responsible for closing the returned descriptor, which releases
+    the kernel lock. The service account is never allowed to create, unlink,
+    replace, or truncate this lock. Owner/group overrides exist solely for
+    unprivileged isolated tests; production always calls with default owner.
+    """
+    parent = root.parent
+    try:
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY |
+                            os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise RecoveryError("Missing or unsafe trusted lock directory") from exc
+    try:
+        directory = os.fstat(parent_fd)
+        if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != expected_owner
+                or stat.S_IMODE(directory.st_mode) & 0o022):
+            raise RecoveryError("Unsafe updater lock parent ownership or permissions")
+        if expected_group is None:
+            try:
+                expected_group = pwd.getpwnam("repocache").pw_gid
+            except KeyError as exc:
+                raise RecoveryError("Missing dedicated updater group") from exc
+        try:
+            fd = os.open(".updater.lock",
+                         os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=parent_fd)
+        except OSError as exc:
+            raise RecoveryError("Missing or unsafe root-managed updater lock") from exc
+        try:
+            meta = os.fstat(fd)
+            if (not stat.S_ISREG(meta.st_mode)
+                    or meta.st_uid != expected_owner
+                    or meta.st_gid != expected_group
+                    or stat.S_IMODE(meta.st_mode) != 0o440
+                    or meta.st_nlink != 1):
+                raise RecoveryError("Unsafe updater lock owner, group, mode or inode")
+            # Verify the path still names the opened inode. A nonwritable
+            # parent prevents same-service-UID path substitutions.
+            path_meta = os.stat(".updater.lock", dir_fd=parent_fd,
+                                follow_symlinks=False)
+            if (meta.st_dev, meta.st_ino) != (path_meta.st_dev, path_meta.st_ino):
+                raise RecoveryError("Updater lock inode changed while opening")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RecoveryBusy("Another REPOCACHE update is running") from exc
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+    finally:
+        os.close(parent_fd)
+
+
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 SHA = re.compile(r"^[a-f0-9]{64}$")
 
@@ -255,17 +316,8 @@ def startup(root: Path = ROOT):
         raise RecoveryError("Recovery requires the dedicated service UID")
     if not root.is_dir() or root.is_symlink() or root.stat().st_uid != required:
         raise RecoveryError("Invalid managed update root")
-    lock = root / ".updater.lock"
-    fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    fd = acquire_update_lock(root)
     try:
-        st = os.fstat(fd)
-        if (not stat.S_ISREG(st.st_mode) or st.st_uid != required
-                or st.st_nlink != 1 or st.st_mode & 0o077):
-            raise RecoveryError("Unsafe updater lock")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RecoveryBusy("Update is in progress; retry later") from exc
         return reconcile(root)
     finally:
         os.close(fd)
