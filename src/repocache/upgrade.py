@@ -40,7 +40,6 @@ RELEASE_FILES = frozenset((
     "client/repocache_client.py",
     "client/install.sh",
     "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh",
-    "scripts/migrate_v030.py",
 ))
 
 
@@ -183,11 +182,9 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
                 any(not isinstance(x, str) or releases._version("v" + x) is None for x in values)
                 or len(values) != len(set(values))):
             raise UpgradeError("Invalid version compatibility allowlist")
-    if not data["compatible_from"]:
-        raise UpgradeError("Compatibility policy must approve at least one source release")
     current = str(previous.get("version", "0.0.0"))
-    # "0.0.0" is the explicitly recognized clean-host state. Requiring a
-    # compatible_from entry for it would prevent a first secure installation.
+    # "0.0.0" represents a clean host. An empty compatible_from list means
+    # first standalone public release, never permission to migrate older hosts.
     # Exact same-version retries are checked against the original installed
     # source_digest in install_source; reject attempts to replace mutated code.
     if current not in ("0.0.0", version) and current not in data["compatible_from"]:
