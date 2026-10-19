@@ -36,7 +36,7 @@ def policy():
         "python_max_exclusive": "3.14",
         "targets": [{"id": "debian", "major": "13"},
                     {"id": "almalinux", "major": "10"}],
-        "compatible_from": [VERSION], "downgrade_from": [],
+        "compatible_from": ["0.3.0"], "downgrade_from": [],
         "config_schema": 1, "api_schema": 1
     }
 
