@@ -65,10 +65,10 @@ def _request_bytes(url: str, max_bytes: int, token: Optional[str] = None) -> byt
     if (parsed.scheme != "https" or parsed.username or parsed.password
             or not (api or cdn) or (token is not None and not api)):
         raise UpgradeError("Refusing a non-GitHub asset URL or credential redirect")
+    if token is not None:
+        raise UpgradeError("Public release assets must never receive private credentials")
     headers = {"User-Agent": "repocache-safe-upgrade/1",
                "Accept": "application/octet-stream" if api else "*/*"}
-    if token is not None:
-        headers["Authorization"] = "Bearer " + token
     opener = urllib.request.build_opener(
         releases.NoRedirect(),
         urllib.request.HTTPSHandler(context=ssl.create_default_context()))
@@ -105,15 +105,9 @@ def _download_asset(asset: Dict[str, Any], token_file: Path,
         raise UpgradeError("Invalid release asset metadata or size")
     url = (releases.API_ORIGIN + "/repos/" + releases.REPOSITORY +
            "/releases/assets/" + str(asset_id))
-    try:
-        content = _request_bytes(url, max_bytes)
-    except releases.DiscoveryError as exc:
-        if exc.status != "authentication-required":
-            raise
-        token = releases._token(token_file)
-        if token is None:
-            raise
-        content = _request_bytes(url, max_bytes, token=token)
+    # Public asset acquisition is always anonymous. Legacy token_file is
+    # retained only as a caller-compatible unused parameter.
+    content = _request_bytes(url, max_bytes)
     if len(content) != size:
         raise UpgradeError("Release asset does not match the reported size")
     return content
