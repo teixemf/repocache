@@ -22,7 +22,7 @@ head; historical PASS results are evidence for historical commits only.
 | Offline dependencies and SBOM | Native locked wheelhouse and signed provenance rehearsal PASS |
 | Rootless lock integrity | Root-owned mode-0440 lock parent and inode verified; `repocache` UID fails to unlink it; rebootless re-bootstrap preserves inode |
 | SIGKILL and concurrent updates | Executed unit/subprocess lock, journal, recovery and rollback tests PASS |
-| Real legacy migration | Separately authenticated and verified *published* v0.3.0 archive supplied to isolated operator environment. **Not covered by the synthetic version fixture** |
+| Standalone first-public boundary | v0.4.0 signed policy has `compatible_from: []`; pre-public installs fail closed before activation and historical migrator is absent from release archives. No historical migration support is claimed |
 | Nginx, systemd and SELinux | Real disposable VM or target-system results, if available; maintainer may defer these **explicitly** without claiming PASS |
 | Real power cut | Not performed; residual risk is documented and deferred, not reported as PASS |
 | Final release security / rights review | Public tree scanned and manually inspected; no credentials, private history or deployment values; license and AI disclosure reviewed |
@@ -41,29 +41,35 @@ root-owned, stdlib-only recovery coordinator open it **read-only** with
 hardlinked, incorrectly owned or permissively writable locks fail closed.
 
 Re-bootstrap must not recreate the inode while it exists. Unprivileged
-processes must never delete or replace it. The legacy migration coordinator
-provisions or validates this lock **before** allowing authenticated v0.4.0
-staging. Service-UID code modifications are a separate integrity threat and
+processes must never delete or replace it. Pre-public installations are
+unsupported for in-place migration to v0.4.0. Service-UID code modifications
+are a separate integrity threat and
 are not made safe merely by using flock; signed release verification,
 independently rooted launch/recovery code and restricted ownership still
 matter.
 
-## Historical installations
+## Historical installations and approved scope change
 
-The original v0.3.0 source and release bundles stay in the private archive.
-No historical archive, credential, old release URL or Git history is copied
-into this public repository.
+**Decision (2026-10-19): v0.4.0 is the first standalone public REPOCACHE
+release.** Historical in-place migrations, including v0.3.0 → v0.4.0, are
+**out of scope and unsupported**. This explicitly supersedes the earlier
+historical migration acceptance requirement in public issue #5; the
+requirement is **not marked PASS**. Do not publish or import historical
+artifacts and do not assume historical persistent layouts are compatible.
 
-The `scripts/migrate_v030.py` coordinator verifies the **exact historical
-archive SHA-256** and checks the currently installed generation, authenticates
-the **new signed v0.4.0** source and offline dependencies, then runs staging
-under the dedicated service account. It fails closed if the local original
-archive is unavailable or differs from the pinned digest.
+Release-policy `compatible_from` must be empty in v0.4.0; clean bootstrap
+(`0.0.0`) and identical-version identity-checked retries are permitted.
+An existing legacy installation must fail closed without rewriting launchers,
+cache, configuration, symlinks or manifests. The historical migration
+prototype remains source-only and cannot run in this release; it must not
+be included in distributed release archives.
 
-**The public synthetic 0.3.0 → 0.4.0 rehearsal is not evidence that the real
-published v0.3.0 migrates successfully.** An isolated operator-side run with
-the original authenticated archive is required before reporting that criterion
-as PASS; it must not be uploaded to public Actions.
+Any future migration requires a distinct documented opt-in design, separately
+authenticated artifacts, tests on actual migrated state, rollback evidence and
+explicit maintainer approval. Synthetic fixtures remain useful for transaction,
+locking and recovery validation but **do not prove compatibility with
+historical installations**. Do not run first-public bootstrap on a production
+host already containing an earlier installation.
 
 ## Publication order
 
