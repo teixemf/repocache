@@ -9,32 +9,34 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d)"
 tag="repocache-wheel-rehearsal-$RANDOM"
 trap 'docker image rm -f "$tag" >/dev/null 2>&1 || :; sudo rm -rf -- "$work"' EXIT
-mkdir -p "$work/artifacts" "$work/next"
-python3 "$repo/scripts/build_release.py" --tag v0.3.0 --output "$work/artifacts"
-# Construct a synthetic 0.4.0 release exclusively in CI, never publish a tag.
-cp -a "$repo/README.md" "$repo/CHANGELOG.md" "$repo/pyproject.toml" \
-  "$repo/install.sh" "$repo/platform_check.py" "$repo/release-policy.json" "$repo/src" "$repo/client" \
-  "$repo/scripts" "$repo/deps" "$work/next/"
-python3 - "$work/next" <<'PY'
+mkdir -p "$work/artifacts" "$work/legacy" "$work/next"
+# This is a synthetic *test-only* old-version fixture generated from the
+# current reviewed code. It is NOT the historical v0.3.0 release.
+for target in "$work/legacy" "$work/next"; do
+  cp -a "$repo/README.md" "$repo/CHANGELOG.md" "$repo/LICENSE" "$repo/pyproject.toml" \
+    "$repo/install.sh" "$repo/platform_check.py" "$repo/release-policy.json" \
+    "$repo/src" "$repo/client" "$repo/scripts" "$repo/deps" "$target/"
+done
+python3 - "$work/legacy" <<'PY'
 import json
 import sys
 from pathlib import Path
 root = Path(sys.argv[1])
-for file, old, new in (
-    ("pyproject.toml", 'version = "0.3.0"', 'version = "0.4.0"'),
-    ("src/repocache/__init__.py", '__version__ = "0.3.0"', '__version__ = "0.4.0"'),
-):
-    path = root / file
+for filename in ("pyproject.toml", "src/repocache/__init__.py"):
+    path = root / filename
     data = path.read_text()
-    assert data.count(old) == 1, f"Unexpected baseline in {file}"
-    path.write_text(data.replace(old, new))
-path = root / "release-policy.json"
-policy = json.loads(path.read_text())
-assert policy["version"] == "0.3.0"
-policy["version"] = "0.4.0"
-assert "0.3.0" in policy["compatible_from"]
-path.write_text(json.dumps(policy, indent=2) + "\n")
+    count = data.count("0.4.0")
+    assert count == 1, (filename, count)
+    path.write_text(data.replace("0.4.0", "0.3.0"))
+policy = root / "release-policy.json"
+data = json.loads(policy.read_text())
+assert data["version"] == "0.4.0"
+data["version"] = "0.3.0"
+policy.write_text(json.dumps(data, indent=2) + "\n")
 PY
+python3 "$work/legacy/scripts/build_release.py" --tag v0.3.0 --output "$work/artifacts"
+# The target version uses the actual public v0.4.0 sources.
+
 python3 "$work/next/scripts/build_release.py" --tag v0.4.0 --output "$work/artifacts"
 (cd "$work/artifacts" && sha256sum -c repocache-v0.3.0.tar.gz.sha256 &&
  sha256sum -c repocache-v0.4.0.tar.gz.sha256)
@@ -57,7 +59,7 @@ DOCKERFILE
 docker build --pull --build-arg "BASE_IMAGE=$image" -t "$tag" "$work/builder"
 for version in 0.3.0 0.4.0; do
   mkdir -m 0777 "$work/wheel-$version"
-  if [[ "$version" == 0.3.0 ]]; then source="$repo"; else source="$work/next"; fi
+  if [[ "$version" == 0.3.0 ]]; then source="$work/legacy"; else source="$work/next"; fi
   docker run --rm \
     --mount "type=bind,source=$source,target=/src,readonly" \
     --mount "type=bind,source=$work/wheel-$version,target=/artifacts" \
