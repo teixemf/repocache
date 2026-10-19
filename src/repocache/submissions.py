@@ -12,6 +12,7 @@ import re
 import secrets
 import sqlite3
 import stat
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -200,7 +201,10 @@ class SubmissionQueue:
                     (key_hash, current - 60)).fetchone()[0]
                 if count >= 10:
                     raise SubmissionError("rate_limited", 429)
-                if db.execute("SELECT COUNT(*) FROM proposals WHERE state='PENDING'").fetchone()[0] >= 5000:
+                if (self.path.stat().st_size > 128 * 1024 * 1024
+                        or db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] >= 50000
+                        or db.execute("SELECT COUNT(*) FROM proposals WHERE state='PENDING'").fetchone()[0] >= 5000
+                        or db.execute("SELECT COUNT(*) FROM audit").fetchone()[0] >= 100000):
                     raise SubmissionError("queue_full", 503)
                 ident = secrets.token_hex(16)
                 db.execute(
@@ -256,3 +260,65 @@ class SubmissionQueue:
             return db.execute(
                 "SELECT action,result,actor_uid FROM audit WHERE proposal_id=? ORDER BY seq",
                 (ident,)).fetchall()
+
+    def maintain(self, *, approved: bool = False, now: int | None = None,
+                 decided_retention_days: int = 180) -> dict[str, int]:
+        """Explicit operator-approved retention. Pending records are never purged."""
+        if os.geteuid() != 0 or not approved:
+            raise SubmissionError("operator_approval_required", 403)
+        if (not isinstance(decided_retention_days, int) or
+                not 30 <= decided_retention_days <= 3650):
+            raise SubmissionError("invalid_retention_policy", 400)
+        current = int(time.time()) if now is None else int(now)
+        cutoff = current - decided_retention_days * 86400
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            expired = [row[0] for row in db.execute(
+                "SELECT id FROM proposals WHERE state!='PENDING' AND changed < ?",
+                (cutoff,)).fetchall()]
+            # All replay windows are shorter than one day (30 seconds of
+            # timestamp skew); retain nonces at least 24 hours.
+            dropped_nonces = db.execute(
+                "DELETE FROM nonces WHERE created < ?",
+                (current - 86400,)).rowcount
+            for ident in expired:
+                db.execute("DELETE FROM audit WHERE proposal_id=?", (ident,))
+                db.execute("DELETE FROM proposals WHERE id=?", (ident,))
+            return {"purged_decided": len(expired), "purged_nonces": dropped_nonces}
+
+    def backup(self, destination: Path) -> None:
+        """Atomic operator-only backup of the committed database state.
+
+        Never replaces existing backup data. No application log or public file
+        includes backup content. An external operator must protect the media.
+        """
+        if os.geteuid() != 0:
+            raise SubmissionError("operator_required", 403)
+        destination = Path(destination)
+        try:
+            parent = destination.parent.lstat()
+            if (not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o077
+                    or parent.st_uid != 0 or destination.exists() or
+                    destination.is_symlink()):
+                raise SubmissionError("unsafe_backup_destination", 403)
+            descriptor, temp = tempfile.mkstemp(prefix=".repocache-backup-", dir=destination.parent)
+            try:
+                os.fchmod(descriptor, 0o600)
+                os.close(descriptor)
+                with self._connect() as source, sqlite3.connect(temp) as target:
+                    source.backup(target)
+                    if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                        raise SubmissionError("invalid_backup", 503)
+                with open(temp, "rb") as stream:
+                    os.fsync(stream.fileno())
+                os.link(temp, destination)
+                directory = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
+        except (OSError, sqlite3.Error) as exc:
+            raise SubmissionError("backup_unavailable", 503) from exc
