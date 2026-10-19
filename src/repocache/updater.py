@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from repocache import __version__
+from repocache import __version__, recovery
 
 ROOT = Path("/opt/repocache-cli/managed")
 MANIFEST = ROOT / "installed.json"
@@ -53,27 +53,18 @@ def update_transaction():
         if getattr(_TX_LOCAL, "active", False):
             yield
             return
-        lock = ROOT / ".updater.lock"
-        flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW
         try:
-            fd = os.open(lock, flags, 0o600)
-        except OSError as exc:
-            raise UpdateError("Cannot open secure updater lock") from exc
+            fd = recovery.acquire_update_lock(ROOT)
+        except recovery.RecoveryBusy as exc:
+            raise UpdateBusyError("Another REPOCACHE update is running") from exc
+        except (OSError, recovery.RecoveryError) as exc:
+            raise UpdateError("Root-owned updater lock is missing or insecure") from exc
         try:
-            st = os.fstat(fd)
-            if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid()
-                    or st.st_nlink != 1 or st.st_mode & 0o077):
-                raise UpdateError("Updater transaction lock is insecure")
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise UpdateBusyError("Another REPOCACHE update is running") from exc
             _TX_LOCAL.active = True
             try:
                 yield
             finally:
                 _TX_LOCAL.active = False
-                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
     finally:
