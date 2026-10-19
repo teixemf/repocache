@@ -30,7 +30,7 @@ MAX_SIGNATURE = signatures.MAX_SIGNATURE
 MAX_WHEELHOUSE = wheelhouse.MAX_WHEELHOUSE
 MAX_UNPACKED = 30_000_000
 RELEASE_FILES = frozenset((
-    "README.md", "CHANGELOG.md", "pyproject.toml", "install.sh", "platform_check.py", "release-policy.json",
+    "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml", "install.sh", "platform_check.py", "release-policy.json",
     "src/repocache/__init__.py", "src/repocache/cli.py",
     "src/repocache/core.py", "src/repocache/catalog.py",
     "src/repocache/rendering.py", "src/repocache/tui.py",
