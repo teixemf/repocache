@@ -201,3 +201,21 @@ def test_keyring_rejects_unsafe_permissions(tmp_path):
     keyring.chmod(0o644)
     with pytest.raises(SubmissionError):
         load_keyring(keyring)
+
+def test_unhashable_kind_and_boolean_schema_fail_cleanly_without_insert(queue):
+    intake = SubmissionIntake(queue, {"test": KEY})
+    records = [
+        {"schema": True, "os": {"id": "debian", "version": "13"},
+         "repositories": [{"type": "apt-list",
+                           "url": "https://mirror.example.org/debian/"}]},
+        {"schema": 1, "os": {"id": "debian", "version": "13"},
+         "repositories": [{"type": ["apt-list"],
+                           "url": "https://mirror.example.org/debian/"}]},
+    ]
+    for doc in records:
+        raw = json.dumps(doc).encode()
+        status, response, _ = intake.handle("POST", ENDPOINT, signed(raw),
+                                            raw, now=NOW)
+        assert status == 422, response
+    with queue._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 0
