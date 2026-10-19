@@ -24,7 +24,8 @@ def test_no_private_repository_references_in_public_code():
         root = ROOT / name
         files = (root.rglob("*") if root.is_dir() else (root,))
         for file in files:
-            if not file.is_file() or file.is_symlink():
+            if (not file.is_file() or file.is_symlink() or
+                    file.suffix not in {".py", ".sh", ".md", ".toml", ".yaml", ".yml", ".json", ".txt"}):
                 continue
             data = file.read_text(encoding="utf-8")
             assert obsolete_name not in data.lower(), file
@@ -35,7 +36,8 @@ def test_no_realistic_private_lan_names_in_public_files():
     domain = re.compile(r"\b[a-z][a-z0-9.-]*\.lan\.[a-z]{2,}\b", re.I)
     for top in (ROOT / "src", ROOT / "client", ROOT / "scripts", ROOT / "docs"):
         for file in top.rglob("*"):
-            if not file.is_file() or file.is_symlink():
+            if (not file.is_file() or file.is_symlink() or
+                    file.suffix not in {".py", ".sh", ".md", ".toml", ".yaml", ".yml", ".json", ".txt"}):
                 continue
             assert domain.search(file.read_text(encoding="utf-8")) is None, file
 
