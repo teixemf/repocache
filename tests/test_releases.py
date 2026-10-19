@@ -1,4 +1,4 @@
-"""Public/private GitHub Releases discovery must be read-only and fail closed."""
+"""Public GitHub Releases discovery must be anonymous, read-only and fail closed."""
 import json
 import urllib.error
 
@@ -90,32 +90,32 @@ def test_public_first_does_not_send_existing_token(monkeypatch, tmp_path):
     assert calls == [None]
 
 
-def test_private_404_retries_with_protected_token(monkeypatch, tmp_path):
+def test_private_404_must_not_retry_with_an_old_token(monkeypatch, tmp_path):
     calls = []
-    def guarded(url, token=None):
+    def unavailable(url, token=None):
         calls.append(token)
-        if token is None:
-            raise releases.DiscoveryError("authentication-required", "not found or private")
-        return [item("0.4.0")]
-    monkeypatch.setattr(releases, "_request", guarded)
-    p = tmp_path / "token"
-    p.write_text("ghp_test_token")
-    p.chmod(0o600)
-    assert releases._request_public_first("https://api.github.com/repos/teixemf/repocache/releases", p)
-    assert calls == [None, "ghp_test_token"]
+        raise releases.DiscoveryError("authentication-required", "not found")
+    monkeypatch.setattr(releases, "_request", unavailable)
+    old_token = tmp_path / "old-token"
+    old_token.write_text("synthetic-disabled-token")
+    old_token.chmod(0o600)
+    with pytest.raises(releases.DiscoveryError, match="not found"):
+        releases._request_public_first(
+            "https://api.github.com/repos/teixemf/repocache/releases", old_token)
+    assert calls == [None]
 
 
-def test_public_to_private_and_credential_expiry(monkeypatch, tmp_path):
-    p = tmp_path / "token"
-    p.write_text("ghp_test")
-    p.chmod(0o600)
-    monkeypatch.setattr(releases, "_request", lambda url, token=None: (
-        [item("0.4.0")] if token == "ghp_test" else
-        (_ for _ in ()).throw(releases.DiscoveryError("authentication-required", "private"))))
-    assert releases._request_public_first("https://api.github.com/repos/teixemf/repocache/releases", p)
-    monkeypatch.setattr(releases, "_request", lambda *a, **kw:
-                        (_ for _ in ()).throw(releases.DiscoveryError("authentication-required", "bad credentials")))
-    assert releases.report("0.3.0", token_file=p)["status"] == "authentication-required"
+def test_public_discovery_does_not_reauthenticate(monkeypatch, tmp_path):
+    token = tmp_path / "old-token"
+    token.write_text("synthetic-disabled-token")
+    token.chmod(0o600)
+    calls = []
+    def anonymous(url, token=None):
+        calls.append(token)
+        raise releases.DiscoveryError("authentication-required", "not public")
+    monkeypatch.setattr(releases, "_request", anonymous)
+    assert releases.report("0.3.0", token_file=token)["status"] == "authentication-required"
+    assert calls == [None]
 
 
 @pytest.mark.parametrize("status", ["authentication-required", "offline", "invalid-release", "error"])
@@ -149,23 +149,20 @@ def test_pagination_and_unknown_releases(monkeypatch):
     assert len(calls) == 2
 
 
-def test_nonroot_private_discovery_with_protected_user_token(monkeypatch, tmp_path):
-    token_path = tmp_path / ".config/repocache/github-token"
-    token_path.parent.mkdir(parents=True)
-    token_path.write_text("ghp_user_token")
-    token_path.chmod(0o600)
+def test_existing_per_user_credentials_are_never_loaded_for_public_discovery(monkeypatch, tmp_path):
+    old_credential = tmp_path / ".config/repocache/github-token"
+    old_credential.parent.mkdir(parents=True)
+    old_credential.write_text("synthetic-disallowed-token")
+    old_credential.chmod(0o600)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("REPOCACHE_GITHUB_TOKEN_FILE", raising=False)
     calls = []
-    def private(url, token=None):
+    def anonymous(url, token=None):
         calls.append(token)
-        if token is None:
-            raise releases.DiscoveryError("authentication-required", "private or missing")
-        assert token == "ghp_user_token"
-        return [item("0.4.0")]
-    monkeypatch.setattr(releases, "_request", private)
-    assert releases.report("0.3.0")["status"] == "update-available"
-    assert calls == [None, "ghp_user_token"]
+        raise releases.DiscoveryError("authentication-required", "not available")
+    monkeypatch.setattr(releases, "_request", anonymous)
+    assert releases.report("0.3.0")["status"] == "authentication-required"
+    assert calls == [None]
 
 
 def test_invalid_explicit_path_does_not_prevent_anonymous_public_release(monkeypatch):
