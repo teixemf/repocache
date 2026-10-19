@@ -5,6 +5,7 @@ The CLI never invents metrics; missing data is reported as unavailable.
 from __future__ import annotations
 
 import glob
+import gzip
 import json
 import queue
 import threading
@@ -12,6 +13,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import ssl
 import subprocess
 import time
@@ -288,12 +290,15 @@ def _number(raw: Any) -> Optional[float]:
 
 def _tail_bytes(path: Path, max_bytes: int = 8_000_000) -> Tuple[List[str], bool]:
     """Read at most max_bytes, discarding an initial incomplete line."""
-    with path.open("rb") as stream:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError("Metrics source is not a regular file")
         stream.seek(0, os.SEEK_END)
         size = stream.tell()
         offset = max(0, size - max_bytes)
         stream.seek(offset)
-        payload = stream.read()
+        payload = stream.read(max_bytes)
     if offset:
         newline = payload.find(b"\n")
         payload = payload[newline + 1:] if newline >= 0 else b""
@@ -325,13 +330,12 @@ def _metrics_request_path(record: Dict[str, Any]) -> Optional[str]:
 
 
 def _metrics_history_lines(path: Path) -> Tuple[List[str], bool, int, bool]:
-    """Read a bounded set of active and numbered, plain-text rotated logs.
+    """Read active and bounded plain/gzip numeric log rotations without symlinks.
 
-    Compressed logs or missing rotation generations are not silently treated
-    as complete coverage. The existing per-file reader opens without following
-    symlinks (the same applies to each rotated candidate).
+    This does not claim to cover all historical traffic or recover copytruncate
+    races; missing rotation generations and over-limit archives are explicit.
     """
-    rotations: List[Tuple[int, Path]] = []
+    rotations: List[Tuple[int, Path, bool]] = []
     incomplete = False
     try:
         for candidate in path.parent.iterdir():
@@ -339,35 +343,55 @@ def _metrics_history_lines(path: Path) -> Tuple[List[str], bool, int, bool]:
             if not candidate.name.startswith(prefix):
                 continue
             suffix = candidate.name[len(prefix):]
-            if suffix.endswith(".gz"):
-                incomplete = True
-                continue
-            if suffix.isdecimal() and 1 <= int(suffix) <= 1000:
-                rotations.append((int(suffix), candidate))
+            compressed = suffix.endswith(".gz")
+            number = suffix[:-3] if compressed else suffix
+            if re.fullmatch(r"[1-9][0-9]{0,2}", number):
+                rotations.append((int(number), candidate, compressed))
     except OSError:
         incomplete = True
-    rotations.sort()
-    if len(rotations) > 7:
+    rotations.sort(key=lambda x: (x[0], x[2]))
+    if len(rotations) > 16:
         incomplete = True
-    selected = [item for number, item in rotations[:7]]
-    if selected and [number for number, _ in rotations[:7]] != list(
-            range(1, len(selected) + 1)):
+    selected = rotations[:16]
+    indices = [number for number, _, _ in selected]
+    if indices and indices != list(range(1, len(selected) + 1)):
         incomplete = True
     lines: List[str] = []
     truncated = False
-    # Oldest first; keep a strict 8 MiB cap per selected file.
-    for item in list(reversed(selected)) + [path]:
+    read_count = 0
+    for _, item, compressed in reversed(selected):
         try:
             if item.is_symlink() or not item.is_file():
                 incomplete = True
                 continue
-            sample, clipped = _tail_bytes(item)
+            if compressed:
+                descriptor = os.open(item, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(descriptor, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > 4_000_000:
+                        raise OSError("Compressed rotation is unsafe or too large")
+                    with gzip.GzipFile(fileobj=stream) as archive:
+                        payload = archive.read(4_000_001)
+                clipped = len(payload) > 4_000_000
+                if clipped:
+                    payload = payload[:4_000_000]
+                    payload = payload.rsplit(b"\n", 1)[0] + b"\n" if b"\n" in payload else b""
+                sample = payload.decode("utf-8", errors="replace").splitlines()
+            else:
+                sample, clipped = _tail_bytes(item, max_bytes=4_000_000)
+            read_count += 1
             lines.extend(sample)
             truncated |= clipped
-        except OSError:
+        except (OSError, EOFError):
             incomplete = True
-    return lines, truncated, len(selected) + 1, incomplete
-
+    try:
+        sample, clipped = _tail_bytes(path)
+        read_count += 1
+        lines.extend(sample)
+        truncated |= clipped
+    except OSError:
+        incomplete = True
+    return lines, truncated, read_count, incomplete
 
 def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
             now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -487,10 +511,10 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
             base["series_unit"] = "hour"
         base["coverage"] = ("truncated" if truncated else
                             "partial" if (base["ignored_records"] or rotation_incomplete) else "sampled")
-        base["detail"] = ("Sampled current and up to seven numbered, uncompressed "
-                          "rotated logs (8 MiB each); earlier history may be missing")
+        base["detail"] = ("Sampled current and at most 16 plain/gzip numbered "
+                          "rotations (bounded bytes per source); earlier history may be missing")
         if rotation_incomplete:
-            base["detail"] += "; rotation gaps or compressed logs were not read"
+            base["detail"] += "; rotation gaps or unreadable archives were not fully read"
         if base["ignored_records"]:
             base["detail"] += "; malformed records were ignored"
     else:
