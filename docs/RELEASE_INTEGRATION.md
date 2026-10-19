@@ -16,4 +16,4 @@ GitHub-hosted standard runners on this public repository are intended for PR CI.
 
 ## Legacy migration
 
-The previously published v0.3.0 artifacts remain in a separate private repository. **Never assume they exist in the new public Releases API**. The historic-source migration workflow requiring authenticated private assets is not enabled on untrusted public CI. Rehearsal must use a controlled authorized fixture or explicitly provided immutable source, with verified signatures, without exposing credentials or old internal hostnames.
+Public v0.4.0 is the **first standalone public release**, not an in-place upgrade from pre-public installations. Its signed compatibility allowlist is empty; legacy installations must fail closed, and the historical prototype must not be distributed or enabled. The former historical cutover requirement in issue #5 is explicitly superseded, not reported as PASS. Synthetic recovery rehearsals demonstrate transaction mechanics only. Future historical migration requires new independently accepted criteria, authenticated fixtures and a separate explicit maintainer approval.
