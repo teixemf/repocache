@@ -130,6 +130,12 @@ class SubmissionIntake:
 class _LocalHandler(BaseHTTPRequestHandler):
     intake: SubmissionIntake
 
+    def setup(self):
+        super().setup()
+        # Bound client slow-read attacks even on an explicitly enabled
+        # loopback test listener. Deployment must enforce NGINX timeouts too.
+        self.connection.settimeout(5)
+
     def do_POST(self):
         size = self.headers.get("Content-Length", "")
         if (self.headers.get("Transfer-Encoding") or not size.isdecimal()
@@ -137,7 +143,15 @@ class _LocalHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._reply(413, {"error": "invalid_size"}, {})
             return
-        body = self.rfile.read(int(size))
+        try:
+            body = self.rfile.read(int(size))
+        except (TimeoutError, OSError):
+            self.close_connection = True
+            return
+        if len(body) != int(size):
+            self.close_connection = True
+            self._reply(400, {"error": "invalid_size"}, {})
+            return
         header_names = ("content-type", "x-repocache-key-id", "x-repocache-timestamp",
                         "x-repocache-nonce", "x-repocache-signature")
         headers = {key: self.headers.get(key, "") for key in header_names}
