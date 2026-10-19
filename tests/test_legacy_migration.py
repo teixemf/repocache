@@ -50,6 +50,11 @@ def historical(tmp_path, monkeypatch):
     return old, links
 
 
+def test_historical_migrator_is_disabled_before_accessing_host():
+    with pytest.raises(migration.MigrationError, match="not supported"):
+        migration.main()
+
+
 def test_kill_after_first_launcher_swap_replays_to_exact_prior_legacy_state(historical):
     old, links = historical
     new_launcher = b"#!/bin/sh\n# signed new verified launcher\n"

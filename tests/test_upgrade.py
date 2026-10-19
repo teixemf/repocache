@@ -36,7 +36,7 @@ def policy():
         "python_max_exclusive": "3.14",
         "targets": [{"id": "debian", "major": "13"},
                     {"id": "almalinux", "major": "10"}],
-        "compatible_from": ["0.3.0"], "downgrade_from": [],
+        "compatible_from": [], "downgrade_from": [],
         "config_schema": 1, "api_schema": 1
     }
 
@@ -69,6 +69,7 @@ def fake_signed_identity(archive_data, manifest_data, signature_data, version):
 def test_complete_archive_matches_manifest(tmp_path):
     blob, sha, builder = archive(tmp_path)
     assert set(builder.FILES) == set(upgrade.RELEASE_FILES)
+    assert "scripts/migrate_v030.py" not in builder.FILES
     upgrade._verify_checksum(blob.read_bytes(), sha.read_bytes(), VERSION)
     src, verified = upgrade._extract_verified(
         blob.read_bytes(), VERSION, tmp_path / "extracted", PREVIOUS, DEBIAN13)
@@ -83,6 +84,16 @@ def test_selected_version_never_bypasses_integrity(tmp_path):
         upgrade._verify_checksum(blob.read_bytes() + b"forgery", sha.read_bytes(), VERSION)
     with pytest.raises(upgrade.UpgradeError, match="SHA-256"):
         upgrade._verify_checksum(blob.read_bytes(), sha.read_bytes().replace(b"0", b"1"), VERSION)
+
+
+def test_first_public_release_refuses_historical_upgrade():
+    standalone = policy()
+    assert standalone["compatible_from"] == []
+    for system in (DEBIAN13, ALMA10):
+        assert upgrade._policy(standalone, VERSION, {"version": "0.0.0"}, system) == standalone
+        assert upgrade._policy(standalone, VERSION, {"version": VERSION}, system) == standalone
+        with pytest.raises(upgrade.UpgradeError, match="Compatibility"):
+            upgrade._policy(standalone, VERSION, {"version": "0.3.0"}, system)
 
 
 def test_explicit_os_support_and_unknown_downgrades():
@@ -103,7 +114,7 @@ def test_explicit_os_support_and_unknown_downgrades():
 
 
 @pytest.mark.parametrize("bad", [
-    {"version": "0.5.0"}, {"schema": 2}, {"compatible_from": []},
+    {"version": "0.5.0"}, {"schema": 2}, {"compatible_from": "0.3.0"},
     {"targets": [{"id": "debian", "major": "12"}]}, {"config_schema": 999}
 ])
 def test_invalid_policy_fails_closed(bad):

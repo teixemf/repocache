@@ -168,9 +168,9 @@ def _installed() -> Dict[str, Any]:
     if CURRENT.is_symlink() or CURRENT.exists():
         raise UpdateError("Installed manifest is missing for an existing environment")
     if LEGACY.is_file():
-        # Never execute unsigned legacy Python as a probe. An actual published
-        # v0.3.0 install requires a separately authenticated migration (#55).
-        raise UpdateError("Legacy installation requires reviewed authenticated bootstrap")
+        # Do not execute unsigned legacy Python as a probe. Pre-public
+        # installations cannot upgrade into first public v0.4.0 (#5).
+        raise UpdateError("Pre-public installations are not supported for in-place migration")
     return {"version": "0.0.0", "legacy": True}
 
 
@@ -209,8 +209,8 @@ def apply(version: Optional[str] = None, bundle: Optional[Path] = None,
 def _safe_links() -> None:
     """Only root-owned, non-writable launchers may occupy global command paths.
 
-    A previously installed v0.3.0 symlink requires a separately reviewed
-    one-time bootstrap migration (#55); the updater cannot rewrite /usr/bin.
+    Legacy symlink launchers are not supported for automatic migration into
+    standalone v0.4.0; the updater must not rewrite /usr/bin.
     """
     for link in LINKS:
         if not link.exists() and not link.is_symlink():
