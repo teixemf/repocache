@@ -276,6 +276,46 @@ def source_tree(files: dict[str, bytes]) -> Path:
     return path
 
 
+def prepare_lock(group_id: int) -> None:
+    """Prepare the same trusted inode that signed v0.4 recovery/updater uses.
+
+    Old v0.3 installations do not have this file. Do not replace an existing
+    lock while another migration or updater could hold it.
+    """
+    directory = LEGACY_ROOT.lstat()
+    fail(stat.S_ISDIR(directory.st_mode) and directory.st_uid == 0
+         and not stat.S_IMODE(directory.st_mode) & 0o022,
+         "Legacy root directory is unsafe for permanent update locking")
+    parent_fd = os.open(LEGACY_ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            fd = os.open(".updater.lock",
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o400, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        else:
+            try:
+                os.fchown(fd, 0, group_id)
+                os.fchmod(fd, 0o440)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.fsync(parent_fd)
+        fd = os.open(".updater.lock", os.O_RDONLY | os.O_NOFOLLOW,
+                     dir_fd=parent_fd)
+        try:
+            meta = os.fstat(fd)
+            fail(stat.S_ISREG(meta.st_mode) and meta.st_uid == 0
+                 and meta.st_gid == group_id and meta.st_nlink == 1
+                 and stat.S_IMODE(meta.st_mode) == 0o440,
+                 "Unsafe persistent updater lock")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
 def prepare_uid() -> int:
     try:
         account = pwd.getpwnam("repocache")
@@ -294,6 +334,7 @@ def prepare_uid() -> int:
             directory.mkdir(mode=0o700)
             os.chown(directory, account.pw_uid, account.pw_gid)
         directory.chmod(0o700)
+    prepare_lock(account.pw_gid)
     return account.pw_uid
 
 
