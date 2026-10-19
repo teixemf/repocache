@@ -1,8 +1,7 @@
-"""Read-only discovery of stable GitHub Releases, public or private.
+"""Read-only anonymous discovery of signed PUBLIC GitHub Releases.
 
-Anonymous HTTPS is always attempted first. Optional credentials come from a
-protected file and are only used after an authentication-relevant response.
-No Git/SSH, shell commands, writes, or implicit mirrors are involved.
+No Git credentials, private-repository token fallback, Git/SSH commands,
+shell execution, writes, or implicit mirrors are required or used.
 """
 from __future__ import annotations
 
@@ -82,8 +81,8 @@ def _request(url: str, token: Optional[str] = None) -> Any:
     headers = {"Accept": "application/vnd.github+json",
                "User-Agent": "repocache-release-discovery/1",
                "X-GitHub-Api-Version": "2022-11-28"}
-    if token:
-        headers["Authorization"] = "Bearer " + token
+    if token is not None:
+        raise DiscoveryError("error", "Public release discovery must not send credentials")
     req = urllib.request.Request(url, headers=headers)
     opener = urllib.request.build_opener(
         NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context()))
@@ -110,15 +109,12 @@ def _request(url: str, token: Optional[str] = None) -> Any:
 
 
 def _request_public_first(url: str, token_file: Path = TOKEN_FILE) -> Any:
-    try:
-        return _request(url)
-    except DiscoveryError as error:
-        if error.status != "authentication-required":
-            raise
-        token = _token(token_file)
-        if not token:
-            raise
-        return _request(url, token=token)
+    """Compatibility entrypoint; public discovery is strictly anonymous.
+
+    The old token_file parameter is intentionally ignored to prevent a
+    preexisting private-repository credential from leaking into public flows.
+    """
+    return _request(url)
 
 
 def _version(tag: Any) -> Optional[Tuple[int, int, int]]:
