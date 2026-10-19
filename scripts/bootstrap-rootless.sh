@@ -75,6 +75,51 @@ fi
 [[ "$(id -u repocache)" != "0" ]] || { echo 'Unsafe service identity' >&2; exit 1; }
 install -d -o root -g root -m 0755 /opt/repocache-cli
 install -d -o repocache -g repocache -m 0700 /opt/repocache-cli/managed
+# Trusted, persistent root-owned lock: an unprivileged updater may take a
+# read-only exclusive flock but cannot replace the pathname or its inode.
+# Never truncate or replace an existing inode during re-bootstrap.
+
+/usr/bin/python3 -I - <<'PY'
+import os
+import pwd
+import stat
+from pathlib import Path
+
+parent = Path("/opt/repocache-cli")
+directory = parent.stat(follow_symlinks=False)
+if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != 0
+        or stat.S_IMODE(directory.st_mode) & 0o022):
+    raise SystemExit("Unsafe root-owned updater lock directory")
+group = pwd.getpwnam("repocache").pw_gid
+rootfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    try:
+        fd = os.open(".updater.lock", os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     os.O_CLOEXEC | os.O_NOFOLLOW, 0o400, dir_fd=rootfd)
+    except FileExistsError:
+        pass
+    else:
+        try:
+            os.fchown(fd, 0, group)
+            os.fchmod(fd, 0o440)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(rootfd)
+    fd = os.open(".updater.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 dir_fd=rootfd)
+    try:
+        meta = os.fstat(fd)
+        if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0
+                or meta.st_gid != group or meta.st_nlink != 1
+                or stat.S_IMODE(meta.st_mode) != 0o440):
+            raise SystemExit("Invalid persistent updater lock ownership")
+    finally:
+        os.close(fd)
+finally:
+    os.close(rootfd)
+PY
+
 install -d -o repocache -g repocache -m 0700 /var/lib/repocache
 install -d -o root -g root -m 0755 /usr/local/libexec
 install -o root -g root -m 0644 "$recovery" /usr/local/libexec/repocache-recover.py
