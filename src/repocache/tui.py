@@ -21,7 +21,7 @@ from repocache.rendering import safe_markup
 from repocache.submissions import SubmissionQueue, SubmissionError
 from repocache.cli import human_bytes
 from repocache.core import (
-    Settings, _tail_bytes, disk_status, health, metrics, probe_upstream, service_status, snapshot,
+    Settings, _tail_bytes, disk_status, health, metrics, probe_upstream, service_status, snapshot, timestamp,
 )
 
 
@@ -184,17 +184,24 @@ class RepoCacheApp(App):
 
     @staticmethod
     def _short_event(line: str) -> str:
+        """Display only validated telemetry fields; raw requests can contain secrets."""
         try:
             obj = json.loads(line)
             if isinstance(obj, dict):
-                when = str(obj.get("time_iso8601") or obj.get("timestamp") or obj.get("time") or "?")
-                code = str(obj.get("status") or obj.get("http_status") or "?")
-                cache = str(obj.get("upstream_cache_status") or obj.get("cache_status") or "-")
-                uri = str(obj.get("request_uri") or obj.get("uri") or obj.get("request") or "")
-                return f"{when[11:19]:8}  {code:3}  {cache:10}  {uri[:95]}"
+                stamp = timestamp(obj.get("time_iso8601") or obj.get("timestamp") or obj.get("time"))
+                when = stamp.strftime("%H:%M:%S") if stamp else "?"
+                raw_code = str(obj.get("status") or obj.get("http_status") or "")
+                code = raw_code if (len(raw_code) == 3 and raw_code.isascii()
+                                    and raw_code.isdigit() and 100 <= int(raw_code) <= 599) else "?"
+                raw_cache = str(obj.get("upstream_cache_status") or obj.get("cache_status") or "")
+                cache = raw_cache.upper() if raw_cache.upper() in {
+                    "HIT", "MISS", "BYPASS", "EXPIRED", "STALE",
+                    "UPDATING", "REVALIDATED"
+                } else "-"
+                return f"{when:8}  {code:3}  {cache:10}"
         except (ValueError, TypeError):
             pass
-        return line[:128]
+        return "Malformed log record (details suppressed)"
 
     def _error(self, message: str) -> None:
         self._busy = False
