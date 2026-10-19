@@ -34,6 +34,9 @@ updater.MANIFEST = root / "installed.json"
 updater.CURRENT = root / "current"
 updater.EXECUTABLE = root / "current/bin/repocache"
 updater._require_service_account = lambda: None
+original_lock = updater.recovery.acquire_update_lock
+updater.recovery.acquire_update_lock = lambda root: original_lock(
+    root, expected_owner=os.geteuid(), expected_group=os.getegid())
 updater._safe_links = lambda: None
 version = source.name
 
@@ -107,6 +110,8 @@ def source(directory: Path, version: str) -> Path:
 def scenario(tmp_path):
     root = tmp_path / "managed"
     root.mkdir(mode=0o700)
+    (tmp_path / ".updater.lock").touch(mode=0o440)
+    (tmp_path / ".updater.lock").chmod(0o440)
     release = root / "releases" / "0.2.0-baseline"
     (release / "bin").mkdir(parents=True)
     (release / "bin/repocache").write_text("baseline")
@@ -150,8 +155,8 @@ def assert_generation(root: Path, version: str):
     assert Path(os.readlink(root / "current")).is_dir()
     assert (root / "current/bin/repocache").is_file()
     assert not (root / ".update-journal.json").exists()
-    assert (root / ".updater.lock").is_file()
-    assert (root / ".updater.lock").stat().st_mode & 0o077 == 0
+    assert (root.parent / ".updater.lock").is_file()
+    assert (root.parent / ".updater.lock").stat().st_mode & 0o077 == 0
 
 
 @pytest.mark.parametrize("fail_first", [False, True], ids=["success-success", "fail-retry"])
@@ -212,6 +217,13 @@ def test_upgrade_api_enters_lock_before_preflight(monkeypatch, tmp_path):
     tmp_path.chmod(0o700)
     monkeypatch.setattr(updater, "ROOT", tmp_path)
     monkeypatch.setattr(updater, "_require_service_account", lambda: None)
+    original_lock = updater.recovery.acquire_update_lock
+    monkeypatch.setattr(updater.recovery, "acquire_update_lock",
+        lambda root: original_lock(root, expected_owner=os.geteuid(),
+                                   expected_group=os.getegid()))
+    lock = tmp_path / ".updater.lock"
+    lock.touch(mode=0o440)
+    lock.chmod(0o440)
     observed = []
     monkeypatch.setattr(updater, "recover_transaction",
                         lambda: observed.append(("recovery", updater._TX_LOCAL.active)))
