@@ -97,3 +97,33 @@ instant; day charts have partial boundary days.
 
 No secrets, internal destinations, client identities or production sample
 logs are required in CI fixtures.
+
+## Bounded historical rotation and interactive route filter (second pass)
+
+- The parser reads the active NDJSON file plus **at most 16 numbered**
+  `.1`, `.2`, ... plain-text or `.N.gz` rotations. Each rotated source
+  is sampled to 4 MiB (including a strict 4 MiB decompressed gzip cap);
+  the active file remains capped at 8 MiB. The entire history can be
+  incomplete even if no individual source reports truncation.
+- Missing, duplicated or corrupt rotations, symlinked source files and
+  inaccessible compressed files are not silently treated as complete.
+  Compressed input is never expanded without limits, and log files are
+  opened with O_NOFOLLOW where supported. This does not prove complete
+  history after copytruncate or external log rotation failures.
+- In the interactive repository list select a repository and press **F**
+  for its per-repository metrics chart. Press **G** to switch back to
+  global metrics. Periods remain **1h, 6h, 24h, 7d, 30d** via **P**.
+  A selected repository must be an actually discovered NGINX route;
+  the filter never edits NGINX or writes any log or source file.
+- Tests cover real gzip files, decompression cap, path collisions,
+  compressed corruption, symlinked rotations, all five periods and
+  headless TUI route/global switching. Exact SHA CI is required to
+  confirm execution; this text is not a pass report.
+
+**Operational gap:** the example logging configuration remains proposed,
+not automatically installed or validated against a live NGINX process.
+An approved, opt-in logging migration with managed ownership, rotation,
+retention, NGINX syntax tests, backups and reversible activation must be
+verified before issue #14 can be closed. The 30-day graph shows only
+*observed* samples from retained bounded files and never claims that
+all traffic in the period was captured.
