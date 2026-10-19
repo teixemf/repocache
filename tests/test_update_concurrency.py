@@ -156,7 +156,7 @@ def assert_generation(root: Path, version: str):
     assert (root / "current/bin/repocache").is_file()
     assert not (root / ".update-journal.json").exists()
     assert (root.parent / ".updater.lock").is_file()
-    assert (root.parent / ".updater.lock").stat().st_mode & 0o077 == 0
+    assert (root.parent / ".updater.lock").stat().st_mode & 0o777 == 0o440
 
 
 @pytest.mark.parametrize("fail_first", [False, True], ids=["success-success", "fail-retry"])
