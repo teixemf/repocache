@@ -300,6 +300,30 @@ def _tail_bytes(path: Path, max_bytes: int = 8_000_000) -> Tuple[List[str], bool
     return payload.decode("utf-8", errors="replace").splitlines(), offset > 0
 
 
+def _metrics_repo_prefix(value: str) -> Optional[str]:
+    """Canonicalize a read-only repository filter to an exact route prefix."""
+    if not isinstance(value, str) or len(value) > 256:
+        return None
+    parts = value.strip("/").split("/")
+    if any(not part or part in (".", "..") or
+           not re.fullmatch(r"[A-Za-z0-9._~+-]+", part) for part in parts):
+        return None
+    return "/" + "/".join(parts) + "/"
+
+
+def _metrics_request_path(record: Dict[str, Any]) -> Optional[str]:
+    """Use only an absolute URI path, never a query string, to match a route."""
+    raw = _first(record, "uri", "request_uri", "path")
+    if not isinstance(raw, str) or len(raw) > 8192 or not raw.startswith("/"):
+        return None
+    path = raw.split("?", 1)[0]
+    if (not path or "\\" in path or "#" in path or "//" in path
+            or any(part in (".", "..") for part in path.split("/"))
+            or re.search(r"%(?:2f|5c|2e)", path, flags=re.I)):
+        return None
+    return path
+
+
 def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
             now: Optional[datetime] = None) -> Dict[str, Any]:
     """Aggregate NDJSON without assuming that a sampled window covers all history."""
@@ -309,14 +333,18 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
     now = now.astimezone(timezone.utc)
     cutoff = now - timedelta(hours=hours)
     base = {"hours": hours, "repo": repo, "source": str(settings.metrics_log),
-            "available": False, "requests": 0, "hit": 0, "miss": 0,
+            "available": False, "requests": 0, "hit": 0, "miss": 0, "bypass": 0,
             "cache_observed": 0, "hit_rate": None, "errors_5xx": 0,
             "bytes_sent": None, "bytes_observed": 0, "statuses_observed": 0,
             "avg_request_ms": None, "series": [], "series_unit": "day" if hours > 24 else "hour",
             "first_seen": None, "last_seen": None, "truncated": False,
-            "ignored_records": 0, "detail": ""}
-    if not settings.metrics_log.is_file():
-        base["detail"] = "Metrics log is missing or inaccessible"
+            "ignored_records": 0, "coverage": "unavailable", "detail": ""}
+    prefix = _metrics_repo_prefix(repo) if repo is not None else None
+    if repo is not None and prefix is None:
+        base["detail"] = "Invalid repository route filter"
+        return base
+    if settings.metrics_log.is_symlink() or not settings.metrics_log.is_file():
+        base["detail"] = "Metrics log is missing, symlinked or inaccessible"
         return base
     try:
         lines, truncated = _tail_bytes(settings.metrics_log)
@@ -342,13 +370,19 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
         if stamp is None:
             base["ignored_records"] += 1
             continue
-        if stamp < cutoff or stamp > now + timedelta(minutes=5):
+        if stamp < cutoff or stamp > now:
             continue
-        if repo:
-            uri = str(_first(record, "request_uri", "uri", "path", "request") or "")
-            needle = "/" + repo.strip("/").replace(":", "/") + "/"
-            if needle not in uri:
-                continue
+        if prefix is not None:
+            # A deployment-generated route label avoids retaining request paths.
+            # Legacy logs can use strict path-prefix matching as a fallback.
+            label = record.get("repocache_repository")
+            if label is not None:
+                if label != prefix:
+                    continue
+            else:
+                path = _metrics_request_path(record)
+                if path is None or not path.startswith(prefix):
+                    continue
         times.append(stamp)
         base["requests"] += 1
         hour = stamp.replace(minute=0, second=0, microsecond=0).isoformat()
@@ -383,6 +417,7 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
         base["errors_5xx"] = base["errors_5xx"] if base["statuses_observed"] else None
         base["hit"] = statuses["HIT"]
         base["miss"] = statuses["MISS"]
+        base["bypass"] = statuses["BYPASS"]
         if base["cache_observed"]:
             base["hit_rate"] = round(100 * base["hit"] / base["cache_observed"], 1)
         if durations:
@@ -402,9 +437,20 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
                                "requests": hourly[(start_hour + timedelta(hours=i)).isoformat()]}
                               for i in range(count)]
             base["series_unit"] = "hour"
-        base["detail"] = "Sampled the last 8 MB of log data; the full time range may not be covered"
+        base["coverage"] = ("truncated" if truncated else
+                            "partial" if base["ignored_records"] else "sampled")
+        base["detail"] = ("Sampled current log up to 8 MB; rotation and earlier "
+                          "history may be missing")
+        if base["ignored_records"]:
+            base["detail"] += "; malformed records were ignored"
     else:
+        base["coverage"] = ("truncated" if truncated else
+                            "invalid" if base["ignored_records"] else "no_observations")
         base["detail"] = "No valid timestamped requests in the selected time range"
+        if truncated:
+            base["detail"] += "; the log sample was truncated"
+        elif base["ignored_records"]:
+            base["detail"] += "; malformed records were ignored"
     return base
 
 
