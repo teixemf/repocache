@@ -7,6 +7,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import pwd
 import re
 import secrets
 import sqlite3
@@ -89,7 +90,8 @@ def validate_payload(raw: bytes) -> dict:
         if isinstance(exc, SubmissionError):
             raise
         raise SubmissionError("invalid_json", 400) from exc
-    if not isinstance(doc, dict) or set(doc) != {"schema", "os", "repositories"} or doc["schema"] != 1:
+    if (not isinstance(doc, dict) or set(doc) != {"schema", "os", "repositories"}
+            or type(doc["schema"]) is not int or doc["schema"] != 1):
         raise SubmissionError("invalid_schema")
     platform = doc["os"]
     if not isinstance(platform, dict) or set(platform) != {"id", "version"}:
@@ -106,7 +108,7 @@ def validate_payload(raw: bytes) -> dict:
         if not isinstance(record, dict) or set(record) != {"type", "url"}:
             raise SubmissionError("invalid_repository")
         kind = record["type"]
-        if kind not in {"apt-list", "apt-deb822", "dnf"}:
+        if not isinstance(kind, str) or kind not in {"apt-list", "apt-deb822", "dnf"}:
             raise SubmissionError("invalid_repository")
         if (os_id == "debian" and kind == "dnf") or (os_id == "almalinux" and kind != "dnf"):
             raise SubmissionError("invalid_repository")
@@ -125,8 +127,16 @@ class SubmissionQueue:
         self.path = Path(path)
         parent = self.path.parent
         st = parent.lstat()
+        # A privileged operator may access a directory owned by the fixed
+        # service identity, but never one owned by an arbitrary local user.
+        owners = {0, os.geteuid()}
+        if os.geteuid() == 0:
+            try:
+                owners.add(pwd.getpwnam("repocache-intake").pw_uid)
+            except KeyError:
+                pass
         if (not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o077
-                or st.st_uid not in {0, os.geteuid()}):
+                or st.st_uid not in owners):
             raise SubmissionError("unsafe_store", 503)
         if self.path.is_symlink():
             raise SubmissionError("unsafe_store", 503)
@@ -142,7 +152,7 @@ class SubmissionQueue:
         try:
             fst = self.path.lstat()
             if (not stat.S_ISREG(fst.st_mode) or fst.st_mode & 0o077
-                    or fst.st_uid not in {0, os.geteuid()}):
+                    or fst.st_uid not in owners):
                 raise SubmissionError("unsafe_store", 503)
             with self._connect() as connection:
                 connection.executescript("""
