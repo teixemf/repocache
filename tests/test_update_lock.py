@@ -47,7 +47,7 @@ def test_untrusted_lock_symlink_fails_closed(lock_root, tmp_path):
 
 
 def test_insecure_lock_file_permissions_fail_closed(lock_root):
-    file = lock_root / ".updater.lock"
+    file = lock_root.parent / ".updater.lock"
     file.chmod(0o666)
     with pytest.raises(updater.UpdateError, match="insecure"):
         with updater.update_transaction():
