@@ -356,7 +356,7 @@ def _metrics_history_lines(path: Path) -> Tuple[List[str], bool, int, bool]:
     lines: List[str] = []
     truncated = False
     # Oldest first; keep a strict 8 MiB cap per selected file.
-    for item in reversed(selected) + [path]:
+    for item in list(reversed(selected)) + [path]:
         try:
             if item.is_symlink() or not item.is_file():
                 incomplete = True
