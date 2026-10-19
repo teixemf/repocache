@@ -63,6 +63,24 @@ os.close(fd)
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
 test "$(stat -c %d:%i "$lock")" = "$inode_before"
 
+# The authenticated migration coordinator must also accept the root-owned
+# lock without changing its inode; this runs only in an ephemeral CI image.
+/usr/bin/python3 -I - <<'PY'
+import importlib.util
+import pwd
+import stat
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("test_legacy_lock",
+                                               Path("scripts/migrate_v030.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+lock = Path("/opt/repocache-cli/.updater.lock")
+before = lock.stat().st_ino
+module.prepare_lock(pwd.getpwnam("repocache").pw_gid)
+assert lock.stat().st_ino == before
+assert stat.S_IMODE(lock.stat().st_mode) == 0o440
+PY
+
 # Source-only v0.4.0 installs are deliberately forbidden: the audited
 # release path must use independently authenticated offline dependencies.
 chown -R repocache:repocache .
