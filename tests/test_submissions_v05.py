@@ -219,3 +219,15 @@ def test_unhashable_kind_and_boolean_schema_fail_cleanly_without_insert(queue):
         assert status == 422, response
     with queue._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 0
+
+@pytest.mark.parametrize("os_id,version,kind", [
+    ("debian", "13", "apt-list"), ("debian", "13.2", "apt-deb822"),
+    ("almalinux", "10", "dnf"), ("almalinux", "10.1", "dnf"),
+])
+def test_supported_native_os_point_releases_are_valid_metadata(os_id, version, kind):
+    raw = json.dumps({
+        "schema": 1, "os": {"id": os_id, "version": version},
+        "repositories": [{"type": kind, "url": "https://mirror.example.org/repo/"}]
+    }).encode()
+    result = validate_payload(raw)
+    assert result["os"]["version"] == version
