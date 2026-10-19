@@ -282,6 +282,11 @@ def prepare_lock(group_id: int) -> None:
     Old v0.3 installations do not have this file. Do not replace an existing
     lock while another migration or updater could hold it.
     """
+    for ancestor in (Path("/"), Path("/opt")):
+        info = ancestor.lstat()
+        fail(stat.S_ISDIR(info.st_mode) and info.st_uid == 0
+             and not stat.S_IMODE(info.st_mode) & 0o022,
+             "Unsafe privileged migration ancestor")
     directory = LEGACY_ROOT.lstat()
     fail(stat.S_ISDIR(directory.st_mode) and directory.st_uid == 0
          and not stat.S_IMODE(directory.st_mode) & 0o022,
