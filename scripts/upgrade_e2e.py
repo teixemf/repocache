@@ -3,7 +3,9 @@
 This test uses synthetic release fixtures signed with a fresh, ephemeral
 CI-only Ed25519 key. It verifies #47 mechanics and the #48 privilege boundary,
 not production signing custody or #49 offline dependency acceptance.
-It does NOT exercise the actual published v0.3.0 -> v0.4.0 migration (#55).
+It does NOT exercise any actual pre-public in-place migration. The fixture
+explicitly enables a synthetic 0.3.0 -> 0.4.0 transition that the real public
+v0.4.0 policy rejects, solely to test transaction failure/recovery semantics.
 Never run this script on a production host.
 """
 from __future__ import annotations
@@ -271,7 +273,7 @@ def main() -> None:
 
     print("PASS: synthetic rootless integration checks completed.")
     print("UNVERIFIED: production key custody (#54), real power-loss durability "
-          "(maintainer-waived #51), real v0.3.0 migration (#55).")
+          "(maintainer-waived #51); historical migrations are unsupported in public v0.4.0.")
 
 
 if __name__ == "__main__":

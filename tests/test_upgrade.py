@@ -88,7 +88,10 @@ def test_selected_version_never_bypasses_integrity(tmp_path):
 
 def test_first_public_release_refuses_historical_upgrade():
     standalone = policy()
+    signed_release_policy = json.loads((Path(__file__).resolve().parents[1] /
+                                        "release-policy.json").read_text())
     assert standalone["compatible_from"] == []
+    assert signed_release_policy == standalone
     for system in (DEBIAN13, ALMA10):
         assert upgrade._policy(standalone, VERSION, {"version": "0.0.0"}, system) == standalone
         assert upgrade._policy(standalone, VERSION, {"version": VERSION}, system) == standalone
