@@ -37,4 +37,4 @@ fi
 exec /usr/bin/env -i HOME=/var/lib/repocache \
     PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
     PYTHONNOUSERSITE=1 PYTHONSAFEPATH=1 \
-    "$BASE/managed/current/bin/repocache" "$@"
+    /opt/repocache-cli/managed/current/bin/repocache "$@"
