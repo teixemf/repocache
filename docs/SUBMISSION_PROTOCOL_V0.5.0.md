@@ -183,3 +183,49 @@ deployment behavior. Publish test cases/results with exact reviewed SHA.
 Any FAIL/NOT VERIFIED in the security/deployment gate blocks enabling
 the live endpoint. This design document does **not** approve activation,
 deployment, merging or release publication.
+
+## v1 protocol freeze for implementation and negative testing
+
+**Provisional implementation contract** (not release/security approval):
+
+- The client keeps `--output FILE` as offline-only; transmission requires
+  `repos submit --send --token-file FILE`. Output and send are mutually
+  exclusive and neither operation rewrites package sources.
+- Credential file is exactly one JSON object:
+  `{"key_id":"<ascii-id>","secret":"<base64url-32-byte-key>"}`,
+  owned by root or the executing user, regular, mode 0600 with trusted
+  directory ancestry. Never print the secret or remote response body.
+- Canonical request bytes are the literal UTF-8:
+  `repocache-v1\nPOST\n/v1/repository-submissions\n<decimal-unix-seconds>\n<base64url-nonce>\n<lowercase-sha256-body-hex>`
+  (without terminal newline). Body is UTF-8 JSON canonicalized with
+  `sort_keys=True, separators=(',', ':'), ensure_ascii=True`. HMAC-SHA256
+  uses the decoded 32-byte secret; HTTP header signature is lowercase hex.
+- Nonce is 16 random bytes, base64url without padding; allowed timestamp
+  drift is 30 seconds, inclusive. Retry must reuse the **same signed
+  request and nonce** (never a new nonce for the same idempotent retry).
+  The server deduplicates exact credential+nonce+digest using SQLite
+  transaction locking. Reusing a nonce for a different digest is 409.
+- The intake returns only sanitized, deterministic JSON:
+  `{"status":"pending","proposal_id":"<random hex>"}` on 202;
+  `{"error":"<stable code>"}` on 4xx/5xx. Do not reflect the client
+  supplied body. New authenticated proposals are rate limited to at most
+  10 per 60s per credential; old identical retries do not consume
+  another quota slot.
+- Supported upstream metadata schemes are HTTPS and HTTP (the latter
+  remains inert/pending with a review flag, never auto-authorized).
+  IP literals, localhost and local domains fail at intake. Other
+  upstream DNS names are inert metadata: they are **not** validated by
+  resolving DNS in the intake. A full restricted-DNS/public-IP policy
+  before *any future outbound fetch* remains an explicit security gate.
+- Proposal rows contain only OS ID/version and canonical repository
+  type/URL. Never persist HTTP request headers, original JSON bodies,
+  raw credentials or IP addresses. The local audit records only
+  proposal ID, action, result and privileged local operator UID.
+- `REVIEWED` is a *review disposition*, not route approval. Subsequent
+  catalog publication still requires independent upstream validation
+  and explicit configured allowlist.
+
+This freeze is sufficient for an isolated implementation and executable
+contract tests. It remains **NOT VERIFIED for production network
+exposure** until #17 records independent review, real TLS/NGINX,
+permissions, retention and rollback evidence.
