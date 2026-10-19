@@ -35,7 +35,6 @@ HELPER = Path("/usr/local/libexec/repocache-recover.py")
 JOURNAL = LEGACY_ROOT / ".migration-v030.json"
 SAVED = LEGACY_ROOT / ".migration-v030.saved.json"
 OLD_ARCHIVE_SHA256 = "9719e82b71fe7763e7c8570eaa54b0282217e2086baf83fa50ebdf58ef3f3283"
-OLD_COMMIT = "d56e74785eeb0fe778b4b81a265d237dc261622a"
 VERSION = "0.4.0"
 MAX_ARCHIVE = 12_000_000
 EXPECTED_PY = {("debian", "13"): (3, 13), ("almalinux", "10"): (3, 12)}
