@@ -24,7 +24,7 @@ def fixture_wheels_only(monkeypatch):
     monkeypatch.setattr(updater, "recover_transaction", lambda: None)
 
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 PREVIOUS = {"version": VERSION}
 DEBIAN13 = {"ID": "debian", "VERSION_ID": "13"}
 ALMA10 = {"ID": "almalinux", "VERSION_ID": "10.0"}
@@ -114,7 +114,7 @@ def test_invalid_policy_fails_closed(bad):
 
 
 def test_reject_symlink_and_path_traversal_archives(tmp_path):
-    for member in ("repocache-v0.3.0/../../../escape", "repocache-v0.3.0/release-policy.json"):
+    for member in ("repocache-v0.4.0/../../../escape", "repocache-v0.4.0/release-policy.json"):
         fileobj = io.BytesIO()
         with tarfile.open(fileobj=fileobj, mode="w:gz") as tar:
             entry = tarfile.TarInfo(member)
@@ -129,7 +129,7 @@ def test_reject_symlink_and_path_traversal_archives(tmp_path):
 def test_tampered_or_truncated_source_fails_before_install(tmp_path):
     fileobj = io.BytesIO()
     with tarfile.open(fileobj=fileobj, mode="w:gz") as tar:
-        info = tarfile.TarInfo("repocache-v0.3.0/release-policy.json")
+        info = tarfile.TarInfo("repocache-v0.4.0/release-policy.json")
         data = json.dumps(policy()).encode()
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
