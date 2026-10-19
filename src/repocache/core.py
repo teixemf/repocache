@@ -324,6 +324,51 @@ def _metrics_request_path(record: Dict[str, Any]) -> Optional[str]:
     return path
 
 
+def _metrics_history_lines(path: Path) -> Tuple[List[str], bool, int, bool]:
+    """Read a bounded set of active and numbered, plain-text rotated logs.
+
+    Compressed logs or missing rotation generations are not silently treated
+    as complete coverage. The existing per-file reader opens without following
+    symlinks (the same applies to each rotated candidate).
+    """
+    rotations: List[Tuple[int, Path]] = []
+    incomplete = False
+    try:
+        for candidate in path.parent.iterdir():
+            prefix = path.name + "."
+            if not candidate.name.startswith(prefix):
+                continue
+            suffix = candidate.name[len(prefix):]
+            if suffix.endswith(".gz"):
+                incomplete = True
+                continue
+            if suffix.isdecimal() and 1 <= int(suffix) <= 1000:
+                rotations.append((int(suffix), candidate))
+    except OSError:
+        incomplete = True
+    rotations.sort()
+    if len(rotations) > 7:
+        incomplete = True
+    selected = [item for number, item in rotations[:7]]
+    if selected and [number for number, _ in rotations[:7]] != list(
+            range(1, len(selected) + 1)):
+        incomplete = True
+    lines: List[str] = []
+    truncated = False
+    # Oldest first; keep a strict 8 MiB cap per selected file.
+    for item in reversed(selected) + [path]:
+        try:
+            if item.is_symlink() or not item.is_file():
+                incomplete = True
+                continue
+            sample, clipped = _tail_bytes(item)
+            lines.extend(sample)
+            truncated |= clipped
+        except OSError:
+            incomplete = True
+    return lines, truncated, len(selected) + 1, incomplete
+
+
 def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
             now: Optional[datetime] = None) -> Dict[str, Any]:
     """Aggregate NDJSON without assuming that a sampled window covers all history."""
@@ -338,7 +383,8 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
             "bytes_sent": None, "bytes_observed": 0, "statuses_observed": 0,
             "avg_request_ms": None, "series": [], "series_unit": "day" if hours > 24 else "hour",
             "first_seen": None, "last_seen": None, "truncated": False,
-            "ignored_records": 0, "coverage": "unavailable", "detail": ""}
+            "ignored_records": 0, "coverage": "unavailable", "history_files_read": 0,
+            "rotation_incomplete": False, "detail": ""}
     prefix = _metrics_repo_prefix(repo) if repo is not None else None
     if repo is not None and prefix is None:
         base["detail"] = "Invalid repository route filter"
@@ -347,7 +393,9 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
         base["detail"] = "Metrics log is missing, symlinked or inaccessible"
         return base
     try:
-        lines, truncated = _tail_bytes(settings.metrics_log)
+        lines, truncated, file_count, rotation_incomplete = _metrics_history_lines(settings.metrics_log)
+        base["history_files_read"] = file_count
+        base["rotation_incomplete"] = rotation_incomplete
     except OSError as error:
         base["detail"] = "Cannot read log: " + str(error)
         return base
@@ -438,14 +486,17 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
                               for i in range(count)]
             base["series_unit"] = "hour"
         base["coverage"] = ("truncated" if truncated else
-                            "partial" if base["ignored_records"] else "sampled")
-        base["detail"] = ("Sampled current log up to 8 MB; rotation and earlier "
-                          "history may be missing")
+                            "partial" if (base["ignored_records"] or rotation_incomplete) else "sampled")
+        base["detail"] = ("Sampled current and up to seven numbered, uncompressed "
+                          "rotated logs (8 MiB each); earlier history may be missing")
+        if rotation_incomplete:
+            base["detail"] += "; rotation gaps or compressed logs were not read"
         if base["ignored_records"]:
             base["detail"] += "; malformed records were ignored"
     else:
         base["coverage"] = ("truncated" if truncated else
-                            "invalid" if base["ignored_records"] else "no_observations")
+                            "invalid" if base["ignored_records"] else
+                            "partial" if rotation_incomplete else "no_observations")
         base["detail"] = "No valid timestamped requests in the selected time range"
         if truncated:
             base["detail"] += "; the log sample was truncated"
