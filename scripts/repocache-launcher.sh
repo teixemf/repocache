@@ -1,5 +1,5 @@
 #!/bin/sh
-# Trusted launcher installed by the privileged bootstrap, not by the package.
+# REPOCACHE ROOTLESS LAUNCHER, installed by the privileged bootstrap.
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
