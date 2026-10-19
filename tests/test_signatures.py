@@ -186,7 +186,7 @@ def test_valid_signed_offline_bundle_verifies_before_source_install(tmp_path, ke
     spec = importlib.util.spec_from_file_location("build_signed_test", module)
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
-    archive, checksum = builder.build_release(tmp_path / "out", "v0.3.0")
+    archive, checksum = builder.build_release(tmp_path / "out", "v0.4.0")
     signer_module = root / "scripts" / "sign_release.py"
     spec2 = importlib.util.spec_from_file_location("offline_signer", signer_module)
     signer = importlib.util.module_from_spec(spec2)
@@ -206,9 +206,9 @@ def test_valid_signed_offline_bundle_verifies_before_source_install(tmp_path, ke
     called = []
     def install(source, **kw):
         called.append((source, kw))
-        return {"version": "0.3.0", "status": "installed"}
+        return {"version": "0.4.0", "status": "installed"}
     monkeypatch.setattr(updater, "install_source", install)
-    result = upgrade.upgrade("0.3.0", archive, checksum,
+    result = upgrade.upgrade("0.4.0", archive, checksum,
                             system={"ID": "debian", "VERSION_ID": "13"})
     assert result["status"] == "installed"
     assert len(called) == 1
@@ -220,6 +220,6 @@ def test_valid_signed_offline_bundle_verifies_before_source_install(tmp_path, ke
     manifest.write_bytes(wrong_policy)
     detached.write_bytes(_sign(wrong_policy, private, tmp_path))
     with pytest.raises(upgrade.UpgradeError, match="policy digest mismatch"):
-        upgrade.upgrade("0.3.0", archive, checksum,
+        upgrade.upgrade("0.4.0", archive, checksum,
                         system={"ID": "debian", "VERSION_ID": "13"})
     assert len(called) == 1
