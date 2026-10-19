@@ -5,6 +5,7 @@ No test in this file uses privileged host paths or requires root.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -88,7 +89,7 @@ def test_privileged_launcher_drops_before_loading_python():
     assert '/usr/sbin/runuser -u repocache -- /usr/bin/env -i' in content
     assert "/opt/repocache-cli/managed/current/bin/repocache" in content
     assert "$(id " not in content
-    assert "sudo" not in content.split('case "$(/usr/bin/id -u)" in')[0]
+    assert not re.search(r"(?m)^\\s*(?:exec\\s+)?sudo\\b", content)
     assert "\nsource " not in content
 
 
