@@ -44,7 +44,9 @@ REPO="teixemf/repocache"
 TAG="v0.4.0"
 
 gh auth status
-git fetch origin main --tags --force-with-lease  # verify branch/tag integrity before use
+git fetch --no-tags origin main
+# Fetch only the separately approved tag; do NOT force-update tag refs.
+git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
 git switch --detach "$TAG"
 COMMIT="$(git rev-parse --verify "$TAG^{commit}")"
 test "$(git rev-parse HEAD)" = "$COMMIT"
