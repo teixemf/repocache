@@ -53,7 +53,15 @@ printf '%s  %s\n' "$4" "$recovery" | sha256sum -c --status ||
 [[ -f "$launcher" && ! -L "$launcher" ]] || { echo 'Invalid launcher source' >&2; exit 1; }
 printf '%s  %s\n' "$2" "$launcher" | sha256sum -c --status ||
   { echo "Launcher hash differs from independently verified fingerprint" >&2; exit 1; }
-[[ -x /usr/sbin/runuser ]] || { echo 'Missing /usr/sbin/runuser (util-linux prerequisite)' >&2; exit 1; }
+# Reject missing OS-owned command prerequisites before useradd or any filesystem
+# mutation. An incomplete util-linux/coreutils/shadow-utils install is not a
+# valid target; never attempt best-effort privileged bootstrap.
+for required in /usr/sbin/runuser /usr/sbin/useradd /usr/bin/install /usr/bin/stat /usr/bin/sha256sum /usr/bin/grep /usr/bin/id; do
+  [[ -x "$required" && ! -L "$required" ]] || {
+    echo "Missing or unsafe OS-owned bootstrap prerequisite: $required" >&2
+    exit 1
+  }
+done
 for path in /opt /opt/repocache-cli /usr/local /usr/local/bin /usr/local/libexec; do
   [[ ! -L "$path" ]] || { echo "Unsafe symlinked system path: $path" >&2; exit 1; }
 done
