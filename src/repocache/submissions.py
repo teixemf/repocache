@@ -81,16 +81,52 @@ def _url(value: object) -> str:
     return urlunsplit((url.scheme, netloc, path, "", ""))
 
 
+# A small and intentionally generous bound: valid v1 metadata has at most
+# three nested JSON containers. Do not depend on CPython recursion defaults,
+# which differ by runtime/build.
+MAX_JSON_DEPTH = 32
+
+
+def _check_json_depth(raw: bytes, *, code: str = "invalid_json",
+                      status: int = 400) -> None:
+    """Bound nesting without counting structural characters inside strings."""
+    depth = 0
+    quoted = False
+    escaped = False
+    for char in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == 92:  # backslash
+                escaped = True
+            elif char == 34:  # quote
+                quoted = False
+        elif char == 34:
+            quoted = True
+        elif char in (91, 123):  # [ or {
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise SubmissionError(code, status)
+        elif char in (93, 125):  # ] or }
+            depth -= 1
+            if depth < 0:
+                raise SubmissionError(code, status)
+
+
 def validate_payload(raw: bytes) -> dict:
     """Validate inert metadata without DNS resolution or external I/O."""
     if not isinstance(raw, bytes) or not 0 < len(raw) <= 65536:
         raise SubmissionError("invalid_size", 413)
+    _check_json_depth(raw)
     try:
         doc = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
                          parse_constant=_invalid_constant)
-    except (ValueError, UnicodeError, TypeError) as exc:
+    except (ValueError, UnicodeError, TypeError, RecursionError) as exc:
         if isinstance(exc, SubmissionError):
             raise
+        # A 64 KiB signed request can still contain thousands of nested
+        # arrays/objects. JSON decoder recursion must fail closed, not escape
+        # into the HTTP request handler or expose a traceback.
         raise SubmissionError("invalid_json", 400) from exc
     if (not isinstance(doc, dict) or set(doc) != {"schema", "os", "repositories"}
             or type(doc["schema"]) is not int or doc["schema"] != 1):
@@ -236,8 +272,26 @@ class SubmissionQueue:
             rows = db.execute(
                 "SELECT id,os_id,os_version,items,version FROM proposals "
                 "WHERE state='PENDING' ORDER BY created,id LIMIT ?", (min(limit, 100),))
-            return [{"id": row[0], "os": row[1], "version_os": row[2],
-                     "repositories": json.loads(row[3]), "version": row[4]} for row in rows]
+            proposals = []
+            for row in rows:
+                try:
+                    if not isinstance(row[3], str) or len(row[3]) > 131072:
+                        raise SubmissionError("invalid_stored_proposal", 503)
+                    _check_json_depth(row[3].encode("utf-8"),
+                                      code="invalid_stored_proposal", status=503)
+                    repositories = json.loads(row[3])
+                    if not isinstance(repositories, list) or not 1 <= len(repositories) <= 32:
+                        raise SubmissionError("invalid_stored_proposal", 503)
+                except SubmissionError:
+                    raise
+                except (ValueError, TypeError, RecursionError, UnicodeError) as exc:
+                    # Stored state is lower-trust than the privileged TUI.
+                    # Never leak arbitrary original JSON in diagnostics.
+                    raise SubmissionError("invalid_stored_proposal", 503) from exc
+                proposals.append({"id": row[0], "os": row[1],
+                                  "version_os": row[2], "repositories": repositories,
+                                  "version": row[4]})
+            return proposals
 
     def decide(self, ident: str, action: str, *, expected_version: int | None = None) -> None:
         if os.geteuid() != 0:
