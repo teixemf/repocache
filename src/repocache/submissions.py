@@ -247,6 +247,8 @@ class SubmissionQueue:
                     repositories = json.loads(row[3])
                     if not isinstance(repositories, list) or not 1 <= len(repositories) <= 32:
                         raise SubmissionError("invalid_stored_proposal", 503)
+                except SubmissionError:
+                    raise
                 except (ValueError, TypeError, RecursionError) as exc:
                     # Stored state is lower-trust than the privileged TUI.
                     # Never leak arbitrary original JSON in diagnostics.
