@@ -68,6 +68,15 @@ for descriptor, version_tuple in cases:
     raise AssertionError("Unsupported OS/native Python pair accepted")
 print("PASS: native OS/Python preflight and five unsupported platform pairs")
 PY
+# Invalid client setup must fail before creating global launchers or state.
+if /bin/bash client/install.sh --server http://not-https.invalid > /tmp/rejected-client-server.log 2>&1; then
+  echo "Invalid client server unexpectedly accepted" >&2
+  exit 1
+fi
+test ! -e /opt/repocache-client
+test ! -e /etc/repocache-client
+test ! -e /usr/local/bin/repocache-client
+echo "PASS: invalid native client preflight refused before writing managed state"
 launcher_sha="$(sha256sum scripts/repocache-launcher.sh | cut -d " " -f1)"
 recovery_sha="$(sha256sum src/repocache/recovery.py | cut -d " " -f1)"
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
