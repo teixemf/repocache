@@ -62,6 +62,7 @@ def test_mandatory_release_security_matrix_is_explicitly_executed():
     required = (
         "tests/test_public_release_transport_defensive.py",
         "tests/test_hostile_archive_defensive.py",
+        "tests/test_complete_bundle_identity.py",
         "tests/test_release_integration_contract.py",
     )
     assert "Required release security regression gate (issues 37 38 39)" in workflow
@@ -95,3 +96,14 @@ def test_native_public_transport_security_gate_cannot_be_omitted():
     assert "urllib.request.build_opener = lambda *_: f" in native
     assert "Legacy asset token accepted" in native
     assert "Chained CDN redirect accepted" in native
+
+
+def test_rootless_rollback_checks_run_for_every_pr_and_release_branch_commit():
+    # Required status contexts must not silently disappear when a PR changes
+    # only tests, documentation or CI, as happens with path-filtered triggers.
+    workflow = (WORKFLOWS / "upgrade-distros.yml").read_text(encoding="utf-8")
+    assert "  pull_request:\n  push:\n    branches: [release/v0.4.0]\n  workflow_dispatch:" in workflow
+    trigger = workflow.partition("  pull_request:")[2].partition("permissions:")[0]
+    assert "paths:" not in trigger
+    assert "Synthetic rootless update and rollback" in workflow
+    assert "debian:trixie-slim" in workflow and "almalinux:10" in workflow
