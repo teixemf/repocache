@@ -70,8 +70,8 @@ def test_bundled_notice_file_counts_as_evidence_but_needs_human_review(tmp_path)
 
 def test_oversized_metadata_and_broken_zip_fail_closed(tmp_path):
     path = make_wheel(tmp_path, metadata=(
-        "Name: example\nVersion: 1.0\nLicense: MIT\n" + "X" * 200000))
-    with pytest.raises(licenses.LicenseEvidenceError, match="bounded"):
+        "Name: example\nVersion: 1.0\nLicense: MIT\n" + "X" * 1_200_000))
+    with pytest.raises(licenses.LicenseEvidenceError, match="too large"):
         licenses.audit_wheel(path)
     path.write_bytes(b"not a wheel")
     with pytest.raises(licenses.LicenseEvidenceError):
