@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import json
 import os
 import re
@@ -210,14 +211,48 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
     return data
 
 
+def _write_staged_member(root: Path, relative: str, value: bytes,
+                         mode: int) -> None:
+    """Write once beneath the new staging inode, refusing symlinked parents.
+
+    dir_fd + O_NOFOLLOW anchors writes to the intended temporary directory,
+    even if a concurrent actor changes names in its parent directory.
+    """
+    segments = relative.split("/")
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for segment in segments[:-1]:
+            try:
+                os.mkdir(segment, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(segment, os.O_RDONLY | os.O_DIRECTORY |
+                            os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        writable = os.open(segments[-1], os.O_WRONLY | os.O_CREAT |
+                           os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=fd)
+        with os.fdopen(writable, "wb") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fchmod(stream.fileno(), mode)
+    finally:
+        os.close(fd)
+
+
 def _extract_verified(data: bytes, version: str, directory: Path,
                       previous: Dict[str, Any],
                       system: Optional[Dict[str, str]] = None,
                       signed_policy_sha256: Optional[str] = None) -> Tuple[Path, Dict[str, Any]]:
     """Only extract an exact set of regular source files, without tar.extractall."""
+    if len(data) > MAX_ARCHIVE:
+        raise UpgradeError("Release archive exceeds compressed size limit")
     prefix = "repocache-v" + version + "/"
     source = directory / ("repocache-v" + version)
-    source.mkdir(parents=True, mode=0o700)
+    try:
+        source.mkdir(parents=True, mode=0o700)
+    except OSError as exc:
+        raise UpgradeError("Unsafe extraction staging directory") from exc
     found = set()
     unpacked = 0
     policy: Optional[Dict[str, Any]] = None
@@ -235,19 +270,17 @@ def _extract_verified(data: bytes, version: str, directory: Path,
                 if len(found) > len(RELEASE_FILES) or unpacked > MAX_UNPACKED:
                     raise UpgradeError("Release archive exceeds extraction limits")
                 relative = path[len(prefix):]
-                target = source / relative
-                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 stream = tar.extractfile(item)
                 if stream is None:
                     raise UpgradeError("Invalid release archive member")
                 contents = stream.read(item.size + 1)
                 if len(contents) != item.size:
                     raise UpgradeError("Release archive member length mismatch")
-                target.write_bytes(contents)
-                target.chmod(0o755 if relative in ("install.sh", "client/install.sh",
-                                                    "client/repocache_client.py",
-                                                    "scripts/bootstrap-rootless.sh",
-                                                    "scripts/repocache-launcher.sh") else 0o644)
+                permission = (0o755 if relative in (
+                    "install.sh", "client/install.sh", "client/repocache_client.py",
+                    "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh")
+                    else 0o644)
+                _write_staged_member(source, relative, contents, permission)
         if found != {prefix + name for name in RELEASE_FILES}:
             raise UpgradeError("Incomplete or unexpected release archive")
         raw = (source / "release-policy.json").read_bytes()
