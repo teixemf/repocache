@@ -6,7 +6,7 @@ REPOCACHE is under active development. **There is no approved public v0.4.0 rele
 
 Do **not** create public issues or PRs containing actionable exploits, private keys, credentials, private network information or vulnerable production logs.
 
-Use GitHub's **Security → Advisories → Report a vulnerability** private reporting workflow. The repository owner **confirmed that Private Vulnerability Reporting was enabled on 2026-10-20**; an end-to-end private submission test has not independently been performed. If the option is unexpectedly unavailable, use a previously established private contact channel rather than publishing technical details. The project does not claim a guaranteed response SLA.
+Use GitHub's **Security → Advisories → Report a vulnerability** private reporting workflow. The repository owner confirmed Private Vulnerability Reporting enabled and, on 2026-10-20, **personally verified using a GitHub account without repository administrator permissions that the private reporter form opens**. No synthetic or real private vulnerability was submitted; an end-to-end report-delivery test remains **NOT TESTED**. If the option is unexpectedly unavailable, use a previously established private contact channel rather than publishing technical details. The project does not claim a guaranteed response SLA.
 
 ## Security model and AI disclosure
 
