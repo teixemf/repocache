@@ -148,3 +148,30 @@ blocked until its full, integrated SHA-based review is complete.
 Security review is a **documented developer threat review**, not an
 independent audit. No claims of independently certified security or
 untested platform compatibility are made.
+
+
+## Privileged decision audit boundary (#57)
+
+Before any administrator review, an operator must provision a **separate
+root-owned mode-0700** \`/var/lib/repocache/decisions\` directory with
+a root-owned non-group-writable parent. The intake service must never own
+or have write access to this directory. Its receipt files are 0600
+and bound to a hash-linked decision history; intake SQLite's \`audit\`
+table is a convenience copy and must not be presented as authoritative.
+
+On a failed SQLite write after a durable review receipt, the TUI refuses
+further decisions on that proposal. Investigate the store and verify the
+systemd intake service is **inactive** before explicitly reconciling:
+
+\`\`\`text
+repocache-submissions-admin journal-verify
+repocache-submissions-admin journal-backup --output-dir /root/private/decisions-2026-10-20 --approve
+repocache-submissions-admin reconcile --id <approved-proposal-id> --approve
+\`\`\`
+
+The private journal snapshot and the SQLite backup are separate recovery
+artifacts; retain both and independently verify them. There is no
+automatic root journal creation, pruning, reconciliation or service startup.
+See [SUBMISSIONS_DECISION_JOURNAL_V05.md](SUBMISSIONS_DECISION_JOURNAL_V05.md)
+and Gate A #17 / Gate B #49. Real root-owned filesystem and SELinux
+enforcing validation remains **NOT VERIFIED**.
