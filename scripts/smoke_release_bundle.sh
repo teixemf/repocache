@@ -38,6 +38,7 @@ mkdir -p /tmp/repocache-smoke && cd /tmp/repocache-smoke
 tar -xzf "/artifacts/repocache-$REPOCACHE_VERSION.tar.gz"
 cd "repocache-$REPOCACHE_VERSION"
 test -f LICENSE && test -f src/repocache/recovery.py
+test -f docs/PRODUCTION_EXISTING_NGINX.md
 test ! -e .git && test ! -e tests
 launcher_sha="$(sha256sum scripts/repocache-launcher.sh | cut -d " " -f1)"
 recovery_sha="$(sha256sum src/repocache/recovery.py | cut -d " " -f1)"

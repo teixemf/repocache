@@ -15,7 +15,7 @@ mkdir -p "$work/artifacts" "$work/legacy" "$work/next"
 for target in "$work/legacy" "$work/next"; do
   cp -a "$repo/README.md" "$repo/CHANGELOG.md" "$repo/LICENSE" "$repo/pyproject.toml" \
     "$repo/install.sh" "$repo/platform_check.py" "$repo/release-policy.json" \
-    "$repo/src" "$repo/client" "$repo/scripts" "$repo/deps" "$target/"
+    "$repo/src" "$repo/client" "$repo/scripts" "$repo/deps" "$repo/docs" "$target/"
 done
 python3 - "$work/legacy" <<'PY'
 import json
