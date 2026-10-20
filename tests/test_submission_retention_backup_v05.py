@@ -16,7 +16,14 @@ def test_retention_requires_operator_approval_and_preserves_pending(tmp_path, mo
     parent = tmp_path / "private"
     parent.mkdir(mode=0o700)
     parent.chmod(0o700)
-    queue = SubmissionQueue(parent / "state.db")
+    from repocache import submission_decisions as decisions
+    journal_dir = tmp_path / "decisions"
+    journal_dir.mkdir(mode=0o700)
+    journal_dir.chmod(0o700)
+    monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_open_trusted", lambda path: os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
+    queue = SubmissionQueue(parent / "state.db", journal_dir=journal_dir)
     item = {"os": {"id": "debian", "version": "13"},
             "repositories": [{"type": "apt-list",
                               "url": "https://mirror.example.org/debian/",
