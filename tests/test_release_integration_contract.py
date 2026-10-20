@@ -42,3 +42,16 @@ def test_release_docs_require_each_approval_and_true_acceptance_evidence():
                  "release/v0.4.0", "main", "NGINX", "rollback"):
         assert gate in doc
     assert "No automatic merge" in doc
+
+
+def test_native_offline_installed_wheels_execute_headless_tui():
+    verifier = (ROOT / "scripts/ci_offline_wheels.py").read_text(encoding="utf-8")
+    native = (ROOT / "scripts/build_release_wheels.sh").read_text(encoding="utf-8")
+    smoke = (ROOT / "scripts/smoke_tui.py").read_text(encoding="utf-8")
+    assert 'run(py, "/src/scripts/smoke_tui.py", env=poison)' in verifier
+    assert "Installed native Textual UI smoke did not complete" in verifier
+    assert "--network none" in native
+    assert '"/src/scripts/ci_offline_wheels.py verify --release"' not in native
+    assert 'ci_offline_wheels.py verify --release' in native
+    assert "async with app.run_test" in smoke
+    assert 'tui.snapshot = lambda' in smoke  # No production NGINX is touched
