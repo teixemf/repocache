@@ -232,8 +232,8 @@ def _safe_links() -> None:
             continue
         if link.is_symlink() or not link.is_file():
             raise UpdateError(f"Unmanaged global command path: {link}")
-        stat = link.stat()
-        if stat.st_uid != 0 or stat.st_mode & 0o022:
+        link_metadata = link.stat()
+        if link_metadata.st_uid != 0 or link_metadata.st_mode & 0o022:
             raise UpdateError(f"Insecure global launcher ownership/mode: {link}")
         try:
             with link.open("rb") as stream:
