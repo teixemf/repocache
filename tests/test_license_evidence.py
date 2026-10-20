@@ -97,6 +97,12 @@ def test_native_wheel_verification_always_runs_rights_audit():
     assert 'format_inventory(sorted(build_tools.glob("*.whl")))' in script
     assert 'print("CI LICENSE EVIDENCE: " + format_inventory(files).strip()' in script
     assert "verified_extract(tarpath.read_bytes(), digest" in script
+    # Copyright notices are a mandatory member of the separately
+    # downloadable, owner-signed wheelhouse and are not inlined into wheels.
+    assert '"THIRD_PARTY_NOTICES.md", (source / "THIRD_PARTY_NOTICES.md").read_bytes()' in script
+    assert '!= Path("/src/THIRD_PARTY_NOTICES.md").read_bytes()' in script
+    candidate = (ROOT / "scripts/verify_release_candidate.py").read_text()
+    assert '"Wheelhouse license notices differ from authenticated source"' in candidate
 
 
 def test_root_metadata_is_distinguished_from_nested_vendored_distributions(tmp_path):

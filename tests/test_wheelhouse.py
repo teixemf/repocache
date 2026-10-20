@@ -25,6 +25,7 @@ def _fixture():
         "requirements.lock": "./wheels/" + name + " --hash=sha256:" + digest + "\n",
         "wheels/" + name: wheel,
         "sbom.json": json.dumps(sbom),
+        "THIRD_PARTY_NOTICES.md": "A reviewed MIT and ISC notice fixture, not a real license.\n",
     }
 
 
@@ -101,3 +102,32 @@ def test_cyclonedx_inventory_matches_pinned_wheels(tmp_path, mutation):
         files["sbom.json"] = json.dumps(sbom)
     with pytest.raises(wheelhouse.WheelhouseError):
         _check(files, tmp_path / "target")
+
+
+@pytest.mark.parametrize("mutation", ["missing", "empty", "oversize", "invalid-utf8", "binary"])
+def test_standalone_wheelhouse_requires_bounded_license_notices(tmp_path, mutation):
+    files = _fixture()
+    if mutation == "missing":
+        del files["THIRD_PARTY_NOTICES.md"]
+    elif mutation == "empty":
+        files["THIRD_PARTY_NOTICES.md"] = b""
+    elif mutation == "oversize":
+        files["THIRD_PARTY_NOTICES.md"] = b"x" * (wheelhouse.MAX_NOTICES + 1)
+    elif mutation == "invalid-utf8":
+        files["THIRD_PARTY_NOTICES.md"] = b"\xff"
+    else:
+        files["THIRD_PARTY_NOTICES.md"] = b"Binary\x00content"
+    with pytest.raises(wheelhouse.WheelhouseError, match="license notice"):
+        _check(files, tmp_path / "invalid-notices")
+
+
+def test_wheelhouse_extracts_unchanged_notice_and_refuses_changed_signed_digest(tmp_path):
+    files = _fixture()
+    lock = _check(files, tmp_path / "verified-notices")
+    assert (lock.parent / "THIRD_PARTY_NOTICES.md").read_text() == files["THIRD_PARTY_NOTICES.md"]
+    changed = dict(files)
+    changed["THIRD_PARTY_NOTICES.md"] = "Attacker-supplied incorrect notice"
+    with pytest.raises(wheelhouse.WheelhouseError, match="digest mismatch"):
+        wheelhouse.verified_extract(
+            _archive(changed), hashlib.sha256(_archive(files)).hexdigest(),
+            tmp_path / "altered-notices")
