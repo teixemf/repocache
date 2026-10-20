@@ -4,6 +4,8 @@ on:
   # Required on every PR: path-filtered workflows omit mandatory security
   # contexts for tests/docs-only changes and weaken pre-merge acceptance.
   pull_request:
+  push:
+    branches: [release/v0.4.0]
   workflow_dispatch:
 
 permissions:
