@@ -129,7 +129,7 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
                 old_fd = os.open(target, flags)
                 try:
                     old_stat = os.fstat(old_fd)
-                    if not stat.S_ISREG(old_stat.st_mode) or old_stat.st_mode & 0o077:
+                    if (not stat.S_ISREG(old_stat.st_mode) or old_stat.st_mode & 0o077\n                            or not 0 < old_stat.st_size <= MAX_RESTORE_BYTES):
                         raise SubmissionError("unsafe_current_store", 403)
                     uid, gid = old_stat.st_uid, old_stat.st_gid
                 finally:
