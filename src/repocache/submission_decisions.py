@@ -61,6 +61,12 @@ def _open_trusted(path: Path) -> int:
     return fd
 
 
+def _verify_lock_fd(fd: int) -> None:
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        raise DecisionError("unsafe_decision_lock")
+
+
 def _canonical(record: dict) -> bytes:
     return json.dumps(record, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True).encode("ascii")
@@ -82,9 +88,7 @@ class DecisionJournal:
         try:
             fd = os.open(lockfile, flags, 0o600)
             try:
-                st = os.fstat(fd)
-                if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
-                    raise DecisionError("unsafe_decision_lock")
+                _verify_lock_fd(fd)
                 fcntl.flock(fd, fcntl.LOCK_EX)
                 yield self
             finally:
