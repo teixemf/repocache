@@ -72,7 +72,9 @@ def test_preflight_is_nonmutating(monkeypatch):
 def test_installers_run_native_preflight_before_system_mutations():
     for file in ("install.sh", "client/install.sh"):
         text = (ROOT / file).read_text(encoding="utf-8")
-        pos = text.index('"/usr/bin/python3" -I')
+        marker = ('"/usr/bin/python3" -I' if '"/usr/bin/python3" -I' in text
+                  else '/usr/bin/python3 -I')
+        pos = text.index(marker)
         assert "platform_check.py" in text[pos:pos + 180]
         writes = ("install -d", "install -m", "cat >")
         for marker in writes:
