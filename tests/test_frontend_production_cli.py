@@ -4,6 +4,7 @@ NGINX is administered separately in v0.4.0. Explicit CLI reload must be safe
 in scripts and must never change service state without --yes.
 """
 import pytest
+import re
 from typer.testing import CliRunner
 
 from repocache import cli
@@ -75,4 +76,6 @@ def test_service_reload_yes_reports_systemd_failure(commands, monkeypatch):
 def test_reload_help_documents_explicit_acknowledgement(commands):
     result = CliRunner().invoke(cli.app, ["service", "reload", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--yes" in result.output
+    # Rich embeds ANSI styling within formatted option names.
+    plain = re.sub(r"\\x1b\\[[0-9;]*m", "", result.output)
+    assert "--yes" in plain
