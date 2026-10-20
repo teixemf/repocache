@@ -1,6 +1,10 @@
 # v0.4.0 Release Acceptance and Publication Runbook
 
-**Status: release branch is a development candidate, not a published or approved release.** The intended v0.4.0 product is a **production CLI/TUI frontend for an already installed and operator-configured NGINX repository caching server**, not an NGINX installer. Read [the existing-NGINX deployment contract](PRODUCTION_EXISTING_NGINX.md) and verify the frontend against a representative configured NGINX staging host before claiming host-level production readiness.
+**Status: release branch is a development candidate, not a published or approved release.**
+
+**Staged acceptance:** [v0.4.0 phased integration, publication and live verification](RELEASE_0.4.0_PHASED_ACCEPTANCE.md) assigns each original #1/#4/#6/#36/#39 acceptance criterion to the stage where it is executable. Earlier stages cannot claim later evidence as PASS.
+
+The intended v0.4.0 product is a **production CLI/TUI frontend for an already installed and operator-configured NGINX repository caching server**, not an NGINX installer. Read [the existing-NGINX deployment contract](PRODUCTION_EXISTING_NGINX.md) and verify the frontend against a representative configured NGINX staging host before claiming host-level production readiness.
 
 The public repository uses an independent Git history and the Apache License
 2.0. Previous private release packages, PR discussions and CI artifacts are not
@@ -28,7 +32,7 @@ head; historical PASS results are evidence for historical commits only.
 | NGINX, systemd and SELinux host tests | Real booted VM or target results, if available; explicit deferral remains **NOT TESTED**, never PASS. This is a residual risk for production deployments, not a claim that v0.4.0 auto-installs NGINX. |
 | Real power cut | Not performed; residual risk is documented and deferred, not reported as PASS |
 | Final release security / rights review | Public tree scanned and manually inspected; no credentials, private history or deployment values; license and AI disclosure reviewed |
-| GitHub publication controls | Active branch/tag rulesets and release immutability observed in the **public** repository, with no bypass of required reviews/checks |
+| GitHub publication controls | Active branch/tag rulesets verified by API. Branch ruleset requires nine contexts and **zero** outside approving reviews by deliberate single-maintainer policy; separate owner approval of each merge remains mandatory. Tag ruleset has an **administrator-role bypass**. Release immutability is owner-attested but not independently read back; actual publication controls belong to Phases C/D. |
 
 
 ## Defensive security release gate (#37, #38, #39)
@@ -152,11 +156,15 @@ host already containing an earlier installation.
    exclusions. Do not redefine test failures as waived requirements.
 2. Configure **public** `main`, `release/v0.4.0` and `refs/tags/v*`
    protection: required exact-head CI, no destructive updates, appropriate
-   reviews, tightly controlled tag creation and no administrator bypass.
+   reviews/required status contexts. Branch ruleset has no bypass; the tag
+   ruleset has an intentional administrator-role bypass. Record and enforce
+   owner authorization and custody controls; never claim immutable tags
+   against administrators.
    Confirm protections from GitHub settings and an actual read of live state.
 3. Enable and verify **release immutability on this new public repository**.
    Its old private repository's setting is not inherited.
-4. After **explicit merge approval**, integrate through the reviewed PR,
+4. After **explicit PR #41 merge approval** and PASS for all applicable
+   Phase A acceptance requirements, integrate through the reviewed PR,
    ensure required checks re-run on the resulting commit, and confirm the
    release tag target is an ancestor of protected `main`.
 5. After **separate explicit release approval**, create the controlled version
@@ -170,6 +178,8 @@ host already containing an earlier installation.
    authenticated artifacts in a single release; verify that the immutable
    release and its assets are accessible and unchanged.
 8. Inspect the **frontend-only installation and recovery** on representative Debian 13 / AlmaLinux 10 hosts that already have NGINX configured, including negative permission paths and a non-disruptive frontend failure test. The operator must validate a real deployment before declaring it operationally tested; record findings and issue regressions. A clean-system NGINX provisioning test belongs to v0.6.0, not this release.
+
+For operator-only commands and explicit approval boundaries, see the [offline signing and publication procedure](RELEASE_0.4.0_PUBLISH_OPERATOR.md). Do not run those commands until the corresponding authorization is recorded.
 
 ## Acceptance and ownership
 
