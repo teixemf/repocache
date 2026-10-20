@@ -84,3 +84,14 @@ def test_mandatory_release_security_matrix_is_explicitly_executed():
         assert issue in runbook
     for requirement in ("asset fingerprint", "NOT VERIFIED", "PASS", "FAIL"):
         assert requirement in runbook
+
+
+def test_native_public_transport_security_gate_cannot_be_omitted():
+    smoke = (ROOT / "scripts/smoke_release_bundle.sh").read_text(encoding="utf-8")
+    native = (ROOT / "scripts/ci_native_public_transport.py").read_text(encoding="utf-8")
+    assert "ci_native_public_transport.py,target=/tmp/ci_native_public_transport.py,readonly" in smoke
+    assert "PYTHONPATH=./src /usr/bin/python3 /tmp/ci_native_public_transport.py" in smoke
+    assert "PASS: native public GitHub transport refuses unsafe redirects and credentials" in native
+    assert "urllib.request.build_opener = lambda *_: f" in native
+    assert "Legacy asset token accepted" in native
+    assert "Chained CDN redirect accepted" in native
