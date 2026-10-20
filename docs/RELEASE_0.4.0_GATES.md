@@ -2,7 +2,9 @@
 
 **Status: release branch is a development candidate, not a published or approved release.**
 
-**Staged acceptance:** [v0.4.0 phased integration, publication and live verification](RELEASE_0.4.0_PHASED_ACCEPTANCE.md) assigns each original #1/#4/#6/#36/#39 acceptance criterion to the stage where it is executable. Earlier stages cannot claim later evidence as PASS. The intended v0.4.0 product is a **production CLI/TUI frontend for an already installed and operator-configured NGINX repository caching server**, not an NGINX installer. Read [the existing-NGINX deployment contract](PRODUCTION_EXISTING_NGINX.md) and verify the frontend against a representative configured NGINX staging host before claiming host-level production readiness.
+**Staged acceptance:** [v0.4.0 phased integration, publication and live verification](RELEASE_0.4.0_PHASED_ACCEPTANCE.md) assigns each original #1/#4/#6/#36/#39 acceptance criterion to the stage where it is executable. Earlier stages cannot claim later evidence as PASS.
+
+The intended v0.4.0 product is a **production CLI/TUI frontend for an already installed and operator-configured NGINX repository caching server**, not an NGINX installer. Read [the existing-NGINX deployment contract](PRODUCTION_EXISTING_NGINX.md) and verify the frontend against a representative configured NGINX staging host before claiming host-level production readiness.
 
 The public repository uses an independent Git history and the Apache License
 2.0. Previous private release packages, PR discussions and CI artifacts are not
