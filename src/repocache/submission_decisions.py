@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import tempfile
 import time
@@ -197,3 +198,76 @@ class DecisionJournal:
         finally:
             if os.path.exists(staging):
                 os.unlink(staging)
+
+
+    def verify_all(self) -> int:
+        """Verify every root receipt chain; caller must hold the journal lock."""
+        identifiers: set[str] = set()
+        for entry in self.directory.iterdir():
+            name = entry.name
+            if name == ".decision.lock":
+                continue
+            match = re.fullmatch(r"([a-f0-9]{32})\.([0-9]{4})\.json", name)
+            if not match:
+                # Interrupted staging is not silently treated as history:
+                # operator must investigate and reconcile file operations.
+                raise DecisionError("decision_journal_unknown_file")
+            identifiers.add(match.group(1))
+        for ident in identifiers:
+            self.read(ident)
+        return len(identifiers)
+
+    def snapshot(self, destination: Path) -> int:
+        """New, root-owned directory snapshot; never overwrites an old backup.
+
+        Caller must hold journal lock; backup directory parent must be
+        independently trusted. The snapshot carries ALL historical receipts,
+        not merely the convenience audit rows from the intake SQLite file.
+        """
+        _require_root()
+        dest = Path(destination)
+        _trusted_dir(dest.parent)
+        if dest.exists() or dest.is_symlink():
+            raise DecisionError("decision_backup_exists", 409)
+        count = self.verify_all()
+        stage = Path(tempfile.mkdtemp(prefix=".decision-backup-", dir=dest.parent))
+        committed = False
+        try:
+            os.chmod(stage, 0o700)
+            for entry in self.directory.iterdir():
+                if entry.name == ".decision.lock":
+                    continue
+                fd = _open_trusted(entry)
+                try:
+                    target = stage / entry.name
+                    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+                    out = os.open(target, flags, 0o600)
+                    try:
+                        with os.fdopen(fd, "rb", closefd=False) as source:
+                            with os.fdopen(out, "wb", closefd=False) as writer:
+                                shutil.copyfileobj(source, writer, 4096)
+                                writer.flush()
+                                os.fsync(writer.fileno())
+                    finally:
+                        os.close(out)
+                finally:
+                    os.close(fd)
+            df = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(df)
+            finally:
+                os.close(df)
+            # Root-controlled parent prevents races from the intake identity.
+            os.rename(stage, dest)
+            df = os.open(dest.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(df)
+            finally:
+                os.close(df)
+            committed = True
+            return count
+        except OSError as exc:
+            raise DecisionError("decision_backup_failed") from exc
+        finally:
+            if not committed:
+                shutil.rmtree(stage)
