@@ -19,6 +19,7 @@ suite="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker run --rm --pull=always \
   --mount "type=bind,source=$work,target=/artifacts,readonly" \
   --mount "type=bind,source=$suite/smoke_tui.py,target=/tmp/smoke_tui.py,readonly" \
+  --mount "type=bind,source=$suite/ci_native_public_transport.py,target=/tmp/ci_native_public_transport.py,readonly" \
   -e "REPOCACHE_VERSION=$version" -e "REPOCACHE_PYTHON=$python" \
   "$image" /bin/sh -eu -c '
 case "$(cat /etc/os-release)" in
@@ -68,6 +69,9 @@ for descriptor, version_tuple in cases:
     raise AssertionError("Unsupported OS/native Python pair accepted")
 print("PASS: native OS/Python preflight and five unsupported platform pairs")
 PY
+# Run real packaged transport code with all HTTP calls replaced by fixtures,
+# before any managed installation or credential handling. Never access a URL.
+PYTHONPATH=./src /usr/bin/python3 /tmp/ci_native_public_transport.py
 # Invalid client setup must fail before creating global launchers or state.
 if /bin/bash client/install.sh --server http://not-https.invalid > /tmp/rejected-client-server.log 2>&1; then
   echo "Invalid client server unexpectedly accepted" >&2
