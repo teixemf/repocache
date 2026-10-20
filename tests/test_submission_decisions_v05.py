@@ -169,3 +169,77 @@ def test_nonroot_cannot_access_root_decision_journal(setup, monkeypatch):
         queue.audit(ident)
     with pytest.raises(SubmissionError, match="operator_required"):
         queue.decide(ident, "review", expected_version=0)
+
+
+def test_protected_journal_backup_and_recovery_preserve_decision_chain(setup, tmp_path):
+    queue, ident, protected = setup
+    queue.decide(ident, "review", expected_version=0)
+    queue.decide(ident, "reopen", expected_version=1)
+    parent = tmp_path / "backup-parent"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    snapshot = parent / "decision-snapshot"
+    with DecisionJournal(protected).locked() as journal:
+        assert journal.verify_all() == 1
+        assert journal.snapshot(snapshot) == 1
+        with pytest.raises(DecisionError, match="decision_backup_exists"):
+            journal.snapshot(snapshot)
+    assert snapshot.is_dir()
+    assert snapshot.stat().st_mode & 0o077 == 0
+    receipts = list(snapshot.glob("*.json"))
+    assert len(receipts) == 2
+    assert all(p.stat().st_mode & 0o077 == 0 for p in receipts)
+    # A recovered protected journal is a separate root-controlled directory;
+    # intact receipts remain verifiable and bound to the same proposal.
+    with DecisionJournal(snapshot).locked() as recovered:
+        assert [r["action"] for r in recovered.read(ident)] == ["review", "reopen"]
+    # Simulate a stale service SQLite backup; no effect on protected history.
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET state='PENDING',version=0 WHERE id=?", (ident,))
+    with pytest.raises(SubmissionError, match="decision_reconcile_required"):
+        queue.pending()
+    queue.reconcile(ident, approved=True)
+    assert queue.audit(ident)[-1][0] == "reopen"
+
+
+def test_corrupt_receipt_refuses_backup_and_never_creates_snapshot(setup, tmp_path):
+    queue, ident, directory = setup
+    queue.decide(ident, "reject", expected_version=0)
+    receipt = directory / f"{ident}.0001.json"
+    receipt.write_text('{"not":"a-valid-decision"}')
+    parent = tmp_path / "snapshots"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    with DecisionJournal(directory).locked() as journal:
+        with pytest.raises(DecisionError, match="decision_journal_corrupt"):
+            journal.snapshot(parent / "backup")
+    assert not (parent / "backup").exists()
+
+
+def test_reconcile_refuses_tampered_db_state_ahead_of_receipt(setup):
+    queue, ident, _ = setup
+    queue.decide(ident, "review", expected_version=0)
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET version=999 WHERE id=?", (ident,))
+    with pytest.raises(SubmissionError, match="decision_state_tampered"):
+        queue.reconcile(ident, approved=True)
+    assert queue.audit(ident)[-1][0] == "review"
+
+
+def test_root_only_lock_mode_and_receipt_mode_checks(tmp_path, monkeypatch):
+    protected = tmp_path / "root-only"
+    protected.mkdir(mode=0o700)
+    protected.chmod(0o700)
+    monkeypatch.setattr(decisions.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(decisions, "_trusted_dir", lambda _: None)
+    lock = protected / ".decision.lock"
+    lock.write_text("not trusted")
+    lock.chmod(0o644)
+    with pytest.raises(DecisionError, match="unsafe_decision_lock"):
+        with DecisionJournal(protected).locked():
+            pass
+    lock.chmod(0o600)
+    if lock.stat().st_uid != 0:
+        with pytest.raises(DecisionError, match="unsafe_decision_lock"):
+            with DecisionJournal(protected).locked():
+                pass
