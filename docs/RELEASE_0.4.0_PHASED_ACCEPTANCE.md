@@ -32,10 +32,15 @@ The connected owner has an administrator role bypass for protected `v*`
 tags; this is an operational risk requiring custody discipline, not an
 unconditional tag immutability guarantee.
 
-**D — post publication: NOT VERIFIED.** #65 needs real anonymous GitHub
-API/asset download and actual signed installation/repair on disposable
-Debian 13/AlmaLinux 10, distinct from signed test-fixture CI. This cannot
-precede a real release; it is not a circular gate for earlier correction PRs.
+**D — post publication: NOT VERIFIED.** All seven original #65 live-public
+criteria were transferred without waiver to [#71](https://github.com/teixemf/repocache/issues/71):
+real anonymous GitHub API/asset download and owner-signed installation/repair
+on disposable Debian 13/AlmaLinux 10, not test-fixture CI. #71 is tracked in
+v0.5.0 but must execute immediately after the real v0.4.0 publication.
+**Prepublication #65: CLOSED/PASS 7/7 revised criteria** on source
+`1f5c70e3b230865853470be863ab2ed5fd449e1c`, CI push 9/9 PASS.
+The owner explicitly approved this measurable split to remove the circular
+prepublication dependency, not to declare #71 real asset tests PASS.
 
 The older Phase A and A2 checklists below describe the **original staged
 acceptance plan at the earlier cited commit**. Do not treat their historical
@@ -178,7 +183,7 @@ The [operator command reference](RELEASE_0.4.0_PUBLISH_OPERATOR.md) records the 
   reviewed source commit and trust anchor. Test the effective inability of an
   unauthorized actor to replace/delete assets without performing destructive
   production experiments or relying solely on the local script.
-- **NOT VERIFIED until published:** run [#65](https://github.com/teixemf/repocache/issues/65):
+- **NOT VERIFIED until published:** run [#71](https://github.com/teixemf/repocache/issues/71):
   anonymous **live** `update check/list`, selected release install and
   verified repair/failure recovery on disposable Debian 13/Python 3.13 and
   AlmaLinux 10/Python 3.12 targets. Do not label simulated HTTP fixtures PASS
