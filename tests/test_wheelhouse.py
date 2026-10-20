@@ -114,9 +114,9 @@ def test_standalone_wheelhouse_requires_bounded_license_notices(tmp_path, mutati
     elif mutation == "oversize":
         files["THIRD_PARTY_NOTICES.md"] = b"x" * (wheelhouse.MAX_NOTICES + 1)
     elif mutation == "invalid-utf8":
-        files["THIRD_PARTY_NOTICES.md"] = b"\\xff"
+        files["THIRD_PARTY_NOTICES.md"] = b"\xff"
     else:
-        files["THIRD_PARTY_NOTICES.md"] = b"Binary\\x00content"
+        files["THIRD_PARTY_NOTICES.md"] = b"Binary\x00content"
     with pytest.raises(wheelhouse.WheelhouseError, match="license notice"):
         _check(files, tmp_path / "invalid-notices")
 
