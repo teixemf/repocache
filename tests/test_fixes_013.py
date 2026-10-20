@@ -67,7 +67,8 @@ def test_install_uses_sudo_compatible_location_without_overwriting_others():
     updater = (ROOT / 'src/repocache/updater.py').read_text()
     assert 'Path("/usr/bin/repocache")' in updater
     assert 'not link.exists() and not link.is_symlink()' in updater
-    assert 'stat.st_uid != 0 or stat.st_mode & 0o022' in updater
+    assert 'link_metadata.st_uid != 0 or link_metadata.st_mode & 0o022' in updater
+    assert 'Unsafe global launcher ancestor' in updater
     assert '_require_service_account()' in updater
     assert 'Run as the dedicated repocache service account' in installer
     assert 'repocache repos list' in installer
