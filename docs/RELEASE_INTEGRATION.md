@@ -29,8 +29,10 @@
   authorization for **correction PRs** does not extend to PR #67 or those
   publication actions.
 - **NOT VERIFIED / later stages** — issues #4, #36, #39 require operational
-  tag, provenance, signature and immutable asset evidence, and #65 requires
-  real public anonymous download/install/repair and negative tests *after*
+  tag, provenance, signature and immutable asset evidence. Closed #65 has
+  **7/7 PASS on its owner-approved PREPUBLICATION test-fixture criteria**;
+  [#71](https://github.com/teixemf/repocache/issues/71) retains all original
+  **NOT VERIFIED** real public anonymous download/install/repair and negative tests *after*
   a separately approved published GitHub Release exists. No release is
   published as of this checkpoint.
 
