@@ -230,6 +230,63 @@ def _safe_links() -> None:
 
 
 
+
+def _checked_entry(path: Path, *, directory: bool) -> None:
+    """Reject path substitution before treating managed installation files as usable.
+
+    The managed account owns these paths; checks establish structural safety,
+    not independent authenticity against a compromised service account.
+    """
+    try:
+        entry = path.lstat()
+    except OSError as exc:
+        raise UpdateError(f"Installed environment path is missing: {path}") from exc
+    if (not (stat.S_ISDIR(entry.st_mode) if directory
+             else stat.S_ISREG(entry.st_mode))
+            or entry.st_uid != os.geteuid() or entry.st_mode & 0o022
+            or (not directory and entry.st_nlink != 1)):
+        raise UpdateError(f"Unsafe installed environment path: {path}")
+
+
+def _check_active_layout(previous: Dict[str, Any]) -> None:
+    """Check path layout without executing or reusing active release code."""
+    _checked_entry(ROOT, directory=True)
+    releases = ROOT / "releases"
+    if releases.is_symlink():
+        raise UpdateError("Unsafe releases directory symlink")
+    if previous.get("version") == "0.0.0":
+        if CURRENT.is_symlink() or CURRENT.exists():
+            raise UpdateError("Unexpected active environment on a clean installation")
+        if releases.exists():
+            _checked_entry(releases, directory=True)
+        return
+    _checked_entry(releases, directory=True)
+    if not CURRENT.is_symlink():
+        raise UpdateError("Existing active environment is not a managed symlink")
+    target = Path(os.readlink(CURRENT))
+    if (not target.is_absolute() or ".." in target.parts
+            or target.parent != releases):
+        raise UpdateError("Active environment points outside managed releases")
+    _checked_entry(target, directory=True)
+    name = target.name
+    version = str(previous["version"])
+    if not name.startswith(version + "-"):
+        raise UpdateError("Active environment version disagrees with manifest")
+    parts = name[len(version) + 1:].split("-")
+    if (len(parts) >= 2 and re.fullmatch(r"[a-f0-9]{12}", parts[0])
+            and parts[0] != previous["source_digest"][:12]):
+        raise UpdateError("Active environment digest disagrees with manifest")
+    _checked_entry(target / "bin", directory=True)
+    _checked_entry(target / "bin/repocache", directory=False)
+
+
+def _check_staged_layout(destination: Path) -> None:
+    """Refuse redirected or unsafe entry points before running staged code."""
+    _checked_entry(destination, directory=True)
+    _checked_entry(destination / "bin", directory=True)
+    _checked_entry(destination / "bin/repocache", directory=False)
+
+
 def _sync_dir() -> None:
     descriptor = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -334,11 +391,13 @@ def _install_source_locked(source: Path, *, approved_downgrade: bool = False,
     if previous.get("version") == version and previous.get("source_digest"):
         if previous["source_digest"] != digest:
             raise UpdateError("Same version with different code: increment the version")
-        if EXECUTABLE.is_file():
-            return {"ok": True, "version": version, "source_digest": digest,
-                    "previous_version": version, "path": str(EXECUTABLE),
-                    "status": "already-installed"}
-        raise UpdateError("Current installation is incomplete; same-version repair requires review")
+        # A service-writable manifest and the presence of bin/repocache cannot
+        # authenticate an existing virtualenv. Always stage a NEW generation
+        # from the independently verified signed release and pinned wheels.
+        # Never execute or reuse the previous runtime as a trusted no-op.
+        if release_identity is None or wheel_lock is None:
+            raise UpdateError("Same-version repair requires a signed release and offline wheels")
+    _check_active_layout(previous)
 
     if ROOT.is_symlink() or not ROOT.is_dir():
         raise UpdateError("Rootless managed directory is missing or unsafe; bootstrap required")
@@ -376,6 +435,7 @@ def _install_source_locked(source: Path, *, approved_downgrade: bool = False,
                     raise UpdateError("Verified offline dependency lock is missing")
                 _run(install_argv(Path(interpreter), wheel_lock),
                      cwd=wheel_lock.parent, timeout=300)
+            _check_staged_layout(destination)
             verified = _run([str(destination / "bin/repocache"), "--version"], timeout=20)
             if version not in verified:
                 raise UpdateError(f"Unexpected version after installation: {verified}")
