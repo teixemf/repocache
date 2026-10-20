@@ -105,6 +105,8 @@ FAIL or NOT VERIFIED. The formal release-branch target is still unchanged.
 
 ## Phase C — before owner signing, tag and GitHub Release publication
 
+The [operator command reference](RELEASE_0.4.0_PUBLISH_OPERATOR.md) records the separately gated checkout, tag/Actions candidate verification, offline key usage and eight official artifact paths. It is a preparation document, not authorization to run the publisher commands.
+
 - **PASS for source-controlled code/rehearsals; operationally NOT VERIFIED:**
   `.github/workflows/release.yml` builds an **unsigned** candidate with
   read-only credentials only on owner-initiated tag workflow dispatch and
