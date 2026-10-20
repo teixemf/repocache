@@ -243,3 +243,39 @@ def test_root_only_lock_mode_and_receipt_mode_checks(tmp_path, monkeypatch):
         with pytest.raises(DecisionError, match="unsafe_decision_lock"):
             with DecisionJournal(protected).locked():
                 pass
+
+
+def test_admin_cli_verifies_and_snapshots_root_journal(setup, tmp_path, monkeypatch, capsys):
+    from repocache import submission_admin as admin
+    queue, ident, protected = setup
+    queue.decide(ident, "reject", expected_version=0)
+    monkeypatch.setattr(admin, "DecisionJournal", lambda: DecisionJournal(protected))
+    assert admin.main(["journal-verify"]) == 0
+    assert "1" in capsys.readouterr().out
+    target_parent = tmp_path / "snapshots"
+    target_parent.mkdir(mode=0o700)
+    target_parent.chmod(0o700)
+    target = target_parent / "audit-snapshot"
+    assert admin.main(["journal-backup", "--output-dir", str(target),
+                       "--approve"]) == 0
+    assert len(list(target.glob("*.json"))) == 1
+    assert admin.main(["journal-backup", "--output-dir", str(target),
+                       "--approve"]) == 3  # never overwrite protected history
+    assert "decision_backup_exists" in capsys.readouterr().err
+
+
+def test_admin_cli_reconcile_requires_service_inactive(setup, monkeypatch, capsys):
+    from repocache import submission_admin as admin
+    queue, ident, protected = setup
+    queue.decide(ident, "review", expected_version=0)
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET state='PENDING',version=0 WHERE id=?", (ident,))
+    monkeypatch.setattr(admin, "SubmissionQueue", lambda *_args: queue)
+    monkeypatch.setattr(admin, "intake_is_inactive", lambda: False)
+    assert admin.main(["reconcile", "--id", ident, "--approve"]) == 3
+    assert "offline_reconcile_not_approved" in capsys.readouterr().err
+    assert queue.audit(ident)[0][0] == "review"
+    monkeypatch.setattr(admin, "intake_is_inactive", lambda: True)
+    assert admin.main(["reconcile", "--id", ident, "--approve"]) == 0
+    assert queue.pending() == []
+    assert "reconciled" in capsys.readouterr().out
