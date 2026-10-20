@@ -10,9 +10,11 @@ already present in their unchanged `.dist-info/licenses/` directories.
 The two versions below have **no license file detected at that location**
 by the current wheel metadata auditor, so their **unmodified upstream**
 copyright and permission notices are copied here from the corresponding
-version-tagged public source repositories. This file is included in the
-cryptographically verified release **source archive**; the corresponding
-wheelhouse remains byte-for-byte hash pinned and unmodified.
+version-tagged public source repositories. This file is included **both** in the independently authenticated source
+archive and the separately downloadable, SHA-256-pinned offline wheelhouse.
+The wheelhouse's original third-party .whl files remain byte-for-byte
+unchanged and separately hash-verified. The notice bytes must match across
+both release assets before the owner can sign the candidate.
 
 **Evidence only, not legal clearance.** Maintainers must still inspect
 all exact third-party wheel contents, notices and any vendored code, confirm
@@ -122,10 +124,10 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ## Publication control
 
-Release documentation must record that this source-archive notice is present,
-that the wheelhouse and SBOM correspond to the exact approved signed release
-and that no redistributed license file is removed by packaging. The notice
-is part of the release archive's complete SHA-256 identity and must fail
-authentication if changed. If the copyright owners or licensing terms in
+Release documentation must record that this notice is present in both the
+source archive and independently downloadable wheelhouse, that the wheelhouse
+and SBOM correspond to the exact approved signed release
+and that no redistributed license file is removed by packaging. The notice is part of the **source archive and wheelhouse** SHA-256
+identities and must fail verification if missing or changed. If the copyright owners or licensing terms in
 any dependency differ from those recorded here, **stop publication and
 remediate with a reviewed PR**, rather than asserting legal compliance.
