@@ -31,8 +31,12 @@ def audit_wheel(path: Path) -> dict:
     try:
         with zipfile.ZipFile(path, "r") as wheel:
             entries = wheel.infolist()
+            # Wheels such as setuptools vendor third-party packages whose
+            # nested dist-info metadata must not be mistaken for the
+            # top-level distribution being audited. Require one root entry.
             metadata = [entry for entry in entries
-                        if entry.filename.endswith(".dist-info/METADATA")]
+                        if entry.filename.endswith(".dist-info/METADATA")
+                        and entry.filename.count("/") == 1]
             if len(metadata) != 1:
                 raise LicenseEvidenceError("Wheel metadata count invalid: " + path.name)
             if metadata[0].file_size > MAX_METADATA:
