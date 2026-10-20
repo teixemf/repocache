@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 
 import pytest
 
@@ -25,7 +26,7 @@ def queue(tmp_path):
 
 
 def _deeply_nested_json() -> bytes:
-    # Under 64 KiB, but large enough to exceed CPython JSON recursion depth.
+    # Under 64 KiB but above the explicit 32-container protocol depth cap.
     return (b"[" * 1800) + b"0" + (b"]" * 1800)
 
 
@@ -84,3 +85,24 @@ def test_privileged_pending_reader_rejects_invalid_stored_shapes(queue, monkeypa
     with pytest.raises(SubmissionError) as error:
         queue.pending()
     assert error.value.code == "invalid_stored_proposal"
+
+
+def test_brackets_inside_json_string_do_not_count_as_structure():
+    url = "https://mirror.example.org/debian/" + ("[{}]" * 80)
+    raw = json.dumps({
+        "schema": 1,
+        "os": {"id": "debian", "version": "13"},
+        "repositories": [{"type": "apt-list", "url": url}],
+    }).encode("utf-8")
+    parsed = validate_payload(raw)
+    assert parsed["repositories"][0]["url"] == url
+
+
+def test_escaped_quotes_and_delimiters_do_not_defeat_depth_guard():
+    raw = json.dumps({
+        "schema": 1,
+        "os": {"id": "debian", "version": "13"},
+        "repositories": [{"type": "apt-list", "url": (
+            "https://mirror.example.org/normal/[" + ("[]" * 20) + "]")}],
+    }, separators=(",", ":")).encode("utf-8")
+    assert validate_payload(raw)["os"]["id"] == "debian"
