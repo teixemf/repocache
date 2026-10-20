@@ -338,12 +338,12 @@ def service_show() -> None:
 
 
 @service_app.command("reload")
-def service_reload(yes: bool = typer.Option(False, "--yes", help="Confirm reload")) -> None:
+def service_reload(yes: bool = typer.Option(False, "--yes", help="Explicit, non-interactive acknowledgement")) -> None:
     """Run nginx -t before reloading the NGINX service."""
     console.print("[yellow]Operation: nginx -t → systemctl reload nginx[/yellow]")
-    if not yes and not typer.confirm("Reload the NGINX service?", default=False):
-        console.print("Cancelled; no changes made.")
-        return
+    if not yes:
+        console.print("[yellow]Reload refused: pass --yes explicitly; no changes made.[/yellow]")
+        raise typer.Exit(2)
     result = command([settings().nginx_bin, "-t"], timeout=12)
     if not result["ok"]:
         console.print(f"[red]Invalid NGINX configuration. Reload skipped. {result['stderr']}[/red]")
