@@ -1,6 +1,6 @@
 # v0.4.0 Release Integration and Acceptance
 
-This is a fresh public repository. `main` is protected by policy; v0.4.0 code is proposed in **draft PRs** until acceptance. No previous private Git history, protected ref, workflow log or release asset is imported.
+This is a fresh public repository. `main` is protected by policy; v0.4.0 code is proposed in **draft PRs** until acceptance. **Intended production scope: a CLI/TUI frontend for a separately installed and configured NGINX repository cache on Debian 13 or AlmaLinux 10**, not an NGINX installer. Production-readiness claims must distinguish executed CI from real-host validation; see [existing-NGINX operations](PRODUCTION_EXISTING_NGINX.md). No previous private Git history, protected ref, workflow log or release asset is imported.
 
 ## Mandatory acceptance gate
 
