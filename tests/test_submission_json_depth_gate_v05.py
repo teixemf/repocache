@@ -18,11 +18,21 @@ NONCE = base64.urlsafe_b64encode(b"\x02" * 16).decode("ascii").rstrip("=")
 
 
 @pytest.fixture
-def queue(tmp_path):
+def queue(tmp_path, monkeypatch):
     directory = tmp_path / "private"
     directory.mkdir(mode=0o700)
     directory.chmod(0o700)
-    return SubmissionQueue(directory / "pending.sqlite3")
+    protected = tmp_path / "decisions"
+    protected.mkdir(mode=0o700)
+    protected.chmod(0o700)
+    from repocache import submission_decisions as decisions
+    # The test runner is non-root; bypass only the ownership assertion.
+    # Security refusal of insecure owner/mode is tested separately.
+    from os import O_RDONLY, O_NOFOLLOW, open as os_open
+    monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_open_trusted", lambda path: os_open(
+        path, O_RDONLY | O_NOFOLLOW))
+    return SubmissionQueue(directory / "pending.sqlite3", journal_dir=protected)
 
 
 def _deeply_nested_json() -> bytes:
