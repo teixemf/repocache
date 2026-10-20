@@ -7,11 +7,13 @@ this function receives untrusted data.
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import io
 import re
 import tarfile
 import zipfile
+from contextlib import contextmanager
 from email.parser import BytesParser
 from pathlib import Path
 
@@ -28,6 +30,33 @@ class WheelhouseError(RuntimeError):
     """Offline wheel bundle cannot satisfy verified dependency requirements."""
 
 
+class _BoundedGzipReader:
+    """Reject excessive decompressed TAR bytes, including metadata headers."""
+
+    def __init__(self, compressed: gzip.GzipFile, maximum: int):
+        self.compressed = compressed
+        self.remaining = maximum
+
+    def read(self, size: int = -1) -> bytes:
+        # tarfile's stream reader may request a huge GNU/PAX extension.
+        # Never allocate more than the remaining budget plus a sentinel byte.
+        requested = self.remaining + 1 if size < 0 else min(size, self.remaining + 1)
+        value = self.compressed.read(requested)
+        self.remaining -= len(value)
+        if self.remaining < 0:
+            raise OSError("Decompressed TAR data exceeds resource limit")
+        return value
+
+
+@contextmanager
+def bounded_tar(archive: bytes, maximum: int):
+    """Open a forward-only TAR with a hard decompressed-byte ceiling."""
+    with gzip.GzipFile(fileobj=io.BytesIO(archive), mode="rb") as compressed:
+        with tarfile.open(fileobj=_BoundedGzipReader(compressed, maximum),
+                          mode="r|") as stream:
+            yield stream
+
+
 def verified_extract(archive: bytes, digest: str, destination: Path) -> Path:
     """Materialize exactly hash-pinned wheel files and a lock, no symlinks."""
     if (not re.fullmatch(r"[a-f0-9]{64}", digest)
@@ -38,12 +67,12 @@ def verified_extract(archive: bytes, digest: str, destination: Path) -> Path:
         raise WheelhouseError("Wheelhouse extraction destination must not exist")
     destination.mkdir(mode=0o700, parents=True)
     try:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as stream:
+        with bounded_tar(archive, MAX_UNPACKED + 4_000_000) as stream:
             files: dict[str, bytes] = {}
             total = 0
             for member in stream:
                 name = member.name
-                if (not member.isfile() or name in files or
+                if (not member.isfile() or member.pax_headers or name in files or
                         name not in ("requirements.lock", "sbom.json") and (
                             not name.startswith("wheels/") or
                             HASH_LINE.fullmatch("./" + name + " --hash=sha256:" + "0" * 64) is None)

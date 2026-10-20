@@ -27,6 +27,15 @@ jobs:
         run: python -m pip install -e . pytest
       - name: Run unit and Textual integration tests
         run: python -m pytest -q
+      # Explicit required step: missing/renamed defensive test modules fail CI
+      # rather than becoming an accidentally omitted pytest discovery case.
+      - name: Required release security regression gate (issues 37 38 39)
+        run: |
+          python -m pytest -q \
+            tests/test_public_release_transport_defensive.py \
+            tests/test_hostile_archive_defensive.py \
+            tests/test_complete_bundle_identity.py \
+            tests/test_release_integration_contract.py
 
   release-bundle-smoke:
     name: Bundle integrity and unsigned-source refusal (${{ matrix.platform }})

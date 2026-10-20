@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import json
 import os
 import re
@@ -31,6 +32,7 @@ MAX_WHEELHOUSE = wheelhouse.MAX_WHEELHOUSE
 MAX_UNPACKED = 30_000_000
 RELEASE_FILES = frozenset((
     "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml", "install.sh", "platform_check.py", "release-policy.json",
+    "docs/PRODUCTION_EXISTING_NGINX.md",
     "src/repocache/__init__.py", "src/repocache/cli.py",
     "src/repocache/core.py", "src/repocache/catalog.py",
     "src/repocache/rendering.py", "src/repocache/tui.py",
@@ -40,7 +42,6 @@ RELEASE_FILES = frozenset((
     "client/repocache_client.py",
     "client/install.sh",
     "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh",
-    "scripts/migrate_v030.py",
 ))
 
 
@@ -57,13 +58,16 @@ def _safe_version(value: Optional[str]) -> str:
 def _request_bytes(url: str, max_bytes: int, token: Optional[str] = None) -> bytes:
     """Bounded HTTPS request; do not follow redirects or log signed URLs."""
     parsed = urllib.parse.urlsplit(url)
-    api = ("api.github.com" == parsed.hostname and parsed.path.startswith(
-        "/repos/" + releases.REPOSITORY + "/releases/assets/"))
-    cdn = parsed.hostname in (
+    api = (parsed.netloc == "api.github.com" and re.fullmatch(
+        r"/repos/" + re.escape(releases.REPOSITORY) + r"/releases/assets/[1-9][0-9]*",
+        parsed.path) is not None)
+    cdn = parsed.netloc in (
         "release-assets.githubusercontent.com", "objects.githubusercontent.com",
         "github-releases.githubusercontent.com")
+    # URLs may contain short-lived signed CDN query parameters, but never
+    # credentials, an alternate port, a fragment or a misleading GitHub host.
     if (parsed.scheme != "https" or parsed.username or parsed.password
-            or not (api or cdn) or (token is not None and not api)):
+            or parsed.fragment or not (api or cdn) or (token is not None and not api)):
         raise UpgradeError("Refusing a non-GitHub asset URL or credential redirect")
     if token is not None:
         raise UpgradeError("Public release assets must never receive private credentials")
@@ -79,9 +83,16 @@ def _request_bytes(url: str, max_bytes: int, token: Optional[str] = None) -> byt
     except urllib.error.HTTPError as exc:
         if exc.code in (301, 302, 303, 307, 308):
             target = exc.headers.get("Location", "")
-            # A GitHub API asset can redirect to signed CDN URLs. The token
-            # must be discarded before following that redirect.
-            if not target or not api:
+            # Exactly one hop: official API -> approved HTTPS CDN. An
+            # API-to-API loop or a second CDN redirect is rejected outright,
+            # before contacting the new origin. Never log signed URL queries.
+            signed = urllib.parse.urlsplit(target)
+            if (not api or signed.scheme != "https" or
+                    signed.netloc not in (
+                        "release-assets.githubusercontent.com",
+                        "objects.githubusercontent.com",
+                        "github-releases.githubusercontent.com") or
+                    signed.username or signed.password or signed.fragment):
                 raise UpgradeError("Unexpected asset download redirect")
             return _request_bytes(target, max_bytes, token=None)
         if exc.code in (401, 404):
@@ -183,11 +194,9 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
                 any(not isinstance(x, str) or releases._version("v" + x) is None for x in values)
                 or len(values) != len(set(values))):
             raise UpgradeError("Invalid version compatibility allowlist")
-    if not data["compatible_from"]:
-        raise UpgradeError("Compatibility policy must approve at least one source release")
     current = str(previous.get("version", "0.0.0"))
-    # "0.0.0" is the explicitly recognized clean-host state. Requiring a
-    # compatible_from entry for it would prevent a first secure installation.
+    # "0.0.0" represents a clean host. An empty compatible_from list means
+    # first standalone public release, never permission to migrate older hosts.
     # Exact same-version retries are checked against the original installed
     # source_digest in install_source; reject attempts to replace mutated code.
     if current not in ("0.0.0", version) and current not in data["compatible_from"]:
@@ -202,22 +211,56 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
     return data
 
 
+def _write_staged_member(root: Path, relative: str, value: bytes,
+                         mode: int) -> None:
+    """Write once beneath the new staging inode, refusing symlinked parents.
+
+    dir_fd + O_NOFOLLOW anchors writes to the intended temporary directory,
+    even if a concurrent actor changes names in its parent directory.
+    """
+    segments = relative.split("/")
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for segment in segments[:-1]:
+            try:
+                os.mkdir(segment, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = os.open(segment, os.O_RDONLY | os.O_DIRECTORY |
+                            os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        writable = os.open(segments[-1], os.O_WRONLY | os.O_CREAT |
+                           os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=fd)
+        with os.fdopen(writable, "wb") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fchmod(stream.fileno(), mode)
+    finally:
+        os.close(fd)
+
+
 def _extract_verified(data: bytes, version: str, directory: Path,
                       previous: Dict[str, Any],
                       system: Optional[Dict[str, str]] = None,
                       signed_policy_sha256: Optional[str] = None) -> Tuple[Path, Dict[str, Any]]:
     """Only extract an exact set of regular source files, without tar.extractall."""
+    if len(data) > MAX_ARCHIVE:
+        raise UpgradeError("Release archive exceeds compressed size limit")
     prefix = "repocache-v" + version + "/"
     source = directory / ("repocache-v" + version)
-    source.mkdir(parents=True, mode=0o700)
+    try:
+        source.mkdir(parents=True, mode=0o700)
+    except OSError as exc:
+        raise UpgradeError("Unsafe extraction staging directory") from exc
     found = set()
     unpacked = 0
     policy: Optional[Dict[str, Any]] = None
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r|gz") as tar:
+        with wheelhouse.bounded_tar(data, MAX_UNPACKED + 4_000_000) as tar:
             for item in tar:
                 path = item.name
-                if (not item.isfile() or not path.startswith(prefix)
+                if (not item.isfile() or item.pax_headers or not path.startswith(prefix)
                         or path[len(prefix):] not in RELEASE_FILES
                         or path in found or item.size < 0
                         or item.mode & 0o7000):
@@ -227,19 +270,17 @@ def _extract_verified(data: bytes, version: str, directory: Path,
                 if len(found) > len(RELEASE_FILES) or unpacked > MAX_UNPACKED:
                     raise UpgradeError("Release archive exceeds extraction limits")
                 relative = path[len(prefix):]
-                target = source / relative
-                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 stream = tar.extractfile(item)
                 if stream is None:
                     raise UpgradeError("Invalid release archive member")
                 contents = stream.read(item.size + 1)
                 if len(contents) != item.size:
                     raise UpgradeError("Release archive member length mismatch")
-                target.write_bytes(contents)
-                target.chmod(0o755 if relative in ("install.sh", "client/install.sh",
-                                                    "client/repocache_client.py",
-                                                    "scripts/bootstrap-rootless.sh",
-                                                    "scripts/repocache-launcher.sh") else 0o644)
+                permission = (0o755 if relative in (
+                    "install.sh", "client/install.sh", "client/repocache_client.py",
+                    "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh")
+                    else 0o644)
+                _write_staged_member(source, relative, contents, permission)
         if found != {prefix + name for name in RELEASE_FILES}:
             raise UpgradeError("Incomplete or unexpected release archive")
         raw = (source / "release-policy.json").read_bytes()
@@ -333,14 +374,16 @@ def _upgrade_locked(selected: Optional[str] = None, bundle: Optional[Path] = Non
     archive_digest = signed["archive_sha256"]
     if previous.get("version") == version:
         if (previous.get("archive_sha256") != archive_digest
-                or previous.get("wheelhouse_sha256") != wheel_digest):
+                or previous.get("wheelhouse_sha256") != wheel_digest
+                or previous.get("publisher_key_id") != signed["key_id"]
+                or previous.get("release_commit") != signed["commit"]
+                or previous.get("signed_manifest_sha256") != hashlib.sha256(
+                    manifest_data).hexdigest()):
             raise UpgradeError("Same-version installation lacks matching signed release identity")
-        if not updater.EXECUTABLE.is_file():
-            raise UpgradeError("Installed CLI is incomplete; repair requires explicit review")
-        return {"ok": True, "version": version,
-                "previous_version": version, "status": "already-installed",
-                "source_digest": previous["source_digest"],
-                "path": str(updater.EXECUTABLE)}
+        # There is no independently authenticated inventory of the installed
+        # virtualenv: service-owned manifests and executable existence cannot
+        # establish its integrity. Rebuild into a unique fresh generation from
+        # the signed archive and offline wheels instead of returning a no-op.
     with tempfile.TemporaryDirectory(prefix="repocache-upgrade-") as temp:
         source, policy = _extract_verified(
             archive_data, version, Path(temp), previous, system,

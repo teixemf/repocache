@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml", "install.sh", "platform_check.py", "release-policy.json",
+    "docs/PRODUCTION_EXISTING_NGINX.md",
     "src/repocache/__init__.py", "src/repocache/cli.py",
     "src/repocache/core.py", "src/repocache/catalog.py", "src/repocache/rendering.py",
     "src/repocache/tui.py", "src/repocache/updater.py",
@@ -21,7 +22,6 @@ FILES = (
     "src/repocache/signatures.py", "src/repocache/recovery.py", "src/repocache/wheelhouse.py",
     "client/repocache_client.py", "client/install.sh",
     "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh",
-    "scripts/migrate_v030.py",
 )
 
 
@@ -57,8 +57,7 @@ def build_release(output: Path, tag: str = "") -> tuple[Path, Path]:
                     item.uid = item.gid = 0
                     item.uname = item.gname = "root"
                     item.mode = 0o755 if name in ("install.sh", "client/install.sh", "client/repocache_client.py",
-                                                       "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh",
-                                                       "scripts/migrate_v030.py") else 0o644
+                                                       "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh") else 0o644
                     tar.addfile(item, io.BytesIO(data))
     checksum = package.with_name(package.name + ".sha256")
     checksum.write_text(f"{hashlib.sha256(package.read_bytes()).hexdigest()}  {package.name}\n")

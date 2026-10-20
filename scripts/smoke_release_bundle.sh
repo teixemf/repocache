@@ -19,6 +19,7 @@ suite="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker run --rm --pull=always \
   --mount "type=bind,source=$work,target=/artifacts,readonly" \
   --mount "type=bind,source=$suite/smoke_tui.py,target=/tmp/smoke_tui.py,readonly" \
+  --mount "type=bind,source=$suite/ci_native_public_transport.py,target=/tmp/ci_native_public_transport.py,readonly" \
   -e "REPOCACHE_VERSION=$version" -e "REPOCACHE_PYTHON=$python" \
   "$image" /bin/sh -eu -c '
 case "$(cat /etc/os-release)" in
@@ -38,9 +39,81 @@ mkdir -p /tmp/repocache-smoke && cd /tmp/repocache-smoke
 tar -xzf "/artifacts/repocache-$REPOCACHE_VERSION.tar.gz"
 cd "repocache-$REPOCACHE_VERSION"
 test -f LICENSE && test -f src/repocache/recovery.py
+test -f docs/PRODUCTION_EXISTING_NGINX.md
 test ! -e .git && test ! -e tests
+# Test the actual OS-native interpreter and reject unsupported fixture pairs.
+# Everything below runs inside the disposable native Docker image.
+/usr/bin/python3 -I platform_check.py
+/usr/bin/python3 - <<PY
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("native_preflight", "platform_check.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.validate(Path("/etc/os-release").read_text(encoding="utf-8"),
+                sys.version_info[:2])
+cases = (
+    ("ID=debian\nVERSION_ID=12\n", (3, 13)),
+    ("ID=almalinux\nVERSION_ID=9\n", (3, 12)),
+    ("ID=debian\nVERSION_ID=13\n", (3, 12)),
+    ("ID=almalinux\nVERSION_ID=10\n", (3, 13)),
+    ("ID=ubuntu\nVERSION_ID=24.04\n", (3, 12)),
+)
+for descriptor, version_tuple in cases:
+    try:
+        module.validate(descriptor, version_tuple)
+    except module.PlatformError:
+        continue
+    raise AssertionError("Unsupported OS/native Python pair accepted")
+print("PASS: native OS/Python preflight and five unsupported platform pairs")
+PY
+# Run real packaged transport code with all HTTP calls replaced by fixtures,
+# before any managed installation or credential handling. Never access a URL.
+PYTHONPATH=./src /usr/bin/python3 /tmp/ci_native_public_transport.py
+# Invalid client setup must fail before creating global launchers or state.
+if /bin/bash client/install.sh --server http://not-https.invalid > /tmp/rejected-client-server.log 2>&1; then
+  echo "Invalid client server unexpectedly accepted" >&2
+  exit 1
+fi
+test ! -e /opt/repocache-client
+test ! -e /etc/repocache-client
+test ! -e /usr/local/bin/repocache-client
+echo "PASS: invalid native client preflight refused before writing managed state"
 launcher_sha="$(sha256sum scripts/repocache-launcher.sh | cut -d " " -f1)"
 recovery_sha="$(sha256sum src/repocache/recovery.py | cut -d " " -f1)"
+# Missing native prerequisites must fail before privileged bootstrap creates
+# accounts, managed state or launchers. All mutations are disposable-container
+# probes, with each OS binary restored before normal bootstrap.
+for missing in /usr/bin/python3 /usr/sbin/runuser /usr/bin/install; do
+  mv "$missing" "$missing.repocache-prereq-probe"
+  if /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha" > /tmp/rejected-prerequisite.log 2>&1; then
+    mv "$missing.repocache-prereq-probe" "$missing"
+    echo "Missing native bootstrap prerequisite unexpectedly accepted: $missing" >&2
+    exit 1
+  fi
+  mv "$missing.repocache-prereq-probe" "$missing"
+  test ! -e /opt/repocache-cli
+  test ! -e /usr/local/bin/repocache
+  if id repocache >/dev/null 2>&1; then
+    echo "Service user created despite missing bootstrap prerequisite" >&2
+    exit 1
+  fi
+  echo "PASS: missing native bootstrap prerequisite refused before mutation"
+done
+# A missing coreutils command must also prevent partial client installation.
+mv /usr/bin/install /usr/bin/install.repocache-prereq-probe
+if /bin/bash client/install.sh --server https://cache.example.org > /tmp/rejected-client-prerequisite.log 2>&1; then
+  mv /usr/bin/install.repocache-prereq-probe /usr/bin/install
+  echo "Missing client installer prerequisite unexpectedly accepted" >&2
+  exit 1
+fi
+mv /usr/bin/install.repocache-prereq-probe /usr/bin/install
+test ! -e /opt/repocache-client
+test ! -e /etc/repocache-client
+test ! -e /usr/local/bin/repocache-client
+echo "PASS: missing client prerequisite refused before mutation"
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
 # The service UID must never unlink or replace this root-owned inode.
 lock=/opt/repocache-cli/.updater.lock
@@ -63,23 +136,54 @@ os.close(fd)
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
 test "$(stat -c %d:%i "$lock")" = "$inode_before"
 
-# The authenticated migration coordinator must also accept the root-owned
-# lock without changing its inode; this runs only in an ephemeral CI image.
-/usr/bin/python3 -I - <<'PY'
-import importlib.util
-import pwd
-import stat
-from pathlib import Path
-spec = importlib.util.spec_from_file_location("test_legacy_lock",
-                                               Path("scripts/migrate_v030.py"))
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-lock = Path("/opt/repocache-cli/.updater.lock")
-before = lock.stat().st_ino
-module.prepare_lock(pwd.getpwnam("repocache").pw_gid)
-assert lock.stat().st_ino == before
-assert stat.S_IMODE(lock.stat().st_mode) == 0o440
-PY
+# The trusted recovery coordinator must refuse owner, group and mode drift
+# before accessing managed state. Mutations are confined to this disposable
+# image and reset immediately; they are never applied to a real host.
+probe_lock() {
+  /usr/sbin/runuser -u repocache -- /usr/bin/python3 -I \
+    /usr/local/libexec/repocache-recover.py > /tmp/lock-probe.log 2>&1
+}
+refuse_lock() {
+  if probe_lock; then
+    echo "Tampered updater lock was accepted: $1" >&2
+    exit 1
+  fi
+  grep -F "Recovery refused:" /tmp/lock-probe.log >/dev/null || {
+    cat /tmp/lock-probe.log >&2
+    exit 1
+  }
+  echo "PASS: tampered updater lock refused ($1)"
+}
+probe_lock
+
+chown repocache:repocache "$lock"
+refuse_lock "wrong owner"
+chown root:repocache "$lock"
+
+chown root:root "$lock"
+refuse_lock "wrong group"
+chown root:repocache "$lock"
+
+chmod 0660 "$lock"
+refuse_lock "writable inode"
+chmod 0440 "$lock"
+
+lock_parent_mode="$(stat -c %a /opt/repocache-cli)"
+chmod 0777 /opt/repocache-cli
+refuse_lock "writable lock parent"
+chmod "$lock_parent_mode" /opt/repocache-cli
+
+opt_mode="$(stat -c %a /opt)"
+chmod 0777 /opt
+refuse_lock "writable system ancestor"
+chmod "$opt_mode" /opt
+
+test "$(stat -c %d:%i "$lock")" = "$inode_before"
+probe_lock
+echo "PASS: root-owned updater lock survives negative ownership and path probes"
+
+# First-public releases must not distribute the unsupported historical migrator.
+test ! -e scripts/migrate_v030.py
 
 # Source-only v0.4.0 installs are deliberately forbidden: the audited
 # release path must use independently authenticated offline dependencies.
@@ -94,6 +198,14 @@ test ! -e /opt/repocache-cli/managed/current
 /usr/bin/python3 -m py_compile client/repocache_client.py src/repocache/upgrade.py
 /bin/bash client/install.sh --server https://cache.example.org
 repocache-client --json repos list > /tmp/client-repos.json
+/usr/local/bin/repocache-client check --help > /dev/null
+/usr/local/bin/repocache-client repos submit --help > /dev/null
+/usr/local/bin/repocache-client repos sync --help > /dev/null
+if /usr/local/bin/repocache-client repos sync --apply > /tmp/client-apply-rejected.log 2>&1; then
+  echo "Unsafe client source rewrite unexpectedly accepted" >&2
+  exit 1
+fi
+echo "PASS: installed client command contract and sync --apply refusal"
 /usr/bin/python3 -c "import json; assert isinstance(json.load(open(\"/tmp/client-repos.json\"))[\"repositories\"],list)"
 
 echo "PASS: disposable native $REPOCACHE_VERSION bundle layout, unsigned-source refusal and client smoke"

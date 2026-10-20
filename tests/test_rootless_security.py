@@ -101,7 +101,8 @@ def test_bootstrap_requires_explicit_independent_launcher_digest():
     assert "useradd --system" in content
     assert "install -d -o repocache -g repocache -m 0700" in content
     assert "install -o root -g root -m 0755" in content
-    assert "Foreign/legacy launcher" in content
+    assert "Unmanaged or pre-public launcher detected" in content
+    assert "in-place migration is unsupported in v0.4.0" in content
 
 
 def test_shell_scripts_are_syntactically_valid():

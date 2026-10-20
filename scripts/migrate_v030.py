@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Authenticated, fail-closed migration of the *published* v0.3.0 layout.
+"""Disabled historical migration prototype (not shipped in public v0.4.0).
+
+Retained in source for regression research, but no supported migration exists.
+Its entry point must refuse before any host mutation. Independently review
+and test a future migration implementation before enabling it.
+
+Authenticated, fail-closed migration of the *published* v0.3.0 layout.
 
 Run ONLY from an independently approved, signed v0.4.0 release checkout.
 This root coordinator uses OS Python stdlib and OpenSSL only; it never imports,
@@ -485,6 +491,8 @@ def rollback() -> None:
 
 
 def main() -> None:
+    # This entry point is intentionally unavailable for standalone v0.4.0.
+    raise MigrationError("Historical in-place migration is not supported in public v0.4.0")
     parser = argparse.ArgumentParser()
     parser.add_argument("--legacy-archive", type=Path)
     parser.add_argument("--bundle", type=Path)

@@ -7,7 +7,7 @@
     {"id": "debian", "major": "13"},
     {"id": "almalinux", "major": "10"}
   ],
-  "compatible_from": ["0.3.0"],
+  "compatible_from": [],
   "downgrade_from": [],
   "config_schema": 1,
   "api_schema": 1

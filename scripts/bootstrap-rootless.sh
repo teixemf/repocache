@@ -53,7 +53,15 @@ printf '%s  %s\n' "$4" "$recovery" | sha256sum -c --status ||
 [[ -f "$launcher" && ! -L "$launcher" ]] || { echo 'Invalid launcher source' >&2; exit 1; }
 printf '%s  %s\n' "$2" "$launcher" | sha256sum -c --status ||
   { echo "Launcher hash differs from independently verified fingerprint" >&2; exit 1; }
-[[ -x /usr/sbin/runuser ]] || { echo 'Missing /usr/sbin/runuser (util-linux prerequisite)' >&2; exit 1; }
+# Reject missing OS-owned command prerequisites before useradd or any filesystem
+# mutation. An incomplete util-linux/coreutils/shadow-utils install is not a
+# valid target; never attempt best-effort privileged bootstrap.
+for required in /usr/sbin/runuser /usr/sbin/useradd /usr/bin/install /usr/bin/stat /usr/bin/sha256sum /usr/bin/grep /usr/bin/id; do
+  [[ -x "$required" && ! -L "$required" ]] || {
+    echo "Missing or unsafe OS-owned bootstrap prerequisite: $required" >&2
+    exit 1
+  }
+done
 for path in /opt /opt/repocache-cli /usr/local /usr/local/bin /usr/local/libexec; do
   [[ ! -L "$path" ]] || { echo "Unsafe symlinked system path: $path" >&2; exit 1; }
 done
@@ -73,12 +81,12 @@ done
 if [[ -e /usr/local/bin/repocache || -L /usr/local/bin/repocache ]]; then
   if [[ ! -f /usr/local/bin/repocache || -L /usr/local/bin/repocache ]] ||
       ! grep -Fq 'REPOCACHE ROOTLESS LAUNCHER' /usr/local/bin/repocache; then
-    echo "Foreign/legacy launcher requires reviewed migration; no overwrite" >&2
+    echo "Unmanaged or pre-public launcher detected; in-place migration is unsupported in v0.4.0; refusing overwrite" >&2
     exit 1
   fi
 fi
 if [[ -e /usr/bin/repocache || -L /usr/bin/repocache ]]; then
-  echo "Legacy /usr/bin/repocache detected; migration must be separately reviewed (#55)" >&2
+  echo "Pre-public /usr/bin/repocache detected; in-place migration to v0.4.0 is unsupported" >&2
   exit 1
 fi
 if ! id repocache >/dev/null 2>&1; then
@@ -138,4 +146,4 @@ install -d -o root -g root -m 0755 /usr/local/libexec
 install -o root -g root -m 0644 "$recovery" /usr/local/libexec/repocache-recover.py
 install -o root -g root -m 0755 "$launcher" /usr/local/bin/repocache
 echo "Rootless filesystem bootstrap complete. No release has been installed."
-echo "Next: authenticate the release independently (#47) and use locked offline wheels (#49)."
+echo "Next: independently verify a publisher-signed release and its hash-pinned offline dependencies."

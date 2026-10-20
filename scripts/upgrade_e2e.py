@@ -3,7 +3,9 @@
 This test uses synthetic release fixtures signed with a fresh, ephemeral
 CI-only Ed25519 key. It verifies #47 mechanics and the #48 privilege boundary,
 not production signing custody or #49 offline dependency acceptance.
-It does NOT exercise the actual published v0.3.0 -> v0.4.0 migration (#55).
+It does NOT exercise any actual pre-public in-place migration. The fixture
+explicitly enables a synthetic 0.3.0 -> 0.4.0 transition that the real public
+v0.4.0 policy rejects, solely to test transaction failure/recovery semantics.
 Never run this script on a production host.
 """
 from __future__ import annotations
@@ -126,6 +128,20 @@ def main() -> None:
         check(protected_launcher.stat().st_uid == 0
               and not Path("/usr/bin/repocache").exists(),
               "global launcher is root-owned; no second unmanaged CLI link")
+        # Probe the real launcher ancestors in disposable CI images. A service
+        # account must never accept a globally writable parent of its root-
+        # owned command path, even when the launcher file itself looks safe.
+        launcher_parent = protected_launcher.parent
+        original_mode = launcher_parent.stat().st_mode & 0o777
+        launcher_parent.chmod(0o777)
+        try:
+            result = user_python(
+                old, "from repocache import updater; updater._safe_links()",
+                success=False)
+            check("Unsafe global launcher ancestor" in result.stderr,
+                  "writable global launcher directory rejected before runtime execution")
+        finally:
+            launcher_parent.chmod(original_mode)
         for protected_file in (Path("/usr/local/bin/repocache"),
                                Path("/etc/ssl/repocache-test.key"),
                                Path("/etc/nginx/nginx.conf")):
@@ -233,6 +249,22 @@ def main() -> None:
         current_link = os.readlink(ROOT / "current")
         current_manifest = (ROOT / "installed.json").read_bytes()
 
+        # Native negative test: a root-owned file substituted inside a
+        # service-managed virtualenv cannot be trusted for an update. Fail
+        # closed before changing the previous launcher/manifest.
+        active_entry = ROOT / "current/bin/repocache"
+        os.chown(active_entry, 0, 0)
+        try:
+            invalid_owner = user_python(
+                new, script, "0.4.0", str(new_bundle), str(new_sha),
+                success=False)
+            check("Unsafe installed environment path" in invalid_owner.stderr
+                  and os.readlink(ROOT / "current") == current_link
+                  and (ROOT / "installed.json").read_bytes() == current_manifest,
+                  "unexpected active executable owner rejects update without state mutation")
+        finally:
+            os.chown(active_entry, uid, gid)
+
         changed = folder / new_sha.name
         changed.write_text("0" * 64 + "  " + new_bundle.name + "\n")
         user_python(new, script, "0.4.0", str(new_bundle), str(changed),
@@ -265,13 +297,33 @@ def main() -> None:
         finally:
             active_cli.write_bytes(saved)
             active_cli.chmod(0o755)
+
+        # Same-version operations MUST NOT treat a matching mutable manifest
+        # and the presence of a modified executable as integrity evidence.
+        # Independently authenticated assets rebuild a fresh generation.
+        before_repair = os.readlink(ROOT / "current")
+        changed_manifest = (ROOT / "installed.json").read_bytes()
+        tampered_executable = ROOT / "current/bin/repocache"
+        tamper_sentinel = folder / "old-runtime-executed"
+        tampered_executable.write_text(
+            "#!/bin/sh\\nprintf compromised > " + str(tamper_sentinel) + "\\n")
+        tampered_executable.chmod(0o755)
+        repaired = user_python(new, script, "0.4.0", str(new_bundle), str(new_sha))
+        check(json.loads(repaired.stdout)["status"] == "installed",
+              "same-version signed assets create a new environment, not a no-op")
+        check(os.readlink(ROOT / "current") != before_repair
+              and (ROOT / "installed.json").is_file(),
+              "tampered previous virtualenv is never reused")
+        check(not tamper_sentinel.exists()
+              and cmd("repocache", "--version").stdout.strip().endswith("0.4.0"),
+              "the old altered executable was not executed during signed repair")
         for path, data in protected.items():
             check(path.read_bytes() == data,
                   f"resource unchanged after update/rollback: {path}")
 
     print("PASS: synthetic rootless integration checks completed.")
     print("UNVERIFIED: production key custody (#54), real power-loss durability "
-          "(maintainer-waived #51), real v0.3.0 migration (#55).")
+          "(maintainer-waived #51); historical migrations are unsupported in public v0.4.0.")
 
 
 if __name__ == "__main__":

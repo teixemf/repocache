@@ -36,7 +36,7 @@ def policy():
         "python_max_exclusive": "3.14",
         "targets": [{"id": "debian", "major": "13"},
                     {"id": "almalinux", "major": "10"}],
-        "compatible_from": ["0.3.0"], "downgrade_from": [],
+        "compatible_from": [], "downgrade_from": [],
         "config_schema": 1, "api_schema": 1
     }
 
@@ -69,6 +69,7 @@ def fake_signed_identity(archive_data, manifest_data, signature_data, version):
 def test_complete_archive_matches_manifest(tmp_path):
     blob, sha, builder = archive(tmp_path)
     assert set(builder.FILES) == set(upgrade.RELEASE_FILES)
+    assert "scripts/migrate_v030.py" not in builder.FILES
     upgrade._verify_checksum(blob.read_bytes(), sha.read_bytes(), VERSION)
     src, verified = upgrade._extract_verified(
         blob.read_bytes(), VERSION, tmp_path / "extracted", PREVIOUS, DEBIAN13)
@@ -83,6 +84,19 @@ def test_selected_version_never_bypasses_integrity(tmp_path):
         upgrade._verify_checksum(blob.read_bytes() + b"forgery", sha.read_bytes(), VERSION)
     with pytest.raises(upgrade.UpgradeError, match="SHA-256"):
         upgrade._verify_checksum(blob.read_bytes(), sha.read_bytes().replace(b"0", b"1"), VERSION)
+
+
+def test_first_public_release_refuses_historical_upgrade():
+    standalone = policy()
+    signed_release_policy = json.loads((Path(__file__).resolve().parents[1] /
+                                        "release-policy.json").read_text())
+    assert standalone["compatible_from"] == []
+    assert signed_release_policy == standalone
+    for system in (DEBIAN13, ALMA10):
+        assert upgrade._policy(standalone, VERSION, {"version": "0.0.0"}, system) == standalone
+        assert upgrade._policy(standalone, VERSION, {"version": VERSION}, system) == standalone
+        with pytest.raises(upgrade.UpgradeError, match="Compatibility"):
+            upgrade._policy(standalone, VERSION, {"version": "0.3.0"}, system)
 
 
 def test_explicit_os_support_and_unknown_downgrades():
@@ -103,7 +117,7 @@ def test_explicit_os_support_and_unknown_downgrades():
 
 
 @pytest.mark.parametrize("bad", [
-    {"version": "0.5.0"}, {"schema": 2}, {"compatible_from": []},
+    {"version": "0.5.0"}, {"schema": 2}, {"compatible_from": "0.3.0"},
     {"targets": [{"id": "debian", "major": "12"}]}, {"config_schema": 999}
 ])
 def test_invalid_policy_fails_closed(bad):
@@ -261,13 +275,21 @@ def test_same_version_requires_reauthenticated_bundle_identity(monkeypatch, tmp_
     monkeypatch.setattr(signatures, "verify", fake_signed_identity)
     digest = hashlib.sha256(blob.read_bytes()).hexdigest()
     marker = tmp_path / "repocache"
-    marker.write_text("installed")
+    marker.write_text("tampered-but-present")
     monkeypatch.setattr(updater, "_require_service_account", lambda: None)
     monkeypatch.setattr(updater, "EXECUTABLE", marker)
-    monkeypatch.setattr(updater, "_installed", lambda: {
+    previous_identity = {
         "version": VERSION, "source_digest": "a" * 64,
         "archive_sha256": digest,
-        "wheelhouse_sha256": hashlib.sha256(b"ci-wheelhouse").hexdigest()})
+        "wheelhouse_sha256": hashlib.sha256(b"ci-wheelhouse").hexdigest(),
+        "publisher_key_id": "fixture-only", "release_commit": "a" * 40,
+        "signed_manifest_sha256": hashlib.sha256(b"test-only").hexdigest()}
+    monkeypatch.setattr(updater, "_installed", lambda: previous_identity)
+    installed = []
+    def safe_fresh_install(source, **kwargs):
+        installed.append((str(source), kwargs))
+        return {"status": "installed", "version": VERSION}
+    monkeypatch.setattr(updater, "install_source", safe_fresh_install)
     record = {"version": VERSION, "assets": {
         "archive": {"id": 1, "size": len(blob.read_bytes())},
         "checksum": {"id": 2, "size": len(sha.read_bytes())},
@@ -283,12 +305,21 @@ def test_same_version_requires_reauthenticated_bundle_identity(monkeypatch, tmp_
     monkeypatch.setattr(upgrade, "_download_asset", lambda asset, *args: (
         seen.append(asset["id"]) or data[asset["id"]]))
     result = upgrade.upgrade(system=DEBIAN13)
-    assert result["status"] == "already-installed"
+    assert result["status"] == "installed"
     assert seen == [3, 4, 1, 2, 5]
-    monkeypatch.setattr(updater, "_installed", lambda: {
-        "version": VERSION, "source_digest": "a" * 64})
-    with pytest.raises(upgrade.UpgradeError, match="signed release identity"):
-        upgrade.upgrade(system=DEBIAN13)
+    assert len(installed) == 1
+    assert installed[0][1]["release_identity"]["archive_sha256"] == digest
+    assert installed[0][1]["wheel_lock"].name == "requirements.lock"
+    assert marker.read_text() == "tampered-but-present"  # Never executed.
+    for changed in ("archive_sha256", "wheelhouse_sha256",
+                    "publisher_key_id", "signed_manifest_sha256"):
+        bad = previous_identity.copy()
+        bad[changed] = "0" * 64
+        monkeypatch.setattr(updater, "_installed", lambda bad=bad: bad)
+        with pytest.raises(upgrade.UpgradeError, match="signed release identity"):
+            upgrade.upgrade(system=DEBIAN13)
+    assert len(installed) == 1
+    assert marker.read_text() == "tampered-but-present"
 
 
 def test_unchanged_version_policy_can_be_revalidated_without_false_downgrade():

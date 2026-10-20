@@ -27,6 +27,8 @@ def test_archive_is_reproducible_contains_license_and_every_expected_file(tmp_pa
         assert set(tf.getnames()) == {f"repocache-{tag}/{name}" for name in builder.FILES}
         assert all(m.isfile() and m.uid == m.gid == 0 and m.mtime == 0 for m in tf)
         assert tf.extractfile(f"repocache-{tag}/LICENSE").read() == (ROOT / "LICENSE").read_bytes()
+        guide = "docs/PRODUCTION_EXISTING_NGINX.md"
+        assert tf.extractfile(f"repocache-{tag}/{guide}").read() == (ROOT / guide).read_bytes()
         assert all(".git" not in name.split("/") for name in tf.getnames())
         assert all("tests" not in name.split("/") for name in tf.getnames())
 

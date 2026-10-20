@@ -79,6 +79,11 @@ def build(out, release=False, poison_backend=False):
             raise RuntimeError("Build backend dependency SHA-256 mismatch: " + name)
         backend_lock.append("./build-tools/" + found[0].name +
                             " --hash=sha256:" + expected)
+    # The backend wheels are separately pinned before they can execute.
+    # Preserve rights metadata evidence for the build-time supply chain too.
+    from audit_wheel_licenses import format_inventory
+    print("CI BUILD LICENSE EVIDENCE: " +
+          format_inventory(sorted(build_tools.glob("*.whl"))).strip(), flush=True)
     lockfile = out / "build-tools.lock"
     lockfile.write_text("\n".join(backend_lock) + "\n")
     run(interpreter, "-m", "pip", "install", "--no-index", "--no-deps",
@@ -207,6 +212,11 @@ def verify(out, release=False):
         # Compare every wheel name/version with the installed graph. This
         # catches unexpected higher versions and missing transitive wheels.
         files = sorted((lock.parent / "wheels").glob("*.whl"))
+        from audit_wheel_licenses import format_inventory
+        # The wheelhouse digest and per-file SHA-256 were verified above.
+        # Report license evidence from the *installed* native artifact set,
+        # explicitly leaving legal compatibility for maintainer review.
+        print("CI LICENSE EVIDENCE: " + format_inventory(files).strip(), flush=True)
         expected_versions = {}
         for file in files:
             parts = file.name.split("-")
@@ -225,7 +235,20 @@ def verify(out, release=False):
             if actual_versions.get(name) != version:
                 raise RuntimeError("Offline installed dependency graph mismatch: " + name)
         assert "REPOCACHE" in run(env / "bin/repocache", "--version", env=poison)
-    print("PASS: completely offline pip installation, wheel hashes and CLI for " + native)
+        # Test the actual release-wheel-installed Textual application on each
+        # OS-native target, not an imported source checkout. NGINX collection
+        # is mocked within the headless smoke; network is disabled by Docker.
+        tui_result = run(py, "/src/scripts/smoke_tui.py", env=poison)
+        if "PASS: Installed Textual TUI starts and switches screens headlessly." not in tui_result:
+            raise RuntimeError("Installed native Textual UI smoke did not complete")
+        print("PASS: native offline installed Textual TUI starts and navigates on " + native)
+        # Run the defensive archive matrix against the installed, verified
+        # release wheel, in this same network-isolated native OS container.
+        hostile = run(py, "/src/scripts/ci_hostile_archive.py", env=poison)
+        if "PASS: installed native release/wheelhouse hostile archive refusal" not in hostile:
+            raise RuntimeError("Native hostile archive regression did not execute")
+        print("PASS: native installed hostile archive safety tests on " + native)
+    print("PASS: completely offline pip installation, wheel hashes, CLI and TUI for " + native)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

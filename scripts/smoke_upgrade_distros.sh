@@ -15,7 +15,7 @@ mkdir -p "$work/artifacts" "$work/legacy" "$work/next"
 for target in "$work/legacy" "$work/next"; do
   cp -a "$repo/README.md" "$repo/CHANGELOG.md" "$repo/LICENSE" "$repo/pyproject.toml" \
     "$repo/install.sh" "$repo/platform_check.py" "$repo/release-policy.json" \
-    "$repo/src" "$repo/client" "$repo/scripts" "$repo/deps" "$target/"
+    "$repo/src" "$repo/client" "$repo/scripts" "$repo/deps" "$repo/docs" "$target/"
 done
 python3 - "$work/legacy" <<'PY'
 import json
@@ -35,7 +35,19 @@ data["version"] = "0.3.0"
 policy.write_text(json.dumps(data, indent=2) + "\n")
 PY
 python3 "$work/legacy/scripts/build_release.py" --tag v0.3.0 --output "$work/artifacts"
-# The target version uses the actual public v0.4.0 sources.
+# The target is a synthetic CI-only v0.4.0 fixture. Its allowlist is
+# deliberately modified to exercise crash/recovery upgrade paths. This policy
+# MUST NOT be used in, or mistaken for, the signed public v0.4.0 release.
+python3 - "$work/next" <<'PY'
+import json
+import sys
+from pathlib import Path
+policy = Path(sys.argv[1]) / "release-policy.json"
+data = json.loads(policy.read_text())
+assert data["version"] == "0.4.0" and data["compatible_from"] == []
+data["compatible_from"] = ["0.3.0"]  # Synthetic fixture ONLY.
+policy.write_text(json.dumps(data, indent=2) + "\n")
+PY
 
 python3 "$work/next/scripts/build_release.py" --tag v0.4.0 --output "$work/artifacts"
 (cd "$work/artifacts" && sha256sum -c repocache-v0.3.0.tar.gz.sha256 &&
