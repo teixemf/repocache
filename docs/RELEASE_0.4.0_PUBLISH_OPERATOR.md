@@ -51,11 +51,17 @@ Record the precise GitHub acceptance comment/authorization for each:
    execution of offline Ed25519 owner signing and publication of actual
    release assets each need separate explicit affirmative maintainer
    approval. No previous merge consent covers these actions.
-7. **NOT VERIFIED / after publication:** carry out issue #65 actual
-   anonymous public discovery, signed installs and negative recovery on
-   disposable Debian 13 and AlmaLinux 10. Post-publication criteria cannot
-   truthfully be PASS before real immutable assets exist and must not be a
-   circular prerequisite to corrections/approved earlier-stage merges.
+7. **PASS / prepublication technical gate:** [#65](https://github.com/teixemf/repocache/issues/65)
+   has 7/7 maintainer-approved *replacement prepublication* criteria PASS on
+   protected release SHA `1f5c70e3b230865853470be863ab2ed5fd449e1c`,
+   with actual native Debian13/Alma10 offline/signed-fixture CI **9/9 PASS**:
+   [Tests](https://github.com/teixemf/repocache/actions/runs/39486622574),
+   [offline/signing](https://github.com/teixemf/repocache/actions/runs/39486622633),
+   [native rollback](https://github.com/teixemf/repocache/actions/runs/39486622677).
+   The seven *original* actual public-release tests were separately preserved
+   under [#71](https://github.com/teixemf/repocache/issues/71) for execution
+   **immediately after** owner-authorized publication; they are NOT VERIFIED.
+   No alpha is required or can replace verification of official v0.4.0 assets.
 
 No private signing key, passphrase, private credential or unsigned developer
 checkout belongs in ordinary CI, PR artifacts, logs, issue comments or Git.
@@ -216,14 +222,17 @@ signed manifest hash and publisher key ID, provenance statement/signature,
 reviewed tag/main commit, actions run ID and run attempt, actual release
 immutability evidence, and security reporting status. Keep secrets private.
 
-[Issue #65](https://github.com/teixemf/repocache/issues/65) then requires
+[Issue #71](https://github.com/teixemf/repocache/issues/71) then requires
 live **anonymous** `repocache update check` and `repocache update list`,
 real selected version public-download install, same-version repair and
 failure/rollback on clean, disposable Debian 13/Python 3.13 and AlmaLinux
 10/Python 3.12. Test actual published assets, not CI-only fixtures.
 
-Every issue's original acceptance evidence must be PASS before closing the
-v0.4.0 milestone. Real booted systemd/SELinux and physical energy loss remain
+Every **applicable prepublication issue** must have evidence-backed PASS
+before promoting/publishing v0.4.0. The original seven real-public-release
+criteria were transferred unwaived from closed #65 to OPEN #71, under the
+v0.5.0 milestone for tracking, and **must be exercised immediately after**
+publication; they cannot be used as a prepublication circular dependency. Real booted systemd/SELinux and physical energy loss remain
 explicitly deferred **NOT TESTED**, never reported as successful tests.
 
 **STOP conditions:** any unreviewed source/tag/run, missing asset, wrong
