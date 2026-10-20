@@ -19,7 +19,7 @@ class LicenseEvidenceError(ValueError):
     """Required wheel distribution or bounded rights metadata is invalid."""
 
 
-MAX_METADATA = 131_072
+MAX_METADATA = 1_000_000
 MAX_LICENSE_FILES = 64
 MAX_LICENSE_FILE_BYTES = 1_000_000
 
@@ -33,8 +33,10 @@ def audit_wheel(path: Path) -> dict:
             entries = wheel.infolist()
             metadata = [entry for entry in entries
                         if entry.filename.endswith(".dist-info/METADATA")]
-            if len(metadata) != 1 or metadata[0].file_size > MAX_METADATA:
-                raise LicenseEvidenceError("Wheel must have one bounded distribution METADATA")
+            if len(metadata) != 1:
+                raise LicenseEvidenceError("Wheel metadata count invalid: " + path.name)
+            if metadata[0].file_size > MAX_METADATA:
+                raise LicenseEvidenceError("Wheel metadata too large: " + path.name)
             folder = metadata[0].filename.removesuffix("METADATA")
             if not folder.endswith(".dist-info/"):
                 raise LicenseEvidenceError("Invalid wheel metadata path")
