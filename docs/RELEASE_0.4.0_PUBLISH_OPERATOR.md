@@ -13,19 +13,49 @@ provision NGINX or upgrade private/pre-public installations.
 
 Record the precise GitHub acceptance comment/authorization for each:
 
-1. Merge documentation PR #66 into candidate, then nine required post-merge CI
-   jobs on the exact candidate SHA (**not yet approved**).
-2. Merge candidate PR #41 into `release/v0.4.0`, then nine required
-   release-branch CI jobs on the actual integrated SHA and close #11/#12 only
-   after original criteria PASS (**not yet approved**).
-3. Final approved license/NOTICE redistribution obligations and source-history
-   privacy check (#1/#6); effective confidential vulnerability reporting
-   confirmed privately; updated signed-source security gate (#4/#36/#39).
-4. Merge the prepared **release-to-main** PR #67, with its own exact-head
-   security review, all required checks and **separate explicit maintainer
-   approval** (**not yet approved**).
-5. **Separately authorize** tag creation, then offline Ed25519 signing, then
-   release asset publication. No previous approval covers these actions.
+1. **PASS — complete:** documentation [PR #66](https://github.com/teixemf/repocache/pull/66) was
+   separately owner-approved and merged into the candidate; nine exact-head
+   required CI checks passed on the resulting source commit.
+2. **PASS — complete:** candidate [PR #41](https://github.com/teixemf/repocache/pull/41) was
+   separately owner-approved and squash-merged to `release/v0.4.0`;
+   original issue #11 and owner-approved revised issue #12 both have
+   traceable acceptance PASS and are CLOSED. Source acceptance after those
+   integrations was revalidated on the actual release branch.
+3. **PASS — correction scope, not legal clearance:** [PR #68](https://github.com/teixemf/repocache/pull/68)
+   was owner-authorized and merged, carrying verbatim mdurl 0.1.2 MIT/Joyent
+   and shellingham 1.5.4 ISC notices in the authenticated release archive,
+   without rewriting pinned wheels. Exact protected release branch SHA:
+   `f52c13e4b532d80fa657cc6c5e336d4849ee4497`.
+   The nine mandatory **post-integration push jobs all PASS**:
+   [Tests](https://github.com/teixemf/repocache/actions/runs/39478901928),
+   [offline](https://github.com/teixemf/repocache/actions/runs/39478901879),
+   [rollback](https://github.com/teixemf/repocache/actions/runs/39478901941).
+   If this runbook is edited later, recheck the latest release-branch SHA.
+4. **NOT VERIFIED / pre-main gate:** complete human-approved
+   license/NOTICE redistribution and privacy/source provenance evidence
+   (#1/#6) for *all* final third-party wheels, embedded/vendored code and
+   actual source archive; verify the effective confidential reporting
+   channel. The owner reconfirmed that Private Vulnerability Reporting and
+   Release Immutability are enabled in the public repository settings.
+   These statements are **owner attestations**; confidential end-to-end
+   reporting and immutable published-asset behavior have **not** been
+   independently tested. Record the remaining publication-trust evidence
+   under #4/#36/#39.
+5. **NOT AUTHORIZED:** separately review and approve the prepared
+   **release-to-main** [PR #67](https://github.com/teixemf/repocache/pull/67)
+   only after its own head/base, nine required checks, source-rights
+   signoff and all blocking reviews are complete. PR #67 is a
+   **protected-main promotion**, not a correction PR; prior permission to
+   integrate correction PRs does not authorize it.
+6. **NOT AUTHORIZED / separate operations:** version tag creation,
+   execution of offline Ed25519 owner signing and publication of actual
+   release assets each need separate explicit affirmative maintainer
+   approval. No previous merge consent covers these actions.
+7. **NOT VERIFIED / after publication:** carry out issue #65 actual
+   anonymous public discovery, signed installs and negative recovery on
+   disposable Debian 13 and AlmaLinux 10. Post-publication criteria cannot
+   truthfully be PASS before real immutable assets exist and must not be a
+   circular prerequisite to corrections/approved earlier-stage merges.
 
 No private signing key, passphrase, private credential or unsigned developer
 checkout belongs in ordinary CI, PR artifacts, logs, issue comments or Git.

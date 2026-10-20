@@ -1,5 +1,45 @@
 # v0.4.0 Release Integration and Acceptance
 
+## Current protected-branch checkpoint (2026-10-20)
+
+- **PASS / integrated** — separately approved PRs #66, #41 and #68 have
+  been merged to the first-public release integration path. The complete
+  protected `release/v0.4.0` source commit at this checkpoint is
+  `f52c13e4b532d80fa657cc6c5e336d4849ee4497`.
+- **PASS / nine exact-branch jobs** — actual protected-branch *push* runs:
+  [Python, native bundles 4/4](https://github.com/teixemf/repocache/actions/runs/39478901928),
+  [offline and signed-fixture wheelchain 3/3](https://github.com/teixemf/repocache/actions/runs/39478901879),
+  [Debian13/Alma10 rootless update/rollback 2/2](https://github.com/teixemf/repocache/actions/runs/39478901941).
+  Python 3.12 and 3.13 each ran 401 full tests plus a separately required
+  105-case security gate successfully. These are not physical powercut or
+  booted systemd/SELinux tests, and fixture publisher keys are not release keys.
+- **PASS / issue evidence** — #11 complete-archive identity and #12 protected
+  branch integration are CLOSED. The #12 historical branch-ref-state criterion
+  was expressly replaced with a reproducible nondivergent public-main ancestry
+  invariant by explicit owner approval; historical branch-ref creation
+  state itself was never proven or retroactively asserted.
+- **NOT VERIFIED / pre-main** — #1 and #6 require final human rights/notice
+  approval for the exact redistributed wheels/source members, source
+  provenance/privacy confidence and functional confidential reporting.
+  The owner confirms both Private Vulnerability Reporting and Enable Release
+  Immutability switched on, but the connected tool cannot independently read
+  those toggles or test an end-to-end confidential report.
+- **NOT AUTHORIZED** — draft PR #67 promotion to protected `main`, tag
+  creation, offline owner Ed25519 signing and publication. Conditional
+  authorization for **correction PRs** does not extend to PR #67 or those
+  publication actions.
+- **NOT VERIFIED / later stages** — issues #4, #36, #39 require operational
+  tag, provenance, signature and immutable asset evidence, and #65 requires
+  real public anonymous download/install/repair and negative tests *after*
+  a separately approved published GitHub Release exists. No release is
+  published as of this checkpoint.
+
+Any later source change invalidates the exact-SHA snapshot above. Inspect
+the current GitHub refs and all nine required checks again. The historical
+snapshots in this document describe **past** states, not the live source
+branch or approval status.
+
+
 This is a fresh public repository. `main` is protected by policy; v0.4.0 code is proposed in **draft PRs** until acceptance. **Intended production scope: a CLI/TUI frontend for a separately installed and configured NGINX repository cache on Debian 13 or AlmaLinux 10**, not an NGINX installer. Production-readiness claims must distinguish executed CI from real-host validation; see [existing-NGINX operations](PRODUCTION_EXISTING_NGINX.md). No previous private Git history, protected ref, workflow log or release asset is imported.
 
 ## Phased acceptance for the first public release

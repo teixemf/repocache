@@ -1,5 +1,47 @@
 # v0.4.0 staged acceptance — source integration, publishing, and live verification
 
+## Live integration status at 2026-10-20 — later than historical A/A2 snapshots
+
+**A and A2 are COMPLETE for the approved `release/v0.4.0` source**, exact
+protected release commit
+`f52c13e4b532d80fa657cc6c5e336d4849ee4497`: [4/4
+Tests](https://github.com/teixemf/repocache/actions/runs/39478901928),
+[3/3 signed/offline](https://github.com/teixemf/repocache/actions/runs/39478901879),
+[2/2 Debian/Alma recovery](https://github.com/teixemf/repocache/actions/runs/39478901941)
+all **completed SUCCESS** on the actual branch push; both Python 3.12
+and 3.13 have **401 general and 105 explicit security test PASS**.
+PRs #66/#41/#68 are owner-authorized and merged; #11/#12 are CLOSED.
+This is the **source/CI acceptance status only**, not source third-party rights
+certification or permission to publish.
+
+**B — pre-`main`: NOT VERIFIED.** The maintainer confirms both GitHub
+Release Immutability and Private Vulnerability Reporting enabled, but the
+actual confidential channel and post-publication immutability are not
+independently tested. The final third-party licenses, notices, redistributed
+source and wheelhouse, any vendored code, source-privacy provenance and
+human authorization require review under #1/#6. Original-tag mdurl/Joyent
+and shellingham license notices are now included in the authenticated source
+archive. The unchanged wheels' legal redistribution rights are not established
+merely by metadata or these added notices. PR #67 remains DRAFT and
+requires **separate explicit authorization** for promotion to `main`.
+
+**C — after separately authorized tag/sign/publish: NOT VERIFIED.**
+Tag creation, offline owner-key Ed25519 signing, official immutable release
+asset creation, signed provenance and exact hashes belong to #4/#36/#39.
+The connected owner has an administrator role bypass for protected `v*`
+tags; this is an operational risk requiring custody discipline, not an
+unconditional tag immutability guarantee.
+
+**D — post publication: NOT VERIFIED.** #65 needs real anonymous GitHub
+API/asset download and actual signed installation/repair on disposable
+Debian 13/AlmaLinux 10, distinct from signed test-fixture CI. This cannot
+precede a real release; it is not a circular gate for earlier correction PRs.
+
+The older Phase A and A2 checklists below describe the **original staged
+acceptance plan at the earlier cited commit**. Do not treat their historical
+phrasing (`not yet merged`, `candidate pending`) as the current GitHub status.
+
+
 **Status:** proposed documented acceptance classification; reviewed source candidate
 `efcd81a19c77c661d9fe7ab7a7445b014b5fce3a` as of 2026-10-20.
 This file records phase ownership and evidence; it is **not** a merge approval,
