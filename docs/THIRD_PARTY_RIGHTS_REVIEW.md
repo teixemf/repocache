@@ -1,5 +1,18 @@
 # Third-party rights and published-artifact review — v0.4.0
 
+## Maintainer acceptance and protected-branch CI checkpoint — 2026-10-20
+
+[Issue #6](https://github.com/teixemf/repocache/issues/6) is **closed for pre-main source/community/rights-policy acceptance**, with its [original five-criterion PASS matrix](https://github.com/teixemf/repocache/issues/6) bound to protected `release/v0.4.0` commit `7ba8288cb57afaac796f4d8c0d266b5dd9fd67b5`.
+
+In a four-question direct review, the maintainer confirmed (1) authority over original REPOCACHE source and Apache-2.0 release, without known conflicting employer/customer/third-party claims; (2) acceptance of the documented MIT/ISC/BSD-2-Clause/PSF-2.0 third-party licensing/redistribution under original grants and required notices; (3) successful access to the private vulnerability reporter form from a non-administrator GitHub account, **without submitting a report**; and (4) no known unauthorized disclosure of credentials, customer information or private infrastructure in the public source/docs/history. These are maintainer attestations, **not an independent legal opinion or forensic secrecy guarantee**.
+
+[PR #68](https://github.com/teixemf/repocache/pull/68) and [PR #70](https://github.com/teixemf/repocache/pull/70) were **merged** into the release branch: the original upstream `mdurl`/Joyent and `shellingham` notices accompany **both** the authenticated source archive and the independently downloadable wheelhouse. Their presence and byte equality are checked by the candidate build/verification tests; the original pinned wheels are not altered. Post-merge [tests 4/4](https://github.com/teixemf/repocache/actions/runs/39495716866), [native offline 3/3](https://github.com/teixemf/repocache/actions/runs/39495716843) and [rootless rollback 2/2](https://github.com/teixemf/repocache/actions/runs/39495716845) completed **9/9 SUCCESS** at the exact SHA. Python 3.12 and 3.13 logs show 407 general plus 105 mandatory security tests passed per interpreter.
+
+**Important scope boundary:** the historical pending-PR and pre-owner-approval statements below are retained as earlier candidate evidence and are superseded by this checkpoint where they disagree. Technical wheel-license inventory and maintainer acceptance do not establish per-byte inspection of every embedded or vendored copyright text, independent legal counsel review, or protection of future **actual** release assets. Final publisher tag, owner-held real Ed25519 signing, signed artifact/SBOM/license/notice inspection, immutability, PR #67 protected-main promotion and public download checks remain separately gated in #4/#36/#39/#71. Closure of #6 alone does **not** authorize any merge, tag, signature or publication.
+
+---
+
+
 ## Evidence review — 2026-10-20, protected release base `ed1ebc54ff67027af15b886c5489c7dea7b53625`
 
 **Assessment scope:** exact native Debian 13/Python 3.13 and AlmaLinux
@@ -84,12 +97,12 @@ notice *paths*, not a per-byte, per-file copyright audit. Any unexpected
 vendored code or license exceptions discovered during final archive
 inspection must stop publication.
 
-### Correction required before final rights clearance
+### Historical pre-PR #70 wheelhouse notice gap (now corrected)
 
-An authenticated source archive already carries the exact original notices
-for mdurl and shellingham, but the wheelhouse is a **separate GitHub Release
-asset** and may be downloaded by itself. Therefore *source-only* placement
-does not adequately establish independent wheelhouse NOTICE delivery.
+Before PR #70, an authenticated source archive carried exact original notices
+for mdurl and shellingham, but the wheelhouse was a separate planned GitHub
+Release asset that could be downloaded by itself. *Source-only* placement
+therefore did not establish independent wheelhouse NOTICE delivery.
 
 [Correction PR #70](https://github.com/teixemf/repocache/pull/70)
 adds an exact copy of `THIRD_PARTY_NOTICES.md` to the wheelhouse TAR,
@@ -97,10 +110,10 @@ without changing any `.whl` byte. The strict verifier must require a
 bounded, valid UTF-8 notice, and the signed-candidate verifier must compare
 the wheelhouse notice against the source archive's reviewed notice. A
 separate wheelhouse signed SHA-256 binds the notice bytes, so a missing or
-modified file fails. **This paragraph describes a proposed correction until
-PR #70 is actually CI-PASS, reviewed and merged**; previous source CI does not
-verify the revised wheelhouse. Do not publish independent wheelhouse assets
-without accompanying notices.
+modified file fails. **PR #70 was reviewed and merged**, and protected release branch native CI
+subsequently passed all nine required checks at the checkpoint above.
+Do not publish any new wheelhouse asset without independently verifying that
+its final notice bytes and signed SHA-256 match the approved source and policy.
 
 ### Current publicly verifiable source privacy inventory
 
@@ -145,8 +158,10 @@ as an independent forensic guarantee here.
 **Decision:** technical licensing patterns and published terms are
 consistent with permitted **unchanged** third-party wheel redistribution
 *provided all mandatory notices really travel with each asset*.
-The listed condition is being remediated; rights/title and final
-publisher-asset confirmation remain **NOT VERIFIED**. Do not label an
+The notice-delivery condition was remediated by merged PR #70. The maintainer
+has accepted the documented source ownership and third-party licensing policy
+for this bounded candidate; independent legal certification and final publisher
+asset verification are **NOT VERIFIED**. Do not label an
 AI-produced rights review an independent legal opinion, do not close
 issue #6 without all original criteria PASS, and do not promote PR #67
 until the issue #1/#6 pre-main acceptance gate is explicitly resolved.
