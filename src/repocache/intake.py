@@ -139,12 +139,8 @@ class _LocalHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         # Proxy and application must never disagree on ambiguous framed
         # requests or duplicate signed headers (request smuggling).
-        required = ("Content-Length", "Content-Type", "X-Repocache-Key-ID",
-                    "X-Repocache-Timestamp", "X-Repocache-Nonce",
-                    "X-Repocache-Signature")
         if (self.headers.get_all("Transfer-Encoding") or
-                any(len(self.headers.get_all(name, [])) != 1 or
-                    len(self.headers.get(name, "")) > 128 for name in required) or
+                len(self.headers.get_all("Content-Length", [])) != 1 or
                 len(self.headers) > 24):
             self.close_connection = True
             self._reply(400, {"error": "invalid_headers"}, {})
@@ -154,6 +150,14 @@ class _LocalHandler(BaseHTTPRequestHandler):
                 int(size) == 0 or int(size) > 65536):
             self.close_connection = True
             self._reply(413, {"error": "invalid_size"}, {})
+            return
+        signed_headers = ("Content-Type", "X-Repocache-Key-ID",
+                          "X-Repocache-Timestamp", "X-Repocache-Nonce",
+                          "X-Repocache-Signature")
+        if any(len(self.headers.get_all(name, [])) != 1 or
+               len(self.headers.get(name, "")) > 128 for name in signed_headers):
+            self.close_connection = True
+            self._reply(400, {"error": "invalid_headers"}, {})
             return
         try:
             body = self.rfile.read(int(size))
