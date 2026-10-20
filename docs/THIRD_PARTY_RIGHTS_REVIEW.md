@@ -104,14 +104,13 @@ for mdurl and shellingham, but the wheelhouse was a separate planned GitHub
 Release asset that could be downloaded by itself. *Source-only* placement
 therefore did not establish independent wheelhouse NOTICE delivery.
 
-[Correction PR #70](https://github.com/teixemf/repocache/pull/70)
-adds an exact copy of `THIRD_PARTY_NOTICES.md` to the wheelhouse TAR,
-without changing any `.whl` byte. The strict verifier must require a
-bounded, valid UTF-8 notice, and the signed-candidate verifier must compare
-the wheelhouse notice against the source archive's reviewed notice. A
-separate wheelhouse signed SHA-256 binds the notice bytes, so a missing or
-modified file fails. **PR #70 was reviewed and merged**, and protected release branch native CI
-subsequently passed all nine required checks at the checkpoint above.
+[Merged correction PR #70](https://github.com/teixemf/repocache/pull/70)
+added an exact copy of `THIRD_PARTY_NOTICES.md` to the wheelhouse TAR,
+without modifying any `.whl` byte. The strict verifier requires a bounded,
+valid UTF-8 notice and the signed-candidate verifier compares its bytes with
+the source archive's reviewed notice. An archive-hash mismatch or modified
+notice fails closed. **PR #70 was reviewed and merged**, and protected release
+branch native CI subsequently passed all nine required checks at the checkpoint above.
 Do not publish any new wheelhouse asset without independently verifying that
 its final notice bytes and signed SHA-256 match the approved source and policy.
 
@@ -141,19 +140,19 @@ as an independent forensic guarantee here.
 
 ### Release blockers that cannot be inferred from license metadata
 
-1. **Origin/title:** only the maintainer/source owner can attest it owns
-   or has sufficient permission for all *original* REPOCACHE private-era
-   source imported into the new public Apache-2.0 project. AI drafting
-   and a new Git root do **not** transfer third-party copyright.
-2. **Effective reporting:** the owner confirms private reporting enabled;
-   the connected tooling cannot open the reporter-only confidential
-   intake end-to-end. An actual external reporter view of
-   `Security → Advisories → Report a vulnerability` is required
-   (opening the private form without submitting fabricated vulnerabilities).
-3. **Final real assets:** reconcile final post-merge signed source and
-   wheelhouse digests, runtime wheel contents, notices and provenance only
-   once an owner-authorized publisher creates them. Any new dependency
-   or NOTICE bytes requires new audit and signed hashes.
+1. **Origin/title — owner-accepted for this source candidate:** the maintainer
+   attested sufficient rights to publish original REPOCACHE source under
+   Apache-2.0, without known conflicting claims. AI drafting and an independent
+   public Git root do **not** transfer third-party copyright or establish
+   independent statutory title certification.
+2. **Effective reporting — reporter-side form verified:** the maintainer
+   opened `Security → Advisories → Report a vulnerability` using a non-admin
+   GitHub account. A completed private report, maintainer delivery and
+   operational response remain **NOT TESTED**; no fabricated report is required.
+3. **Final real assets — NOT VERIFIED:** reconcile the actual owner-signed
+   source and wheelhouse digests, runtime wheel contents, notices and
+   provenance only after separately authorized publishing. Any dependency
+   or notice change requires renewed audit and newly signed hashes.
 
 **Decision:** technical licensing patterns and published terms are
 consistent with permitted **unchanged** third-party wheel redistribution
@@ -161,10 +160,11 @@ consistent with permitted **unchanged** third-party wheel redistribution
 The notice-delivery condition was remediated by merged PR #70. The maintainer
 has accepted the documented source ownership and third-party licensing policy
 for this bounded candidate; independent legal certification and final publisher
-asset verification are **NOT VERIFIED**. Do not label an
-AI-produced rights review an independent legal opinion, do not close
-issue #6 without all original criteria PASS, and do not promote PR #67
-until the issue #1/#6 pre-main acceptance gate is explicitly resolved.
+asset verification remain **NOT VERIFIED**. This AI-assisted engineering
+review is not an independent legal opinion. Although #1 and #6 are closed
+for their bounded pre-main source acceptance, **PR #67 remains draft**:
+its separate exact-head review, GitHub gates and explicit owner merge
+approval are required before protected-main promotion.
 
 ---
 
@@ -228,23 +228,23 @@ heuristic scan reviewed all 111 reachable public commits' file patches on
 This does not replace a trusted full-history/asset/provenance scanner or
 human inspection and is not independent audit certification.
 
-## Proposed source-bundled notices (review required)
+## Integrated source and independent wheelhouse notices
 
-[The notice proposal](../THIRD_PARTY_NOTICES.md) carries exact version-tagged
-upstream MIT/ISC copyright and permission texts for `mdurl 0.1.2` and
-`shellingham 1.5.4`, plus the upstream `mdurl` transitive Joyent notice.
-The source archive builder and strict updater allowlist must both include
-this file so release authentication covers these bytes. The existing hashed
-wheels are **not rewritten**. The upstream tag provenance is documented
-in that file; notices were fetched from upstream GitHub sources, not
-reconstructed from SPDX shorthand. The build-only `wheel 0.45.1` is
-tracked separately in the SBOM and must be assessed according to actual
-redistribution.
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) contains exact
+version-tagged upstream MIT/ISC copyright and permission texts for
+`mdurl 0.1.2` and `shellingham 1.5.4`, plus the transitive mdurl Joyent
+attribution. Both the source archive and independent wheelhouse include
+the reviewed notice through the merged, authenticated builder/verifier
+allowlists. Original hash-pinned `.whl` bytes are **not rewritten**. The
+upstream license-tag provenance is recorded in the notice document; the
+texts were taken from upstream, not reconstructed from SPDX shorthand.
+Build-only `wheel 0.45.1` remains separately recorded in the SBOM, rather
+than being asserted to ship in the runtime wheelhouse.
 
-This remediation is a proposed technical notice-delivery mechanism,
-**not** a finding that all redistribution obligations or third-party rights
-have been independently reviewed and accepted. Confirm that **all final
-published assets** are provided together as required by license terms.
+The maintainer accepted these documented redistribution conditions for
+the bounded source candidate; this is **not** independent legal clearance
+or evidence for not-yet-created actual publisher artifacts. Inspect final
+signed assets to confirm copyright notices accompany each distribution.
 
 ## Manual acceptance before release
 
@@ -272,6 +272,9 @@ published assets** are provided together as required by license terms.
   Ed25519 key fingerprint and provenance against the reviewed `main` commit.
   Store sanitized results in the v0.4.0 release acceptance issue.
 
-Until all relevant items above have inspected evidence, rights and publication
-acceptance remain **NOT VERIFIED**. The deterministic CI/license inventory is
-not an independent legal review or a production NGINX/systemd/SELinux test.
+Until the publication-stage checks above have reproducible evidence, actual
+signed-asset notice delivery, release immutability and publication acceptance
+remain **NOT VERIFIED**. The source/maintainer rights-policy acceptance in #6
+is complete within its documented scope; the deterministic CI/license
+inventory is not an independent legal opinion or a production
+NGINX/systemd/SELinux test.
