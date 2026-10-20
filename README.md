@@ -40,5 +40,5 @@ Run as a regular user. Do not run installation, migration or rollback experiment
 
 ## Community and security
 
-See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SUPPORT.md](SUPPORT.md). Vulnerabilities must be reported privately, not in public issues. All changes require evidence against documented acceptance criteria and explicit maintainer merge approval.
+See [LICENSE](LICENSE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and [SUPPORT.md](SUPPORT.md). Vulnerabilities must be reported privately, not in public issues. All changes require evidence against documented acceptance criteria and explicit maintainer merge approval.
 

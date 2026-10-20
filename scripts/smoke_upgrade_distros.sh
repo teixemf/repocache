@@ -13,7 +13,7 @@ mkdir -p "$work/artifacts" "$work/legacy" "$work/next"
 # This is a synthetic *test-only* old-version fixture generated from the
 # current reviewed code. It is NOT the historical v0.3.0 release.
 for target in "$work/legacy" "$work/next"; do
-  cp -a "$repo/README.md" "$repo/CHANGELOG.md" "$repo/LICENSE" "$repo/pyproject.toml" \
+  cp -a "$repo/README.md" "$repo/CHANGELOG.md" "$repo/LICENSE" "$repo/THIRD_PARTY_NOTICES.md" "$repo/pyproject.toml" \
     "$repo/install.sh" "$repo/platform_check.py" "$repo/release-policy.json" \
     "$repo/src" "$repo/client" "$repo/scripts" "$repo/deps" "$repo/docs" "$target/"
 done

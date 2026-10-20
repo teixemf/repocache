@@ -60,6 +60,24 @@ heuristic scan reviewed all 111 reachable public commits' file patches on
 This does not replace a trusted full-history/asset/provenance scanner or
 human inspection and is not independent audit certification.
 
+## Proposed source-bundled notices (review required)
+
+[The notice proposal](../THIRD_PARTY_NOTICES.md) carries exact version-tagged
+upstream MIT/ISC copyright and permission texts for `mdurl 0.1.2` and
+`shellingham 1.5.4`, plus the upstream `mdurl` transitive Joyent notice.
+The source archive builder and strict updater allowlist must both include
+this file so release authentication covers these bytes. The existing hashed
+wheels are **not rewritten**. The upstream tag provenance is documented
+in that file; notices were fetched from upstream GitHub sources, not
+reconstructed from SPDX shorthand. The build-only `wheel 0.45.1` is
+tracked separately in the SBOM and must be assessed according to actual
+redistribution.
+
+This remediation is a proposed technical notice-delivery mechanism,
+**not** a finding that all redistribution obligations or third-party rights
+have been independently reviewed and accepted. Confirm that **all final
+published assets** are provided together as required by license terms.
+
 ## Manual acceptance before release
 
 - [ ] For the **exact final signed wheelhouse hash**, read the license text and

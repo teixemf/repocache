@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
-    "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml", "install.sh", "platform_check.py", "release-policy.json",
+    "README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "pyproject.toml", "install.sh", "platform_check.py", "release-policy.json",
     "docs/PRODUCTION_EXISTING_NGINX.md",
     "src/repocache/__init__.py", "src/repocache/cli.py",
     "src/repocache/core.py", "src/repocache/catalog.py", "src/repocache/rendering.py",
