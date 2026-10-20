@@ -79,6 +79,37 @@ test ! -e /usr/local/bin/repocache-client
 echo "PASS: invalid native client preflight refused before writing managed state"
 launcher_sha="$(sha256sum scripts/repocache-launcher.sh | cut -d " " -f1)"
 recovery_sha="$(sha256sum src/repocache/recovery.py | cut -d " " -f1)"
+# Missing native prerequisites must fail before privileged bootstrap creates
+# accounts, managed state or launchers. All mutations are disposable-container
+# probes, with each OS binary restored before normal bootstrap.
+for missing in /usr/bin/python3 /usr/sbin/runuser /usr/bin/install; do
+  mv "$missing" "$missing.repocache-prereq-probe"
+  if /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha" > /tmp/rejected-prerequisite.log 2>&1; then
+    mv "$missing.repocache-prereq-probe" "$missing"
+    echo "Missing native bootstrap prerequisite unexpectedly accepted: $missing" >&2
+    exit 1
+  fi
+  mv "$missing.repocache-prereq-probe" "$missing"
+  test ! -e /opt/repocache-cli
+  test ! -e /usr/local/bin/repocache
+  if id repocache >/dev/null 2>&1; then
+    echo "Service user created despite missing bootstrap prerequisite" >&2
+    exit 1
+  fi
+  echo "PASS: missing native bootstrap prerequisite refused before mutation"
+done
+# A missing coreutils command must also prevent partial client installation.
+mv /usr/bin/install /usr/bin/install.repocache-prereq-probe
+if /bin/bash client/install.sh --server https://cache.example.org > /tmp/rejected-client-prerequisite.log 2>&1; then
+  mv /usr/bin/install.repocache-prereq-probe /usr/bin/install
+  echo "Missing client installer prerequisite unexpectedly accepted" >&2
+  exit 1
+fi
+mv /usr/bin/install.repocache-prereq-probe /usr/bin/install
+test ! -e /opt/repocache-client
+test ! -e /etc/repocache-client
+test ! -e /usr/local/bin/repocache-client
+echo "PASS: missing client prerequisite refused before mutation"
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
 # The service UID must never unlink or replace this root-owned inode.
 lock=/opt/repocache-cli/.updater.lock
