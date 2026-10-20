@@ -55,3 +55,32 @@ def test_native_offline_installed_wheels_execute_headless_tui():
     assert 'ci_offline_wheels.py verify --release' in native
     assert "async with app.run_test" in smoke
     assert 'tui.snapshot = lambda' in smoke  # No production NGINX is touched
+
+
+def test_mandatory_release_security_matrix_is_explicitly_executed():
+    workflow = (WORKFLOWS / "tests.yml").read_text(encoding="utf-8")
+    required = (
+        "tests/test_public_release_transport_defensive.py",
+        "tests/test_hostile_archive_defensive.py",
+        "tests/test_release_integration_contract.py",
+    )
+    assert "Required release security regression gate (issues 37 38 39)" in workflow
+    assert "python -m pytest -q" in workflow
+    for path in required:
+        assert (ROOT / path).is_file(), path
+        assert path in workflow, path
+    # Fail if signed native artifact CI silently stops executing hostile TAR
+    # probes against the installed release (not merely the checked-out tree).
+    verifier = (ROOT / "scripts/ci_offline_wheels.py").read_text(encoding="utf-8")
+    native = (ROOT / "scripts/ci_hostile_archive.py").read_text(encoding="utf-8")
+    assert 'run(py, "/src/scripts/ci_hostile_archive.py", env=poison)' in verifier
+    assert "Native hostile archive regression did not execute" in verifier
+    assert "installed native release/wheelhouse hostile archive refusal" in native
+    assert '("--network none"' not in verifier  # Container isolation enforced by caller.
+    assert "--network none" in (ROOT / "scripts/build_release_wheels.sh").read_text(
+        encoding="utf-8")
+    runbook = (ROOT / "docs/RELEASE_0.4.0_GATES.md").read_text(encoding="utf-8")
+    for issue in ("#37", "#38", "#39"):
+        assert issue in runbook
+    for requirement in ("asset fingerprint", "NOT VERIFIED", "PASS", "FAIL"):
+        assert requirement in runbook
