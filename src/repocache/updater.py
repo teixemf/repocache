@@ -212,7 +212,22 @@ def _safe_links() -> None:
     Legacy symlink launchers are not supported for automatic migration into
     standalone v0.4.0; the updater must not rewrite /usr/bin.
     """
+    protected = {Path("/usr/local/bin/repocache"), Path("/usr/bin/repocache")}
     for link in LINKS:
+        if link in protected:
+            # Inspect each absolute launcher ancestor without following a
+            # swapped directory symlink; a safe file in a writable parent is
+            # NOT a safe global command path.
+            parent = Path("/")
+            for part in link.parent.parts[1:]:
+                parent /= part
+                try:
+                    entry = parent.lstat()
+                except OSError as exc:
+                    raise UpdateError(f"Missing global launcher ancestor: {parent}") from exc
+                if (not stat.S_ISDIR(entry.st_mode) or entry.st_uid != 0
+                        or entry.st_mode & 0o022):
+                    raise UpdateError(f"Unsafe global launcher ancestor: {parent}")
         if not link.exists() and not link.is_symlink():
             continue
         if link.is_symlink() or not link.is_file():
