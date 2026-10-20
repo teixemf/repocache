@@ -279,3 +279,38 @@ def test_admin_cli_reconcile_requires_service_inactive(setup, monkeypatch, capsy
     assert admin.main(["reconcile", "--id", ident, "--approve"]) == 0
     assert queue.pending() == []
     assert "reconciled" in capsys.readouterr().out
+
+
+def test_root_journal_publish_failure_cannot_claim_success(setup, monkeypatch):
+    queue, ident, protected = setup
+    with monkeypatch.context() as patch:
+        patch.setattr(decisions.os, "link",
+                      lambda *_args, **_kw: (_ for _ in ()).throw(OSError("synthetic ENOSPC")))
+        with pytest.raises(SubmissionError, match="decision_write_failed"):
+            queue.decide(ident, "review", expected_version=0)
+    # Failed root append does not advance SQLite, and a staged temp file is
+    # removed rather than silently entering the verified audit history.
+    assert queue.audit(ident) == []
+    assert queue.pending()[0]["version"] == 0
+    assert not list(protected.glob(".decision-stage-*"))
+
+
+def test_concurrent_admin_decisions_serialize_with_optimistic_version(setup):
+    from concurrent.futures import ThreadPoolExecutor
+
+    queue, ident, protected = setup
+
+    def decide(action):
+        try:
+            queue.decide(ident, action, expected_version=0)
+            return "PASS"
+        except SubmissionError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(decide, ("review", "reject")))
+    assert outcomes.count("PASS") == 1
+    assert outcomes.count("stale_decision") == 1
+    chain = DecisionJournal(protected).read(ident)
+    assert len(chain) == 1
+    assert chain[0]["action"] in {"review", "reject"}
