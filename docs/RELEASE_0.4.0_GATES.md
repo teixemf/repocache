@@ -179,6 +179,8 @@ host already containing an earlier installation.
    release and its assets are accessible and unchanged.
 8. Inspect the **frontend-only installation and recovery** on representative Debian 13 / AlmaLinux 10 hosts that already have NGINX configured, including negative permission paths and a non-disruptive frontend failure test. The operator must validate a real deployment before declaring it operationally tested; record findings and issue regressions. A clean-system NGINX provisioning test belongs to v0.6.0, not this release.
 
+For operator-only commands and explicit approval boundaries, see the [offline signing and publication procedure](RELEASE_0.4.0_PUBLISH_OPERATOR.md). Do not run those commands until the corresponding authorization is recorded.
+
 ## Acceptance and ownership
 
 A draft PR, passed tests on a different SHA or new `release/v0.4.0` branch
