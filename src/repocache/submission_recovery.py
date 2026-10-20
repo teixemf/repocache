@@ -152,12 +152,30 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
                         # fdopen owns the descriptor after opening in the loop.
                         pass
                     _verify_sqlite(staged)
-                    rollback = target.parent / (".repocache-before-restore-" +
+                    rollback = source.parent / ("repocache-before-restore-" +
                                                 os.urandom(12).hex() + ".sqlite3")
-                    # Link old inode before replacement, preserving committed
-                    # state even if the process dies immediately after replace.
-                    os.link(target, rollback, follow_symlinks=False)
-                    _fsync_dir(target.parent)
+                    # Preserve prior bytes in a ROOT-OWNED backup directory,
+                    # not the service-writable directory. This is a separate
+                    # file copy, so it also works across filesystems.
+                    old_fd = os.open(target, flags)
+                    previous_fd = None
+                    try:
+                        previous_fd = os.open(
+                            rollback, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
+                            getattr(os, "O_NOFOLLOW", 0), 0o600)
+                        with os.fdopen(old_fd, "rb", closefd=False) as old_stream:
+                            with os.fdopen(previous_fd, "wb", closefd=False) as previous_stream:
+                                shutil.copyfileobj(old_stream, previous_stream, 1024 * 1024)
+                                previous_stream.flush()
+                                os.fsync(previous_stream.fileno())
+                    except BaseException:
+                        rollback.unlink(missing_ok=True)
+                        raise
+                    finally:
+                        os.close(old_fd)
+                        if previous_fd is not None:
+                            os.close(previous_fd)
+                    _fsync_dir(source.parent)
                     os.replace(staged, target)
                     _fsync_dir(target.parent)
                     return rollback
