@@ -116,7 +116,7 @@ API, not a hostname. The project history root commit
 `66f6ddb6dd465d191a60f51c524e1b7ae56a9367` contained only the
 Apache-2.0 LICENSE; current Git ancestry stays on this independent
 public origin. GitHub reported the historical
-`teixemf/repocache-priv` repository **private**, and no public
+historical development repository **private**, and no public
 GitHub Releases or version tags existed as of this audit.
 
 **Limits:** these are regex/content review findings, not a forensic
