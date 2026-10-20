@@ -33,6 +33,7 @@ def queue(tmp_path, monkeypatch):
     protected.chmod(0o700)
     # Only synthetic CI ownership emulation. Real root/SELinux is #49.
     monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_verify_lock_fd", lambda _fd: None)
     monkeypatch.setattr(decisions, "_open_trusted", lambda path: os.open(
         path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
     return SubmissionQueue(directory / "queue.sqlite3", journal_dir=protected)
