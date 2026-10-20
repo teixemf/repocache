@@ -330,14 +330,16 @@ def _upgrade_locked(selected: Optional[str] = None, bundle: Optional[Path] = Non
     archive_digest = signed["archive_sha256"]
     if previous.get("version") == version:
         if (previous.get("archive_sha256") != archive_digest
-                or previous.get("wheelhouse_sha256") != wheel_digest):
+                or previous.get("wheelhouse_sha256") != wheel_digest
+                or previous.get("publisher_key_id") != signed["key_id"]
+                or previous.get("release_commit") != signed["commit"]
+                or previous.get("signed_manifest_sha256") != hashlib.sha256(
+                    manifest_data).hexdigest()):
             raise UpgradeError("Same-version installation lacks matching signed release identity")
-        if not updater.EXECUTABLE.is_file():
-            raise UpgradeError("Installed CLI is incomplete; repair requires explicit review")
-        return {"ok": True, "version": version,
-                "previous_version": version, "status": "already-installed",
-                "source_digest": previous["source_digest"],
-                "path": str(updater.EXECUTABLE)}
+        # There is no independently authenticated inventory of the installed
+        # virtualenv: service-owned manifests and executable existence cannot
+        # establish its integrity. Rebuild into a unique fresh generation from
+        # the signed archive and offline wheels instead of returning a no-op.
     with tempfile.TemporaryDirectory(prefix="repocache-upgrade-") as temp:
         source, policy = _extract_verified(
             archive_data, version, Path(temp), previous, system,
