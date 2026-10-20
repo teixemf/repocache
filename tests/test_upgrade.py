@@ -275,13 +275,21 @@ def test_same_version_requires_reauthenticated_bundle_identity(monkeypatch, tmp_
     monkeypatch.setattr(signatures, "verify", fake_signed_identity)
     digest = hashlib.sha256(blob.read_bytes()).hexdigest()
     marker = tmp_path / "repocache"
-    marker.write_text("installed")
+    marker.write_text("tampered-but-present")
     monkeypatch.setattr(updater, "_require_service_account", lambda: None)
     monkeypatch.setattr(updater, "EXECUTABLE", marker)
-    monkeypatch.setattr(updater, "_installed", lambda: {
+    previous_identity = {
         "version": VERSION, "source_digest": "a" * 64,
         "archive_sha256": digest,
-        "wheelhouse_sha256": hashlib.sha256(b"ci-wheelhouse").hexdigest()})
+        "wheelhouse_sha256": hashlib.sha256(b"ci-wheelhouse").hexdigest(),
+        "publisher_key_id": "fixture-only", "release_commit": "a" * 40,
+        "signed_manifest_sha256": hashlib.sha256(b"test-only").hexdigest()}
+    monkeypatch.setattr(updater, "_installed", lambda: previous_identity)
+    installed = []
+    def safe_fresh_install(source, **kwargs):
+        installed.append((str(source), kwargs))
+        return {"status": "installed", "version": VERSION}
+    monkeypatch.setattr(updater, "install_source", safe_fresh_install)
     record = {"version": VERSION, "assets": {
         "archive": {"id": 1, "size": len(blob.read_bytes())},
         "checksum": {"id": 2, "size": len(sha.read_bytes())},
@@ -297,12 +305,21 @@ def test_same_version_requires_reauthenticated_bundle_identity(monkeypatch, tmp_
     monkeypatch.setattr(upgrade, "_download_asset", lambda asset, *args: (
         seen.append(asset["id"]) or data[asset["id"]]))
     result = upgrade.upgrade(system=DEBIAN13)
-    assert result["status"] == "already-installed"
+    assert result["status"] == "installed"
     assert seen == [3, 4, 1, 2, 5]
-    monkeypatch.setattr(updater, "_installed", lambda: {
-        "version": VERSION, "source_digest": "a" * 64})
-    with pytest.raises(upgrade.UpgradeError, match="signed release identity"):
-        upgrade.upgrade(system=DEBIAN13)
+    assert len(installed) == 1
+    assert installed[0][1]["release_identity"]["archive_sha256"] == digest
+    assert installed[0][1]["wheel_lock"].name == "requirements.lock"
+    assert marker.read_text() == "tampered-but-present"  # Never executed.
+    for changed in ("archive_sha256", "wheelhouse_sha256",
+                    "publisher_key_id", "signed_manifest_sha256"):
+        bad = previous_identity.copy()
+        bad[changed] = "0" * 64
+        monkeypatch.setattr(updater, "_installed", lambda bad=bad: bad)
+        with pytest.raises(upgrade.UpgradeError, match="signed release identity"):
+            upgrade.upgrade(system=DEBIAN13)
+    assert len(installed) == 1
+    assert marker.read_text() == "tampered-but-present"
 
 
 def test_unchanged_version_policy_can_be_revalidated_without_false_downgrade():

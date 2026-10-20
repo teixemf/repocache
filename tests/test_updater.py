@@ -72,7 +72,7 @@ def test_installs_extracted_bundle_without_git_revision(monkeypatch, tmp_path):
     monkeypatch.setattr(updater, "CURRENT", root / "current")
     monkeypatch.setattr(updater, "EXECUTABLE", root / "current/bin/repocache")
     monkeypatch.setattr(updater, "LINKS", (tmp_path / "usr/bin/repocache",))
-    monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.1.3"})
+    monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.0.0"})
 
     commands = []
     def fake_run(argv, **kwargs):

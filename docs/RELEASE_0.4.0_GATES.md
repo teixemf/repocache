@@ -21,12 +21,35 @@ head; historical PASS results are evidence for historical commits only.
 | Update / rollback | Both native synthetic rootless update and rollback jobs PASS |
 | Offline dependencies and SBOM | Native locked wheelhouse and signed provenance rehearsal PASS |
 | Rootless lock integrity | Root-owned mode-0440 lock parent and inode verified; `repocache` UID fails to unlink it; rebootless re-bootstrap preserves inode |
+| Installed runtime integrity (#35) | No same-version virtualenv is reused based only on service-writable metadata or executable existence. A selected same-version release is reauthenticated, rebuilt into a fresh generation from signed source and offline pinned wheels, and checked before activation. Structural symlink/owner/mode checks and native tamper-repair regression PASS. Does **not** attest old executable bytes against a compromised service UID. |
 | SIGKILL and concurrent updates | Executed unit/subprocess lock, journal, recovery and rollback tests PASS |
 | Standalone first-public boundary | v0.4.0 signed policy has `compatible_from: []`; pre-public installs fail closed before activation and historical migrator is absent from release archives. No historical migration support is claimed |
 | Nginx, systemd and SELinux | Real disposable VM or target-system results, if available; maintainer may defer these **explicitly** without claiming PASS |
 | Real power cut | Not performed; residual risk is documented and deferred, not reported as PASS |
 | Final release security / rights review | Public tree scanned and manually inspected; no credentials, private history or deployment values; license and AI disclosure reviewed |
 | GitHub publication controls | Active branch/tag rulesets and release immutability observed in the **public** repository, with no bypass of required reviews/checks |
+
+## Same-version repair security boundary
+
+A matching installed `source_digest` or publisher identity only identifies the
+release assets; it does **not** attest mutable files inside an installed virtualenv.
+The updater must never skip reinstallation based on a readable
+`bin/repocache` or mutable `installed.json`. A deliberately selected
+same-version update re-verifies signed release assets and hash-pinned offline
+wheels, builds a **fresh unique** virtualenv, checks its entry point, and only
+then atomically activates it. Unsafe symlink, owner and mode layouts fail closed.
+A failed reinstallation leaves the prior symlink and manifest unchanged; the
+existing target is retained for forensic analysis, not executed as proof of
+integrity. This approach costs rebuild time and storage on explicit retries.
+
+**Residual risk:** The service account owns its running virtualenv and
+transaction manifest. A process already compromised under that UID can modify
+its own code; these service-controlled files are not a root-owned,
+independently authenticated installed-file inventory. The protected
+root-owned launcher and recovery helper prevent elevated execution, but they
+do not cryptographically validate arbitrary runtime bytes against an attacker
+who controls the service account. Never describe these structural checks as
+an independently trusted runtime attestation.
 
 The test and release CI jobs must use read-only credentials, pinned Actions
 versions and ephemeral hosted runners. They must not have private signing keys.

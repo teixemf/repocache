@@ -63,6 +63,52 @@ os.close(fd)
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
 test "$(stat -c %d:%i "$lock")" = "$inode_before"
 
+# The trusted recovery coordinator must refuse owner, group and mode drift
+# before accessing managed state. Mutations are confined to this disposable
+# image and reset immediately; they are never applied to a real host.
+probe_lock() {
+  /usr/sbin/runuser -u repocache -- /usr/bin/python3 -I \
+    /usr/local/libexec/repocache-recover.py > /tmp/lock-probe.log 2>&1
+}
+refuse_lock() {
+  if probe_lock; then
+    echo "Tampered updater lock was accepted: $1" >&2
+    exit 1
+  fi
+  grep -F "Recovery refused:" /tmp/lock-probe.log >/dev/null || {
+    cat /tmp/lock-probe.log >&2
+    exit 1
+  }
+  echo "PASS: tampered updater lock refused ($1)"
+}
+probe_lock
+
+chown repocache:repocache "$lock"
+refuse_lock "wrong owner"
+chown root:repocache "$lock"
+
+chown root:root "$lock"
+refuse_lock "wrong group"
+chown root:repocache "$lock"
+
+chmod 0660 "$lock"
+refuse_lock "writable inode"
+chmod 0440 "$lock"
+
+lock_parent_mode="$(stat -c %a /opt/repocache-cli)"
+chmod 0777 /opt/repocache-cli
+refuse_lock "writable lock parent"
+chmod "$lock_parent_mode" /opt/repocache-cli
+
+opt_mode="$(stat -c %a /opt)"
+chmod 0777 /opt
+refuse_lock "writable system ancestor"
+chmod "$opt_mode" /opt
+
+test "$(stat -c %d:%i "$lock")" = "$inode_before"
+probe_lock
+echo "PASS: root-owned updater lock survives negative ownership and path probes"
+
 # First-public releases must not distribute the unsupported historical migrator.
 test ! -e scripts/migrate_v030.py
 

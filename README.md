@@ -14,6 +14,8 @@ This repository was created with a **new, independent public Git history**. Olde
 
 Release assets must be independently authenticated with offline Ed25519 signatures and separately provisioned public trust anchors. Checksums alone do not prove release authenticity. Do not introduce private signing keys or GitHub release-write tokens into ordinary PR workflows.
 
+**Same-version updates:** Explicitly selecting the currently installed release re-verifies the publisher signature and hash-pinned offline dependencies, builds a fresh virtual environment and atomically replaces the active generation. It never treats a service-writable manifest and a present executable as proof of installed-runtime integrity. A retry can take time and consume additional storage; operators should monitor available space. Do not execute a possibly compromised managed CLI as a recovery mechanism: restore through a separately authenticated, trusted installation environment. The service UID still owns its runtime, so this is not a root-owned cryptographic attestation of all installed files.
+
 ## Components
 
 - `src/repocache/`: server CLI/TUI, update verification, recovery and release tools.
