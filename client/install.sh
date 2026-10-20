@@ -35,6 +35,14 @@ if u.scheme != "https" or not u.hostname or u.username or u.password or u.query 
     raise SystemExit("Invalid server: use https://hostname")
 PY
 
+# All filesystem-writing tools must exist before the first managed write.
+# Fail closed on an incompletely provisioned OS rather than installing partly.
+for required in /usr/bin/install /usr/bin/mv /usr/bin/chmod /usr/bin/grep; do
+  [[ -x "$required" ]] || {
+    echo "Missing client installer prerequisite: $required" >&2
+    exit 1
+  }
+done
 [[ -f "$SOURCE" ]] || { echo "Incomplete client bundle" >&2; exit 1; }
 "$PYTHON" --version >/dev/null
 if [[ -L "$LAUNCHER" ]] || [[ -e "$LAUNCHER" && ! -f "$LAUNCHER" ]]; then
