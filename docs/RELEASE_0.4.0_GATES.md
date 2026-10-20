@@ -30,6 +30,56 @@ head; historical PASS results are evidence for historical commits only.
 | Final release security / rights review | Public tree scanned and manually inspected; no credentials, private history or deployment values; license and AI disclosure reviewed |
 | GitHub publication controls | Active branch/tag rulesets and release immutability observed in the **public** repository, with no bypass of required reviews/checks |
 
+
+## Defensive security release gate (#37, #38, #39)
+
+These tests are **required before each merge that changes release transport,
+archive verification or upgrade**. A passing test from another commit is NOT
+VERIFIED for a changed PR head.
+
+| Acceptance area | Required executed test | Required proof |
+| --- | --- | --- |
+| #37 anonymous GitHub transport and redirect confinement | `tests/test_public_release_transport_defensive.py` (explicit pytest gate in both Python versions) | One anonymous API-to-allowlisted-HTTPS-CDN hop, no Authorization header or stale private token, blocked additional hops/host/port/scheme, redacted HTTP errors, expired URLs, bounded/incomplete downloads |
+| #38 hostile source/wheel TAR confinement | `tests/test_hostile_archive_defensive.py` (both Python versions), `scripts/ci_hostile_archive.py` (authenticated native offline install) | Traversal, link/device/PAX/GNU, duplicate entries, truncated and oversized archives, symlinked staging/leaf, signed test-only hostile archive, bounded child wall-time/CPU/address-space, no external writes |
+| #39 fail-on-omission and release gate | `tests/test_release_integration_contract.py` and required workflow step; the native offline wheel installer must also execute the installed archive test script | A missing/renamed/failed mandatory test fails the normal required CI, not a skipped optional job; each required GitHub status context is checked on the exact reviewed SHA |
+| GitHub publication trust (#4, #36) | Live protected rulesets, immutable release control and independently verified asset signature/provenance | Actual admin evidence and fingerprints, never inferred from a green test |
+| Runtime and rollback (#3, #7, #8, #11, #32-#35) | Exact-head signed-publisher, wheelhouse and native rootless rollback CI | Per-criterion code SHA, native OS, test case and result, protected lock and journal evidence |
+
+For every merge or release candidate, preserve an English machine-readable or
+reviewable table using this schema:
+
+`criterion | PASS/FAIL/NOT VERIFIED | test or reviewed procedure |
+GitHub run/job URL | exact Git commit SHA | asset fingerprint | target OS |
+remaining uncertainty`
+
+The **asset fingerprint** of the final public archive and wheelhouse is
+**NOT VERIFIED** until the signed, published release assets are built and
+compared to reviewed source. Do not invent an asset hash from a source commit
+or use a disposable CI fixture signature as production publisher provenance.
+If the relevant evidence is missing, label that criterion **NOT VERIFIED**;
+a new commit invalidates a previous SHA's PASS evidence. No skipped test may
+satisfy a required security context. Any FAIL or non-deferred NOT VERIFIED
+criterion blocks the merge, regardless of green unrelated jobs.
+
+The 0.4.0 release supports **anonymous public** GitHub discovery and downloads
+only. Real private-release retrieval and historical private-to-public
+installation migration are **unsupported** (see #37 and the approved #5
+scope); testing or retaining old private credentials is not a release
+requirement. No test uses real user tokens. Security-sensitive findings should
+be reported via **private** GitHub vulnerability reporting rather than by
+publishing operationally exploitable details.
+
+CPU, memory, disk and wall-time limits in the #38 deterministic fixtures are
+not an independent resource-exhaustion audit. Archive sizes, member counts and
+unpacked bytes are bounded; a subprocess test exercises a compressible hostile
+payload under Linux RLIMIT_AS, RLIMIT_CPU and a hard subprocess timeout.
+Real-life service UID takeover and independent installed-runtime integrity
+are separate advanced requirements tracked in #53/v0.7.0.
+
+**Status for this development PR:** tests are not PASS merely by appearing
+in the repository; record exact-head executed CI and inspect job logs before
+checking any issue/PR acceptance box.
+
 ## Same-version repair security boundary
 
 A matching installed `source_digest` or publisher identity only identifies the
