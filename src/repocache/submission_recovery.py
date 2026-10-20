@@ -1,0 +1,165 @@
+"""Offline, explicitly authorized restoration of a trusted submission queue.
+
+This module never starts/stops services; callers MUST establish that intake is
+stopped and retain the previous SQLite file for rollback. Nothing in the
+normal install/upgrade process calls this function.
+"""
+from __future__ import annotations
+
+import fcntl
+import os
+import shutil
+import sqlite3
+import stat
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Callable
+
+from repocache.submissions import SubmissionError
+
+MAX_RESTORE_BYTES = 128 * 1024 * 1024
+REQUIRED_TABLES = frozenset({"proposals", "nonces", "audit"})
+
+
+def _require_root() -> None:
+    if os.geteuid() != 0:
+        raise SubmissionError("operator_required", 403)
+
+
+def _trusted_private_dir(path: Path) -> None:
+    details = path.lstat()
+    if (not stat.S_ISDIR(details.st_mode) or details.st_uid != 0
+            or details.st_mode & 0o077):
+        raise SubmissionError("unsafe_restore_directory", 403)
+
+
+def _check_backup_stat(details: os.stat_result) -> None:
+    if (not stat.S_ISREG(details.st_mode) or details.st_uid != 0
+            or details.st_mode & 0o077 or
+            not 0 < details.st_size <= MAX_RESTORE_BYTES):
+        raise SubmissionError("unsafe_restore_backup", 403)
+
+
+def _verify_sqlite(path: Path) -> None:
+    """Check both SQLite integrity and the expected submission schema."""
+    try:
+        uri = "file:" + str(path) + "?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=3) as db:
+            if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise SubmissionError("corrupt_restore_backup", 422)
+            tables = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if not REQUIRED_TABLES.issubset(tables):
+                raise SubmissionError("invalid_restore_schema", 422)
+            proposal_columns = {row[1] for row in db.execute("PRAGMA table_info(proposals)")}
+            if not {"id", "os_id", "os_version", "items", "state", "version",
+                    "created", "changed"}.issubset(proposal_columns):
+                raise SubmissionError("invalid_restore_schema", 422)
+            if db.execute(
+                "SELECT COUNT(*) FROM proposals WHERE state NOT IN "
+                "('PENDING','REVIEWED','REJECTED')").fetchone()[0]:
+                raise SubmissionError("invalid_restore_schema", 422)
+    except sqlite3.Error as exc:
+        raise SubmissionError("corrupt_restore_backup", 422) from exc
+
+
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def _exclusive_restore_lock(directory: Path):
+    """Prevent concurrent restore processes; not a substitute for stopping intake."""
+    name = directory / ".repocache-restore.lock"
+    fd = os.open(name, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        details = os.fstat(fd)
+        if (not stat.S_ISREG(details.st_mode) or details.st_uid != 0
+                or details.st_mode & 0o077):
+            raise SubmissionError("unsafe_restore_lock", 403)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SubmissionError("restore_busy", 409) from exc
+        yield
+    finally:
+        os.close(fd)
+
+
+def restore_offline(queue_path: Path, backup_path: Path, *,
+                    approved: bool = False,
+                    service_stopped: Callable[[], bool] | None = None) -> Path:
+    """Restore a trusted snapshot, retaining an immutable-in-place old-file copy.
+
+    Preconditions: root, explicit operator approval, verified stopped service,
+    both directories trusted and backup owned by root with mode <=0600.
+    Atomic replacement cannot protect against a real disk/power failure; a
+    retained original inode is available for an explicitly approved rollback.
+    """
+    _require_root()
+    if not approved or service_stopped is None or not service_stopped():
+        raise SubmissionError("offline_restore_not_approved", 403)
+
+    target, source = Path(queue_path), Path(backup_path)
+    try:
+        _trusted_private_dir(target.parent)
+        _trusted_private_dir(source.parent)
+        if target == source or target.is_symlink() or source.is_symlink():
+            raise SubmissionError("unsafe_restore_source", 403)
+        if target.parent.resolve() == source.parent.resolve() and target.name == source.name:
+            raise SubmissionError("unsafe_restore_source", 403)
+        with _exclusive_restore_lock(target.parent):
+            # Both paths are opened without following the final symlink.
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            source_fd = os.open(source, flags)
+            try:
+                _check_backup_stat(os.fstat(source_fd))
+                old_fd = os.open(target, flags)
+                try:
+                    old_stat = os.fstat(old_fd)
+                    if not stat.S_ISREG(old_stat.st_mode) or old_stat.st_mode & 0o077:
+                        raise SubmissionError("unsafe_current_store", 403)
+                    uid, gid = old_stat.st_uid, old_stat.st_gid
+                finally:
+                    os.close(old_fd)
+
+                staging_fd, staging = tempfile.mkstemp(prefix=".repocache-restore-",
+                                                       dir=target.parent)
+                staged = Path(staging)
+                try:
+                    os.fchmod(staging_fd, 0o600)
+                    if os.geteuid() == 0 and uid != os.geteuid():
+                        os.fchown(staging_fd, uid, gid)
+                    try:
+                        with os.fdopen(source_fd, "rb", closefd=False) as stream:
+                            with os.fdopen(staging_fd, "wb") as staged_stream:
+                                shutil.copyfileobj(stream, staged_stream, 1024 * 1024)
+                                staged_stream.flush()
+                                os.fsync(staged_stream.fileno())
+                    finally:
+                        # fdopen owns the descriptor after opening in the loop.
+                        pass
+                    _verify_sqlite(staged)
+                    rollback = target.parent / (".repocache-before-restore-" +
+                                                os.urandom(12).hex() + ".sqlite3")
+                    # Link old inode before replacement, preserving committed
+                    # state even if the process dies immediately after replace.
+                    os.link(target, rollback, follow_symlinks=False)
+                    _fsync_dir(target.parent)
+                    os.replace(staged, target)
+                    _fsync_dir(target.parent)
+                    return rollback
+                finally:
+                    if staged.exists():
+                        staged.unlink()
+            finally:
+                os.close(source_fd)
+    except SubmissionError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise SubmissionError("restore_unavailable", 503) from exc
