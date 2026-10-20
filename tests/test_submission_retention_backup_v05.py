@@ -16,7 +16,15 @@ def test_retention_requires_operator_approval_and_preserves_pending(tmp_path, mo
     parent = tmp_path / "private"
     parent.mkdir(mode=0o700)
     parent.chmod(0o700)
-    queue = SubmissionQueue(parent / "state.db")
+    from repocache import submission_decisions as decisions
+    journal_dir = tmp_path / "decisions"
+    journal_dir.mkdir(mode=0o700)
+    journal_dir.chmod(0o700)
+    monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_verify_lock_fd", lambda _fd: None)
+    monkeypatch.setattr(decisions, "_open_trusted", lambda path: os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
+    queue = SubmissionQueue(parent / "state.db", journal_dir=journal_dir)
     item = {"os": {"id": "debian", "version": "13"},
             "repositories": [{"type": "apt-list",
                               "url": "https://mirror.example.org/debian/",
@@ -27,7 +35,7 @@ def test_retention_requires_operator_approval_and_preserves_pending(tmp_path, mo
     with pytest.raises(SubmissionError):
         queue.maintain(approved=False, now=19000000)
     monkeypatch.setattr(submissions.os, "geteuid", lambda: 0)
-    queue.decide(decided, "reject")
+    queue.decide(decided, "reject", expected_version=0)
     # Force only this synthetic decided row to be older than the policy;
     # an actual operator still must authorize the retention change.
     with queue._connect() as db:

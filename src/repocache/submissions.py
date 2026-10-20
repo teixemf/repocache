@@ -4,6 +4,7 @@ No network lookups, NGINX modifications, or catalog publication are performed.
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -17,6 +18,10 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+from repocache.submission_decisions import (
+    DEFAULT_DECISION_DIR, DecisionJournal, DecisionError,
+)
 
 
 class SubmissionError(ValueError):
@@ -163,8 +168,11 @@ def validate_payload(raw: bytes) -> dict:
 class SubmissionQueue:
     """Local SQLite state; operator decisions require real root OS identity."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, journal_dir: Path = DEFAULT_DECISION_DIR):
         self.path = Path(path)
+        # This directory is NOT accessible to the intake identity. Explicit
+        # root-only provisioning is required before administrator review.
+        self.journal_dir = Path(journal_dir)
         parent = self.path.parent
         st = parent.lstat()
         # A privileged operator may access a directory owned by the fixed
@@ -265,64 +273,170 @@ class SubmissionQueue:
         except sqlite3.Error as exc:
             raise SubmissionError("store_unavailable", 503) from exc
 
+    @staticmethod
+    def _proposal_digest(row: tuple) -> str:
+        # Bind administrator receipt to the exact persisted proposal metadata,
+        # not to a mutable state/version/audit field controlled by intake.
+        ident, os_id, os_version, items, created = row[:5]
+        payload = json.dumps([ident, os_id, os_version, items, created],
+                             sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _journal(self) -> DecisionJournal:
+        return DecisionJournal(self.journal_dir)
+
+    @staticmethod
+    def _verify_state(state: str, version: int, digest: str, chain: list[dict]) -> None:
+        if chain:
+            last = chain[-1]
+            if (last["proposal_digest"] != digest or
+                    last["state"] != state or last["version"] != version):
+                raise SubmissionError("decision_reconcile_required", 409)
+        elif state != "PENDING" or version != 0:
+            # An intake-writable DB row cannot claim a trusted review.
+            raise SubmissionError("unaudited_decision_state", 503)
+
     def pending(self, *, limit: int = 100) -> list[dict]:
         if os.geteuid() != 0:
             raise SubmissionError("operator_required", 403)
-        with self._connect() as db:
-            rows = db.execute(
-                "SELECT id,os_id,os_version,items,version FROM proposals "
-                "WHERE state='PENDING' ORDER BY created,id LIMIT ?", (min(limit, 100),))
-            proposals = []
-            for row in rows:
-                try:
-                    if not isinstance(row[3], str) or len(row[3]) > 131072:
-                        raise SubmissionError("invalid_stored_proposal", 503)
-                    _check_json_depth(row[3].encode("utf-8"),
-                                      code="invalid_stored_proposal", status=503)
-                    repositories = json.loads(row[3])
-                    if not isinstance(repositories, list) or not 1 <= len(repositories) <= 32:
-                        raise SubmissionError("invalid_stored_proposal", 503)
-                except SubmissionError:
-                    raise
-                except (ValueError, TypeError, RecursionError, UnicodeError) as exc:
-                    # Stored state is lower-trust than the privileged TUI.
-                    # Never leak arbitrary original JSON in diagnostics.
-                    raise SubmissionError("invalid_stored_proposal", 503) from exc
-                proposals.append({"id": row[0], "os": row[1],
-                                  "version_os": row[2], "repositories": repositories,
-                                  "version": row[4]})
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise SubmissionError("invalid_limit", 400)
+        proposals = []
+        try:
+            with self._journal().locked() as journal:
+                with self._connect() as db:
+                    # Verify all returned rows against root-owned receipts.
+                    # The intake may not forge a REVIEWED state by editing DB.
+                    rows = db.execute(
+                        "SELECT id,os_id,os_version,items,created,state,version "
+                        "FROM proposals WHERE state='PENDING' ORDER BY created,id LIMIT ?",
+                        (limit,)).fetchall()
+                    for ident, os_id, os_version, items, created, state, version in rows:
+                        if (not isinstance(items, str) or len(items) > 131072 or
+                                not isinstance(ident, str) or
+                                not re.fullmatch(r"[a-f0-9]{32}", ident)):
+                            raise SubmissionError("invalid_stored_proposal", 503)
+                        _check_json_depth(items.encode("utf-8"),
+                                          code="invalid_stored_proposal", status=503)
+                        try:
+                            repositories = json.loads(items)
+                        except (ValueError, RecursionError, UnicodeError, TypeError) as exc:
+                            raise SubmissionError("invalid_stored_proposal", 503) from exc
+                        if not isinstance(repositories, list) or not 1 <= len(repositories) <= 32:
+                            raise SubmissionError("invalid_stored_proposal", 503)
+                        digest = self._proposal_digest(
+                            (ident, os_id, os_version, items, created))
+                        self._verify_state(state, version, digest, journal.read(ident))
+                        proposals.append({"id": ident, "os": os_id,
+                                          "version_os": os_version,
+                                          "repositories": repositories,
+                                          "version": version})
             return proposals
+        except DecisionError as exc:
+            raise SubmissionError(exc.code, exc.status) from exc
+        except sqlite3.Error as exc:
+            raise SubmissionError("store_unavailable", 503) from exc
 
     def decide(self, ident: str, action: str, *, expected_version: int | None = None) -> None:
         if os.geteuid() != 0:
             raise SubmissionError("operator_required", 403)
-        if action not in {"review", "reject", "reopen"} or not re.fullmatch(r"[a-f0-9]{32}", ident):
+        if (action not in {"review", "reject", "reopen"} or
+                not isinstance(ident, str) or
+                not re.fullmatch(r"[a-f0-9]{32}", ident)):
             raise SubmissionError("invalid_decision", 400)
-        now = int(time.time())
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT state,version FROM proposals WHERE id=?", (ident,)).fetchone()
-            if not row:
-                raise SubmissionError("proposal_missing", 404)
-            current_state, version = row
-            if expected_version is not None and version != expected_version:
-                raise SubmissionError("stale_decision", 409)
-            if ((action in {"review", "reject"} and current_state != "PENDING")
-                    or (action == "reopen" and current_state == "PENDING")):
-                raise SubmissionError("invalid_transition", 409)
-            next_state = {"review": "REVIEWED", "reject": "REJECTED", "reopen": "PENDING"}[action]
-            db.execute("UPDATE proposals SET state=?,version=version+1,changed=? WHERE id=?",
-                       (next_state, now, ident))
-            db.execute("INSERT INTO audit(proposal_id,changed,actor_uid,action,result)"
-                       " VALUES(?,?,?,?,?)", (ident, now, os.getuid(), action, next_state))
+        if type(expected_version) is not int or expected_version < 0:
+            raise SubmissionError("version_required", 400)
+        try:
+            with self._journal().locked() as journal:
+                with self._connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    row = db.execute(
+                        "SELECT id,os_id,os_version,items,created,state,version "
+                        "FROM proposals WHERE id=?", (ident,)).fetchone()
+                    if not row:
+                        raise SubmissionError("proposal_missing", 404)
+                    proposal_digest = self._proposal_digest(row)
+                    chain = journal.read(ident)
+                    self._verify_state(row[5], row[6], proposal_digest, chain)
+                    state, version = row[5], row[6]
+                    if version != expected_version:
+                        raise SubmissionError("stale_decision", 409)
+                    if ((action in {"review", "reject"} and state != "PENDING")
+                            or (action == "reopen" and state == "PENDING")):
+                        raise SubmissionError("invalid_transition", 409)
+                    # The root-controlled durable receipt is authoritative.
+                    # If SQLite fails AFTER this write, the caller gets an
+                    # error and must explicitly reconcile before further
+                    # review (never show an unverified success).
+                    receipt = journal.append(ident, action, proposal_digest, chain)
+                    db.execute(
+                        "UPDATE proposals SET state=?,version=?,changed=? WHERE id=?",
+                        (receipt["state"], receipt["version"], receipt["at"], ident))
+                    # Historical audit rows here are a convenience only.
+                    # Never use this service-writable table as trusted proof.
+                    db.execute(
+                        "INSERT INTO audit(proposal_id,changed,actor_uid,action,result)"
+                        " VALUES(?,?,?,?,?)",
+                        (ident, receipt["at"], receipt["actor_uid"],
+                         action, receipt["state"]))
+        except DecisionError as exc:
+            raise SubmissionError(exc.code, exc.status) from exc
+        except sqlite3.Error as exc:
+            raise SubmissionError("decision_reconcile_required", 409) from exc
 
     def audit(self, ident: str) -> list[tuple]:
+        """Authoritative history comes only from root-owned receipts."""
         if os.geteuid() != 0:
             raise SubmissionError("operator_required", 403)
-        with self._connect() as db:
-            return db.execute(
-                "SELECT action,result,actor_uid FROM audit WHERE proposal_id=? ORDER BY seq",
-                (ident,)).fetchall()
+        try:
+            with self._journal().locked() as journal:
+                return [(entry["action"], entry["state"], entry["actor_uid"])
+                        for entry in journal.read(ident)]
+        except DecisionError as exc:
+            raise SubmissionError(exc.code, exc.status) from exc
+
+    def reconcile(self, ident: str, *, approved: bool = False) -> None:
+        """Explicitly repair SQLite only when it lags a valid durable receipt.
+
+        No automatic state-changing recovery is performed by the intake or TUI.
+        The original proposal metadata must still match the root receipt.
+        """
+        if os.geteuid() != 0 or not approved:
+            raise SubmissionError("operator_approval_required", 403)
+        if not isinstance(ident, str) or not re.fullmatch(r"[a-f0-9]{32}", ident):
+            raise SubmissionError("invalid_decision_id", 400)
+        try:
+            with self._journal().locked() as journal:
+                with self._connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    row = db.execute(
+                        "SELECT id,os_id,os_version,items,created,state,version "
+                        "FROM proposals WHERE id=?", (ident,)).fetchone()
+                    if not row:
+                        raise SubmissionError("proposal_missing", 404)
+                    chain = journal.read(ident)
+                    if not chain:
+                        raise SubmissionError("no_authoritative_decision", 409)
+                    last = chain[-1]
+                    if self._proposal_digest(row) != last["proposal_digest"]:
+                        raise SubmissionError("decision_metadata_conflict", 409)
+                    if (type(row[6]) is not int or row[6] > last["version"]
+                            or (row[6] == last["version"] and
+                                row[5] != last["state"])):
+                        raise SubmissionError("decision_state_tampered", 409)
+                    if row[6] < last["version"]:
+                        if row[6] and (row[6] > len(chain) or
+                                       row[5] != chain[row[6] - 1]["state"]):
+                            raise SubmissionError("decision_state_tampered", 409)
+                        if row[6] == 0 and row[5] != "PENDING":
+                            raise SubmissionError("decision_state_tampered", 409)
+                        db.execute(
+                            "UPDATE proposals SET state=?,version=?,changed=? WHERE id=?",
+                            (last["state"], last["version"], last["at"], ident))
+        except DecisionError as exc:
+            raise SubmissionError(exc.code, exc.status) from exc
+        except sqlite3.Error as exc:
+            raise SubmissionError("decision_reconcile_failed", 503) from exc
 
     def maintain(self, *, approved: bool = False, now: int | None = None,
                  decided_retention_days: int = 180) -> dict[str, int]:

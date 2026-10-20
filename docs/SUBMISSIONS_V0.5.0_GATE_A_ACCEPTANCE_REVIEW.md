@@ -77,3 +77,32 @@ fundamental defect in the Gate A code.
 
 **Review disposition: BLOCKED.** Passing tests provide scoped confidence,
 not a security audit, an approved merge or permission to expose the intake.
+
+
+## #57 remediation candidate — protected administrator audit (2026-10-20)
+
+Draft PR #59, stacked onto draft PR #56, implements an **independent
+root-only decision journal** with versioned non-overwriting receipts, a
+durably published hash-linked history, checks binding each administrator
+decision to the exact proposal metadata, and an explicit offline
+reconciliation path when SQLite commits fail or a database is restored.
+The unprivileged intake's SQLite \`audit\` table is explicitly
+non-authoritative; the TUI and admin audit API read only protected
+receipts.
+
+New repeatable negative tests cover forged REVIEWED rows, altered/deleted
+SQLite audit convenience rows, corruption and gaps in root receipts,
+metadata changes after decisions, stale versions, concurrent operator
+actions, injected SQLite update failures, injected journal publication
+failure, refusal of unsafe directories and lock files, protected journal
+snapshots and explicit administrator reconciliation. Root ownership in
+positive CI fixtures is **synthetically simulated** because the test
+runner is non-root; native systemd/SELinux and actual root/service UID
+isolation remain **NOT VERIFIED under Gate B #49**.
+
+**Acceptance interpretation:** this mitigates the earlier A6 design
+FAIL in the *candidate branch* only. It is not proof that the updated
+v0.5.0 code can be merged: exact-head CI, remaining security review,
+root-controlled provisioning, final v0.4.0 baseline and explicit
+maintainer merge permission remain separate. Do not mark the issue
+closed until every #57 criterion has reproducible evidence and review.
