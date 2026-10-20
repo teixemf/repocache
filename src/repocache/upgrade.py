@@ -57,13 +57,16 @@ def _safe_version(value: Optional[str]) -> str:
 def _request_bytes(url: str, max_bytes: int, token: Optional[str] = None) -> bytes:
     """Bounded HTTPS request; do not follow redirects or log signed URLs."""
     parsed = urllib.parse.urlsplit(url)
-    api = ("api.github.com" == parsed.hostname and parsed.path.startswith(
-        "/repos/" + releases.REPOSITORY + "/releases/assets/"))
-    cdn = parsed.hostname in (
+    api = (parsed.netloc == "api.github.com" and re.fullmatch(
+        r"/repos/" + re.escape(releases.REPOSITORY) + r"/releases/assets/[1-9][0-9]*",
+        parsed.path) is not None)
+    cdn = parsed.netloc in (
         "release-assets.githubusercontent.com", "objects.githubusercontent.com",
         "github-releases.githubusercontent.com")
+    # URLs may contain short-lived signed CDN query parameters, but never
+    # credentials, an alternate port, a fragment or a misleading GitHub host.
     if (parsed.scheme != "https" or parsed.username or parsed.password
-            or not (api or cdn) or (token is not None and not api)):
+            or parsed.fragment or not (api or cdn) or (token is not None and not api)):
         raise UpgradeError("Refusing a non-GitHub asset URL or credential redirect")
     if token is not None:
         raise UpgradeError("Public release assets must never receive private credentials")
@@ -79,9 +82,16 @@ def _request_bytes(url: str, max_bytes: int, token: Optional[str] = None) -> byt
     except urllib.error.HTTPError as exc:
         if exc.code in (301, 302, 303, 307, 308):
             target = exc.headers.get("Location", "")
-            # A GitHub API asset can redirect to signed CDN URLs. The token
-            # must be discarded before following that redirect.
-            if not target or not api:
+            # Exactly one hop: official API -> approved HTTPS CDN. An
+            # API-to-API loop or a second CDN redirect is rejected outright,
+            # before contacting the new origin. Never log signed URL queries.
+            signed = urllib.parse.urlsplit(target)
+            if (not api or signed.scheme != "https" or
+                    signed.netloc not in (
+                        "release-assets.githubusercontent.com",
+                        "objects.githubusercontent.com",
+                        "github-releases.githubusercontent.com") or
+                    signed.username or signed.password or signed.fragment):
                 raise UpgradeError("Unexpected asset download redirect")
             return _request_bytes(target, max_bytes, token=None)
         if exc.code in (401, 404):
