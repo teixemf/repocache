@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import pwd
 import shutil
 import sqlite3
 import stat
@@ -27,9 +28,15 @@ def _require_root() -> None:
         raise SubmissionError("operator_required", 403)
 
 
-def _trusted_private_dir(path: Path) -> None:
+def _trusted_private_dir(path: Path, *, service_owned: bool = False) -> None:
     details = path.lstat()
-    if (not stat.S_ISDIR(details.st_mode) or details.st_uid != 0
+    owners = {0}
+    if service_owned:
+        try:
+            owners.add(pwd.getpwnam("repocache-intake").pw_uid)
+        except KeyError:
+            pass
+    if (not stat.S_ISDIR(details.st_mode) or details.st_uid not in owners
             or details.st_mode & 0o077):
         raise SubmissionError("unsafe_restore_directory", 403)
 
@@ -107,7 +114,7 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
 
     target, source = Path(queue_path), Path(backup_path)
     try:
-        _trusted_private_dir(target.parent)
+        _trusted_private_dir(target.parent, service_owned=True)
         _trusted_private_dir(source.parent)
         if target == source or target.is_symlink() or source.is_symlink():
             raise SubmissionError("unsafe_restore_source", 403)
