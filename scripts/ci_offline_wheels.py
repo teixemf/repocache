@@ -174,7 +174,10 @@ def build(out, release=False, poison_backend=False):
     with tarpath.open("wb") as output:
         with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as zipped:
             with tarfile.open(fileobj=zipped, mode="w") as stream:
-                for name, data in [("requirements.lock", lock), ("sbom.json", sbom)] + [
+                for name, data in [
+                    ("requirements.lock", lock), ("sbom.json", sbom),
+                    ("THIRD_PARTY_NOTICES.md", (source / "THIRD_PARTY_NOTICES.md").read_bytes()),
+                ] + [
                     ("wheels/" + p.name, p.read_bytes()) for p in items
                 ]:
                     member = tarfile.TarInfo(name)
@@ -200,6 +203,9 @@ def verify(out, release=False):
     with tempfile.TemporaryDirectory() as temp:
         where = Path(temp)
         lock = wheelhouse.verified_extract(tarpath.read_bytes(), digest, where / "verified")
+        if ((lock.parent / "THIRD_PARTY_NOTICES.md").read_bytes()
+                != Path("/src/THIRD_PARTY_NOTICES.md").read_bytes()):
+            raise RuntimeError("Signed wheelhouse third-party notices do not match reviewed source")
         env = where / "venv"
         run("/usr/bin/python3", "-m", "venv", env)
         py = env / "bin/python"
