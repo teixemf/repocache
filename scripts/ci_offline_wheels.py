@@ -232,6 +232,12 @@ def verify(out, release=False):
         if "PASS: Installed Textual TUI starts and switches screens headlessly." not in tui_result:
             raise RuntimeError("Installed native Textual UI smoke did not complete")
         print("PASS: native offline installed Textual TUI starts and navigates on " + native)
+        # Run the defensive archive matrix against the installed, verified
+        # release wheel, in this same network-isolated native OS container.
+        hostile = run(py, "/src/scripts/ci_hostile_archive.py", env=poison)
+        if "PASS: installed native release/wheelhouse hostile archive refusal" not in hostile:
+            raise RuntimeError("Native hostile archive regression did not execute")
+        print("PASS: native installed hostile archive safety tests on " + native)
     print("PASS: completely offline pip installation, wheel hashes, CLI and TUI for " + native)
 
 if __name__ == "__main__":
