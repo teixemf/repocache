@@ -23,11 +23,19 @@ NOW = 1792447200
 
 
 @pytest.fixture
-def queue(tmp_path):
+def queue(tmp_path, monkeypatch):
     directory = tmp_path / "private"
     directory.mkdir(mode=0o700)
     directory.chmod(0o700)
-    return SubmissionQueue(directory / "queue.sqlite3")
+    from repocache import submission_decisions as decisions
+    protected = tmp_path / "root-audit"
+    protected.mkdir(mode=0o700)
+    protected.chmod(0o700)
+    # Only synthetic CI ownership emulation. Real root/SELinux is #49.
+    monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_open_trusted", lambda path: os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
+    return SubmissionQueue(directory / "queue.sqlite3", journal_dir=protected)
 
 
 def payload(url="https://mirror.example.org/debian/", platform="debian", kind="apt-deb822"):
