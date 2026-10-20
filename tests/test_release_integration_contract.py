@@ -62,6 +62,7 @@ def test_mandatory_release_security_matrix_is_explicitly_executed():
     required = (
         "tests/test_public_release_transport_defensive.py",
         "tests/test_hostile_archive_defensive.py",
+        "tests/test_complete_bundle_identity.py",
         "tests/test_release_integration_contract.py",
     )
     assert "Required release security regression gate (issues 37 38 39)" in workflow
