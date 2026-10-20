@@ -23,6 +23,7 @@ def test_tui_two_step_review_and_audited_undo(tmp_path, monkeypatch):
     protected.mkdir(mode=0o700)
     protected.chmod(0o700)
     monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_verify_lock_fd", lambda _fd: None)
     monkeypatch.setattr(decisions, "_open_trusted", lambda path: __import__("os").open(
         path, __import__("os").O_RDONLY | getattr(__import__("os"), "O_NOFOLLOW", 0)))
     queue = SubmissionQueue(private / "state.db", journal_dir=protected)
