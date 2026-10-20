@@ -2,11 +2,15 @@
 
 This is a fresh public repository. `main` is protected by policy; v0.4.0 code is proposed in **draft PRs** until acceptance. **Intended production scope: a CLI/TUI frontend for a separately installed and configured NGINX repository cache on Debian 13 or AlmaLinux 10**, not an NGINX installer. Production-readiness claims must distinguish executed CI from real-host validation; see [existing-NGINX operations](PRODUCTION_EXISTING_NGINX.md). No previous private Git history, protected ref, workflow log or release asset is imported.
 
+## Phased acceptance for the first public release
+
+[The v0.4.0 stage-by-stage acceptance matrix](RELEASE_0.4.0_PHASED_ACCEPTANCE.md) assigns #1, #4, #6, #36 and #39 to the release-branch integration, protected-main promotion, separately authorized signing/publication and post-publication verification gates. A requirement remains NOT VERIFIED until its own stage executes; classifying it as publication-only is not permission to waive any current security, source-integrity or required-CI control. The branch ruleset intentionally requires zero approving external reviews, but the single maintainer's explicit **separate** merge approval remains mandatory. The tag ruleset contains an administrator-role bypass that requires owner custody controls; its mere existence must not be described as unconditional tag immutability.
+
 ## Mandatory acceptance gate
 
 For each issue acceptance criterion, record **PASS**, **FAIL** or **NOT VERIFIED** and an executed command/log or reproducible review reference. Verify functional behavior, failures, privilege/security boundaries, upgrades, rollback, documentation and supported-system impact. A test committed but not run is **NOT VERIFIED**. Deferred real systemd/SELinux and physical power-cut testing remains deferred, not PASS.
 
-Before merging, re-check the PR head, full diff, required CI jobs and results, approvals, unresolved reviews and security blockers. No FAIL/NOT VERIFIED criterion, required check failure or material security finding may be bypassed. The maintainer must **explicitly approve each merge**. PR creation is not approval. Release publication additionally requires separately reviewed signed artifacts and explicit release authorization.
+Before merging, re-check the PR head, full diff, required CI jobs and results, approvals, unresolved reviews and security blockers. No FAIL/NOT VERIFIED **criterion applicable to the current acceptance stage**, required check failure or material security finding may be bypassed. Unexecuted later-stage criteria remain OPEN under their original issues, not PASS. The maintainer must **explicitly approve each merge**. PR creation is not approval. Release publication additionally requires separately reviewed signed artifacts and explicit release authorization.
 
 ## Public GitHub controls
 
