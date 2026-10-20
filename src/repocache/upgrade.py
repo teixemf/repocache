@@ -257,10 +257,10 @@ def _extract_verified(data: bytes, version: str, directory: Path,
     unpacked = 0
     policy: Optional[Dict[str, Any]] = None
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r|gz") as tar:
+        with wheelhouse.bounded_tar(data, MAX_UNPACKED + 4_000_000) as tar:
             for item in tar:
                 path = item.name
-                if (not item.isfile() or not path.startswith(prefix)
+                if (not item.isfile() or item.pax_headers or not path.startswith(prefix)
                         or path[len(prefix):] not in RELEASE_FILES
                         or path in found or item.size < 0
                         or item.mode & 0o7000):
