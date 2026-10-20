@@ -267,6 +267,26 @@ def main() -> None:
         finally:
             active_cli.write_bytes(saved)
             active_cli.chmod(0o755)
+
+        # Same-version operations MUST NOT treat a matching mutable manifest
+        # and the presence of a modified executable as integrity evidence.
+        # Independently authenticated assets rebuild a fresh generation.
+        before_repair = os.readlink(ROOT / "current")
+        changed_manifest = (ROOT / "installed.json").read_bytes()
+        tampered_executable = ROOT / "current/bin/repocache"
+        tamper_sentinel = folder / "old-runtime-executed"
+        tampered_executable.write_text(
+            "#!/bin/sh\\nprintf compromised > " + str(tamper_sentinel) + "\\n")
+        tampered_executable.chmod(0o755)
+        repaired = user_python(new, script, "0.4.0", str(new_bundle), str(new_sha))
+        check(json.loads(repaired.stdout)["status"] == "installed",
+              "same-version signed assets create a new environment, not a no-op")
+        check(os.readlink(ROOT / "current") != before_repair
+              and (ROOT / "installed.json").is_file(),
+              "tampered previous virtualenv is never reused")
+        check(not tamper_sentinel.exists()
+              and cmd("repocache", "--version").stdout.strip().endswith("0.4.0"),
+              "the old altered executable was not executed during signed repair")
         for path, data in protected.items():
             check(path.read_bytes() == data,
                   f"resource unchanged after update/rollback: {path}")
