@@ -137,9 +137,21 @@ class _LocalHandler(BaseHTTPRequestHandler):
         self.connection.settimeout(5)
 
     def do_POST(self):
+        # Proxy and application must never disagree on ambiguous framed
+        # requests or duplicate signed headers (request smuggling).
+        required = ("Content-Length", "Content-Type", "X-Repocache-Key-ID",
+                    "X-Repocache-Timestamp", "X-Repocache-Nonce",
+                    "X-Repocache-Signature")
+        if (self.headers.get_all("Transfer-Encoding") or
+                any(len(self.headers.get_all(name, [])) != 1 or
+                    len(self.headers.get(name, "")) > 128 for name in required) or
+                len(self.headers) > 24):
+            self.close_connection = True
+            self._reply(400, {"error": "invalid_headers"}, {})
+            return
         size = self.headers.get("Content-Length", "")
-        if (self.headers.get("Transfer-Encoding") or not size.isdecimal()
-                or len(size) > 6 or int(size) > 65536):
+        if (not size.isdecimal() or len(size) > 6 or
+                int(size) == 0 or int(size) > 65536):
             self.close_connection = True
             self._reply(413, {"error": "invalid_size"}, {})
             return
