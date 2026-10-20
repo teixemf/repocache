@@ -207,6 +207,11 @@ def verify(out, release=False):
         # Compare every wheel name/version with the installed graph. This
         # catches unexpected higher versions and missing transitive wheels.
         files = sorted((lock.parent / "wheels").glob("*.whl"))
+        from audit_wheel_licenses import format_inventory
+        # The wheelhouse digest and per-file SHA-256 were verified above.
+        # Report license evidence from the *installed* native artifact set,
+        # explicitly leaving legal compatibility for maintainer review.
+        print("CI LICENSE EVIDENCE: " + format_inventory(files).strip(), flush=True)
         expected_versions = {}
         for file in files:
             parts = file.name.split("-")
