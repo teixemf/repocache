@@ -1,0 +1,38 @@
+# OPTIONAL EXAMPLE ONLY — never installed/enabled by a normal REPOCACHE update.
+# Deploy only after #49 production activation criteria PASS and approval.
+# Provision fixed repocache-intake UID/GID, protected state and keyring first.
+[Unit]
+Description=REPOCACHE pending-only repository submission intake (optional)
+After=network.target
+ConditionPathExists=/etc/repocache-intake/enable-local-intake
+
+[Service]
+Type=simple
+User=repocache-intake
+Group=repocache-intake
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/repocache-intake --enable-local-only
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadWritePaths=/var/lib/repocache/submissions
+ReadOnlyPaths=/etc/repocache-intake
+LimitNOFILE=128
+TasksMax=32
+MemoryMax=128M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
