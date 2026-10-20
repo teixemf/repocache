@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "version": "0.4.0",
+  "python_min": "3.12",
+  "python_max_exclusive": "3.14",
+  "targets": [
+    {"id": "debian", "major": "13"},
+    {"id": "almalinux", "major": "10"}
+  ],
+  "compatible_from": [],
+  "downgrade_from": [],
+  "config_schema": 1,
+  "api_schema": 1
+}

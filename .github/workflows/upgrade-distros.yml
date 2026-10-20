@@ -1,0 +1,32 @@
+name: Debian 13 and AlmaLinux 10 upgrade rehearsal
+
+on:
+  # Required on every PR: path-filtered workflows omit mandatory security
+  # contexts for tests/docs-only changes and weaken pre-merge acceptance.
+  pull_request:
+  push:
+    branches: [release/v0.4.0]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-release-upgrade:
+    name: Synthetic rootless update and rollback (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:trixie-slim', 'almalinux:10']
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Exercise synthetic rootless install and rollback (NOT published v0.3.0 migration)
+        shell: bash
+        run: bash scripts/smoke_upgrade_distros.sh '${{ matrix.image }}'

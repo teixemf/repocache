@@ -1,0 +1,77 @@
+[
+  {
+    "name": "priority:P0",
+    "color": "B60205",
+    "description": "Release blocker: security or critical correctness."
+  },
+  {
+    "name": "priority:P1",
+    "color": "D93F0B",
+    "description": "Important planned work for a release."
+  },
+  {
+    "name": "priority:P2",
+    "color": "FBCA04",
+    "description": "Longer-term or optional improvement."
+  },
+  {
+    "name": "type:bug",
+    "color": "D73A4A",
+    "description": "A reproducible defect or regression."
+  },
+  {
+    "name": "type:feature",
+    "color": "0E8A16",
+    "description": "New or expanded functionality."
+  },
+  {
+    "name": "type:testing",
+    "color": "5319E7",
+    "description": "Test coverage, reliability, and test tooling."
+  },
+  {
+    "name": "type:documentation",
+    "color": "0075CA",
+    "description": "Documentation and contributor materials."
+  },
+  {
+    "name": "type:maintenance",
+    "color": "6F42C1",
+    "description": "Maintenance, refactoring, and UX consistency."
+  },
+  {
+    "name": "area:server",
+    "color": "1D76DB",
+    "description": "Server-side REPOCACHE control and NGINX integration."
+  },
+  {
+    "name": "area:client",
+    "color": "008672",
+    "description": "REPOCACHE Client and supported Linux hosts."
+  },
+  {
+    "name": "area:tui",
+    "color": "805AD5",
+    "description": "Interactive Textual terminal interface."
+  },
+  {
+    "name": "area:release",
+    "color": "C5DEF5",
+    "description": "Packaging, installation, and GitHub Releases."
+  },
+  {
+    "name": "area:catalog",
+    "color": "0E8A16",
+    "description": "Validated upstream-to-cache repository catalog."
+  },
+  {
+    "name": "area:observability",
+    "color": "E4E669",
+    "description": "Metrics, logging, and health monitoring."
+  },
+  {
+    "name": "area:security",
+    "color": "B60205",
+    "description": "Authentication, data protection, and security review."
+  }
+]

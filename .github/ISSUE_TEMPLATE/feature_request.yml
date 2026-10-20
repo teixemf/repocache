@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose an improvement or roadmap item.
+title: "feat: "
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: "Please use English, include measurable acceptance criteria, and do not share secrets or private environment details."
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Server CLI
+        - Server TUI
+        - REPOCACHE Client
+        - Repository catalog
+        - Observability
+        - Installation and release
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Problem or motivation
+      description: Explain what is currently difficult and who benefits.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Explain the intended user workflow and alternatives.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List testable conditions for completion.
+      placeholder: |
+        - [ ] The operation is read-only by default.
+        - [ ] Failure cases are covered by tests.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security, compatibility and rollback
+      description: Specify whether this changes upstream selection, NGINX, APT, DNF, credentials or API behaviour.
+  - type: input
+    id: target
+    attributes:
+      label: Suggested milestone (optional)
+      placeholder: "e.g. v0.4.0"
