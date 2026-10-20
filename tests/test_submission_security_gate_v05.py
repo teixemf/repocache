@@ -116,3 +116,28 @@ def test_ephemeral_https_client_to_local_pending_server(tmp_path, monkeypatch):
         server.server_close()
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+
+def test_http_duplicate_content_length_is_refused(tmp_path):
+    import socket
+
+    queue, intake = _fixture(tmp_path)
+    server = make_loopback_server(intake, enabled=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.create_connection(("127.0.0.1", server.server_address[1]),
+                                      timeout=3) as stream:
+            stream.sendall(
+                b"POST /v1/repository-submissions HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: 2\r\nContent-Length: 2\r\n"
+                b"Content-Type: application/json\r\n\r\n{}")
+            answer = stream.recv(1024)
+        assert b" 400 " in answer
+        with queue._connect() as db:
+            assert db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()

@@ -128,6 +128,9 @@ class SubmissionIntake:
 
 
 class _LocalHandler(BaseHTTPRequestHandler):
+    # Do not expose underlying Python runtime version in HTTP responses.
+    server_version = "REPOCACHE"
+    sys_version = ""
     intake: SubmissionIntake
 
     def setup(self):
@@ -137,11 +140,27 @@ class _LocalHandler(BaseHTTPRequestHandler):
         self.connection.settimeout(5)
 
     def do_POST(self):
+        # Proxy and application must never disagree on ambiguous framed
+        # requests or duplicate signed headers (request smuggling).
+        if (self.headers.get_all("Transfer-Encoding") or
+                len(self.headers.get_all("Content-Length", [])) != 1 or
+                len(self.headers) > 24):
+            self.close_connection = True
+            self._reply(400, {"error": "invalid_headers"}, {})
+            return
         size = self.headers.get("Content-Length", "")
-        if (self.headers.get("Transfer-Encoding") or not size.isdecimal()
-                or len(size) > 6 or int(size) > 65536):
+        if (not size.isdecimal() or len(size) > 6 or
+                int(size) == 0 or int(size) > 65536):
             self.close_connection = True
             self._reply(413, {"error": "invalid_size"}, {})
+            return
+        signed_headers = ("Content-Type", "X-Repocache-Key-ID",
+                          "X-Repocache-Timestamp", "X-Repocache-Nonce",
+                          "X-Repocache-Signature")
+        if any(len(self.headers.get_all(name, [])) != 1 or
+               len(self.headers.get(name, "")) > 128 for name in signed_headers):
+            self.close_connection = True
+            self._reply(400, {"error": "invalid_headers"}, {})
             return
         try:
             body = self.rfile.read(int(size))

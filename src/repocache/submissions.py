@@ -14,6 +14,7 @@ import sqlite3
 import stat
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -178,12 +179,18 @@ class SubmissionQueue:
         except (OSError, sqlite3.Error) as exc:
             raise SubmissionError("store_unavailable", 503) from exc
 
+    @contextmanager
     def _connect(self):
+        """Close every connection; sqlite3.Connection.__exit__ alone does not."""
         connection = sqlite3.connect(self.path, timeout=3, isolation_level=None)
-        connection.execute("PRAGMA busy_timeout=3000")
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA journal_mode=DELETE")
-        return connection
+        try:
+            connection.execute("PRAGMA busy_timeout=3000")
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("PRAGMA journal_mode=DELETE")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def enqueue(self, key_hash: str, nonce: str, digest: str, item: dict,
                 *, now: int | None = None) -> str:

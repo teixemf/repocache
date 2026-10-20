@@ -90,3 +90,16 @@ def test_backup_is_valid_and_never_overwrites_existing(tmp_path, monkeypatch):
         assert connection.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 1
     with pytest.raises(SubmissionError):
         queue.backup(backup)
+
+
+def test_sqlite_connection_closes_after_transaction(tmp_path):
+    root = tmp_path / "state"
+    root.mkdir(mode=0o700)
+    root.chmod(0o700)
+    queue = SubmissionQueue(root / "queue.db")
+    with queue._connect() as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    # sqlite3.Connection's native context manager commits but does not close:
+    # our wrapper must close explicitly to avoid leaking FDs under HTTP load.
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
