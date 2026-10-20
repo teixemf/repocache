@@ -97,3 +97,25 @@ def test_native_wheel_verification_always_runs_rights_audit():
     assert 'format_inventory(sorted(build_tools.glob("*.whl")))' in script
     assert 'print("CI LICENSE EVIDENCE: " + format_inventory(files).strip()' in script
     assert "verified_extract(tarpath.read_bytes(), digest" in script
+
+
+def test_root_metadata_is_distinguished_from_nested_vendored_distributions(tmp_path):
+    # setuptools-style vendored packages may include their own dist-info.
+    path = make_wheel(tmp_path)
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr(
+            "example/_vendor/dependency-9.0.dist-info/METADATA",
+            "Name: dependency\nVersion: 9.0\nLicense: MIT\n")
+    item = licenses.audit_wheel(path)
+    assert item["name"] == "example"
+    assert item["version"] == "1.0"
+
+
+def test_duplicate_root_metadata_is_rejected(tmp_path):
+    path = make_wheel(tmp_path)
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr(
+            "example-1.0.dist-info/METADATA",
+            "Name: example\nVersion: 1.0\nLicense: MIT\n")
+    with pytest.raises(licenses.LicenseEvidenceError, match="metadata count"):
+        licenses.audit_wheel(path)
