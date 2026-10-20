@@ -1,6 +1,6 @@
 # v0.4.0 Release Acceptance and Publication Runbook
 
-**Status: release branch is a development candidate, not a published or approved release.**
+**Status: release branch is a development candidate, not a published or approved release.** The intended v0.4.0 product is a **production CLI/TUI frontend for an already installed and operator-configured NGINX repository caching server**, not an NGINX installer. Read [the existing-NGINX deployment contract](PRODUCTION_EXISTING_NGINX.md) and verify the frontend against a representative configured NGINX staging host before claiming host-level production readiness.
 
 The public repository uses an independent Git history and the Apache License
 2.0. Previous private release packages, PR discussions and CI artifacts are not
@@ -24,7 +24,8 @@ head; historical PASS results are evidence for historical commits only.
 | Installed runtime integrity (#35) | No same-version virtualenv is reused based only on service-writable metadata or executable existence. A selected same-version release is reauthenticated, rebuilt into a fresh generation from signed source and offline pinned wheels, and checked before activation. Structural symlink/owner/mode checks and native tamper-repair regression PASS. Does **not** attest old executable bytes against a compromised service UID. |
 | SIGKILL and concurrent updates | Executed unit/subprocess lock, journal, recovery and rollback tests PASS |
 | Standalone first-public boundary | v0.4.0 signed policy has `compatible_from: []`; pre-public installs fail closed before activation and historical migrator is absent from release archives. No historical migration support is claimed |
-| Nginx, systemd and SELinux | Real disposable VM or target-system results, if available; maintainer may defer these **explicitly** without claiming PASS |
+| Existing NGINX frontend contract | Commands inspect an already installed/configured NGINX without rewriting it; no automatic server provisioning promised. CLI/TUI, repository discovery, bounded metrics and health checks have target-platform regression evidence; non-interactive operations do not prompt. Real configured-host smoke is recorded separately from CI. |
+| NGINX, systemd and SELinux host tests | Real booted VM or target results, if available; explicit deferral remains **NOT TESTED**, never PASS. This is a residual risk for production deployments, not a claim that v0.4.0 auto-installs NGINX. |
 | Real power cut | Not performed; residual risk is documented and deferred, not reported as PASS |
 | Final release security / rights review | Public tree scanned and manually inspected; no credentials, private history or deployment values; license and AI disclosure reviewed |
 | GitHub publication controls | Active branch/tag rulesets and release immutability observed in the **public** repository, with no bypass of required reviews/checks |
@@ -118,8 +119,7 @@ host already containing an earlier installation.
 7. Independently verify all generated signatures/provenance. Publish the
    authenticated artifacts in a single release; verify that the immutable
    release and its assets are accessible and unchanged.
-8. Inspect clean-system install and recovery in real environments after
-   publication as previously agreed, record findings and issue regressions.
+8. Inspect the **frontend-only installation and recovery** on representative Debian 13 / AlmaLinux 10 hosts that already have NGINX configured, including negative permission paths and a non-disruptive frontend failure test. The operator must validate a real deployment before declaring it operationally tested; record findings and issue regressions. A clean-system NGINX provisioning test belongs to v0.6.0, not this release.
 
 ## Acceptance and ownership
 
