@@ -225,7 +225,14 @@ def verify(out, release=False):
             if actual_versions.get(name) != version:
                 raise RuntimeError("Offline installed dependency graph mismatch: " + name)
         assert "REPOCACHE" in run(env / "bin/repocache", "--version", env=poison)
-    print("PASS: completely offline pip installation, wheel hashes and CLI for " + native)
+        # Test the actual release-wheel-installed Textual application on each
+        # OS-native target, not an imported source checkout. NGINX collection
+        # is mocked within the headless smoke; network is disabled by Docker.
+        tui_result = run(py, "/src/scripts/smoke_tui.py", env=poison)
+        if "PASS: Installed Textual TUI starts and switches screens headlessly." not in tui_result:
+            raise RuntimeError("Installed native Textual UI smoke did not complete")
+        print("PASS: native offline installed Textual TUI starts and navigates on " + native)
+    print("PASS: completely offline pip installation, wheel hashes, CLI and TUI for " + native)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
