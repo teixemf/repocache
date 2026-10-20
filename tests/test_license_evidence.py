@@ -93,5 +93,7 @@ def test_duplicate_or_symlinked_wheel_and_missing_inventory_refused(tmp_path):
 def test_native_wheel_verification_always_runs_rights_audit():
     script = (ROOT / "scripts/ci_offline_wheels.py").read_text(encoding="utf-8")
     assert "from audit_wheel_licenses import format_inventory" in script
+    assert 'print("CI BUILD LICENSE EVIDENCE: " +' in script
+    assert 'format_inventory(sorted(build_tools.glob("*.whl")))' in script
     assert 'print("CI LICENSE EVIDENCE: " + format_inventory(files).strip()' in script
     assert "verified_extract(tarpath.read_bytes(), digest" in script
