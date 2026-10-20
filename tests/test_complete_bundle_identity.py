@@ -81,7 +81,7 @@ def test_mutation_of_each_distributed_member_changes_full_archive_identity(
 def test_client_docs_policy_and_nonpython_members_are_part_of_signed_inventory(
         verified_original):
     expected = {
-        "README.md", "LICENSE", "release-policy.json", "client/install.sh",
+        "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "release-policy.json", "client/install.sh",
         "client/repocache_client.py", "docs/PRODUCTION_EXISTING_NGINX.md",
         "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh",
     }
