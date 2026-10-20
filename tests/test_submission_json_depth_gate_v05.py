@@ -30,6 +30,7 @@ def queue(tmp_path, monkeypatch):
     # Security refusal of insecure owner/mode is tested separately.
     from os import O_RDONLY, O_NOFOLLOW, open as os_open
     monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_verify_lock_fd", lambda _fd: None)
     monkeypatch.setattr(decisions, "_open_trusted", lambda path: os_open(
         path, O_RDONLY | O_NOFOLLOW))
     return SubmissionQueue(directory / "pending.sqlite3", journal_dir=protected)
