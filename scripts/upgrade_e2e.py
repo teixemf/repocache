@@ -249,6 +249,22 @@ def main() -> None:
         current_link = os.readlink(ROOT / "current")
         current_manifest = (ROOT / "installed.json").read_bytes()
 
+        # Native negative test: a root-owned file substituted inside a
+        # service-managed virtualenv cannot be trusted for an update. Fail
+        # closed before changing the previous launcher/manifest.
+        active_entry = ROOT / "current/bin/repocache"
+        os.chown(active_entry, 0, 0)
+        try:
+            invalid_owner = user_python(
+                new, script, "0.4.0", str(new_bundle), str(new_sha),
+                success=False)
+            check("Unsafe installed environment path" in invalid_owner.stderr
+                  and os.readlink(ROOT / "current") == current_link
+                  and (ROOT / "installed.json").read_bytes() == current_manifest,
+                  "unexpected active executable owner rejects update without state mutation")
+        finally:
+            os.chown(active_entry, uid, gid)
+
         changed = folder / new_sha.name
         changed.write_text("0" * 64 + "  " + new_bundle.name + "\n")
         user_python(new, script, "0.4.0", str(new_bundle), str(changed),
