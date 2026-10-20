@@ -128,6 +128,9 @@ class SubmissionIntake:
 
 
 class _LocalHandler(BaseHTTPRequestHandler):
+    # Do not expose underlying Python runtime version in HTTP responses.
+    server_version = "REPOCACHE"
+    sys_version = ""
     intake: SubmissionIntake
 
     def setup(self):
