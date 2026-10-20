@@ -219,3 +219,38 @@ with tempfile.TemporaryDirectory() as folder:
                             preexec_fn=restrict)
     assert result.returncode == 0, result.stderr.decode(errors="replace")[-600:]
     assert b"PASS: bounded hostile archive refused" in result.stdout
+
+
+def test_pax_extended_member_metadata_is_not_an_implicit_allowlist(tmp_path):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz", format=tarfile.PAX_FORMAT) as out:
+        entry = tarfile.TarInfo(PREFIX + "release-policy.json")
+        entry.pax_headers = {"comment": "untrusted supplemental metadata"}
+        entry.size = 2
+        out.addfile(entry, io.BytesIO(b"{}"))
+    with pytest.raises(upgrade.UpgradeError, match="layout"):
+        extract(stream.getvalue(), tmp_path / "source")
+
+
+def test_pax_wheelhouse_member_is_not_implicitly_approved(tmp_path):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz", format=tarfile.PAX_FORMAT) as out:
+        entry = tarfile.TarInfo("requirements.lock")
+        entry.pax_headers = {"comment": "untrusted supplemental metadata"}
+        entry.size = 1
+        out.addfile(entry, io.BytesIO(b"x"))
+    blob = stream.getvalue()
+    with pytest.raises(wheelhouse.WheelhouseError, match="entry"):
+        wheelhouse.verified_extract(
+            blob, hashlib.sha256(blob).hexdigest(), tmp_path / "deps")
+
+
+def test_bounded_gzip_reader_cannot_overdecode_highly_compressible_metadata():
+    # Deliberately small cap: hard limit must be enforced on decoded, not
+    # solely compressed, bytes before TAR or filesystem handling.
+    bomb = gzip.compress(b"A" * 1_000_000)
+    assert len(bomb) < 2_000
+    with gzip.GzipFile(fileobj=io.BytesIO(bomb), mode="rb") as compressed:
+        limited = wheelhouse._BoundedGzipReader(compressed, 1_024)
+        with pytest.raises(OSError, match="resource limit"):
+            limited.read(1_000_000)
