@@ -37,6 +37,7 @@ def setup(tmp_path, monkeypatch):
     # Positive tests simulate a root operator on a non-root CI worker.
     monkeypatch.setattr(submissions.os, "geteuid", lambda: 0)
     monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_verify_lock_fd", lambda _fd: None)
     monkeypatch.setattr(decisions, "_open_trusted", lambda path: os.open(
         path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
     return queue, ident, protected
