@@ -40,6 +40,34 @@ cd "repocache-$REPOCACHE_VERSION"
 test -f LICENSE && test -f src/repocache/recovery.py
 test -f docs/PRODUCTION_EXISTING_NGINX.md
 test ! -e .git && test ! -e tests
+# Test the actual OS-native interpreter and reject unsupported fixture pairs.
+# Everything below runs inside the disposable native Docker image.
+/usr/bin/python3 -I platform_check.py
+/usr/bin/python3 - <<PY
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("native_preflight", "platform_check.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.validate(Path("/etc/os-release").read_text(encoding="utf-8"),
+                sys.version_info[:2])
+cases = (
+    ("ID=debian\nVERSION_ID=12\n", (3, 13)),
+    ("ID=almalinux\nVERSION_ID=9\n", (3, 12)),
+    ("ID=debian\nVERSION_ID=13\n", (3, 12)),
+    ("ID=almalinux\nVERSION_ID=10\n", (3, 13)),
+    ("ID=ubuntu\nVERSION_ID=24.04\n", (3, 12)),
+)
+for descriptor, version_tuple in cases:
+    try:
+        module.validate(descriptor, version_tuple)
+    except module.PlatformError:
+        continue
+    raise AssertionError("Unsupported OS/native Python pair accepted")
+print("PASS: native OS/Python preflight and five unsupported platform pairs")
+PY
 launcher_sha="$(sha256sum scripts/repocache-launcher.sh | cut -d " " -f1)"
 recovery_sha="$(sha256sum src/repocache/recovery.py | cut -d " " -f1)"
 /bin/bash scripts/bootstrap-rootless.sh --launcher-sha256 "$launcher_sha" --recovery-sha256 "$recovery_sha"
@@ -126,6 +154,14 @@ test ! -e /opt/repocache-cli/managed/current
 /usr/bin/python3 -m py_compile client/repocache_client.py src/repocache/upgrade.py
 /bin/bash client/install.sh --server https://cache.example.org
 repocache-client --json repos list > /tmp/client-repos.json
+/usr/local/bin/repocache-client check --help > /dev/null
+/usr/local/bin/repocache-client repos submit --help > /dev/null
+/usr/local/bin/repocache-client repos sync --help > /dev/null
+if /usr/local/bin/repocache-client repos sync --apply > /tmp/client-apply-rejected.log 2>&1; then
+  echo "Unsafe client source rewrite unexpectedly accepted" >&2
+  exit 1
+fi
+echo "PASS: installed client command contract and sync --apply refusal"
 /usr/bin/python3 -c "import json; assert isinstance(json.load(open(\"/tmp/client-repos.json\"))[\"repositories\"],list)"
 
 echo "PASS: disposable native $REPOCACHE_VERSION bundle layout, unsigned-source refusal and client smoke"
