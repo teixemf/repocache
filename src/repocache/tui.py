@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sqlite3
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -433,17 +435,28 @@ class RepoCacheApp(App):
             proposals = SubmissionQueue(SUBMISSION_QUEUE_PATH).pending()
             self._proposal_versions = {p["id"]: p["version"] for p in proposals}
             for proposal in proposals:
-                # Only show the canonical URL's host, not query strings, paths or
-                # original payloads. Client credentials are never part of the queue.
-                first = proposal["repositories"][0]
-                host = urlsplit(first["url"]).hostname or "invalid"
+                # Treat persisted queue rows as untrusted. A corrupt or
+                # service-UID-tampered record must fail closed, not crash TUI.
+                records = proposal["repositories"]
+                if not isinstance(records, list) or not records or not isinstance(records[0], dict):
+                    raise SubmissionError("invalid_stored_proposal", 503)
+                first = records[0]
+                uri = first.get("url")
+                if not isinstance(uri, str) or len(uri) > 2048:
+                    raise SubmissionError("invalid_stored_proposal", 503)
+                # Show only canonical hostname, never path, query, or raw body.
+                host = urlsplit(uri).hostname or "invalid"
+                if not re.fullmatch(r"[a-zA-Z0-9.-]{1,253}", host):
+                    raise SubmissionError("invalid_stored_proposal", 503)
                 table.add_row(proposal["id"][:12], proposal["os"] + " " +
                               proposal["version_os"], first["type"], host,
                               "HTTP (review)" if first["insecure_http"] else "HTTPS",
                               key=proposal["id"])
             label.update(f"{len(proposals)} pending proposal(s). Only the first origin per proposal is shown.")
-        except (SubmissionError, OSError, ValueError):
-            label.update("Cannot access trusted submission queue; no decisions permitted.")
+        except (SubmissionError, OSError, ValueError, IndexError, KeyError, TypeError, sqlite3.Error):
+            table.clear()
+            self._proposal_versions = {}
+            label.update("Cannot access a validated submission queue; no decisions permitted.")
 
     def _decide(self, action: str) -> None:
         if (self.query_one(TabbedContent).active != "submissions" or
