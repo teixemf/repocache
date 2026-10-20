@@ -153,3 +153,37 @@ def revoke_key(keyring: Path, key_id: str, *, approved: bool = False) -> None:
         raise
     except (OSError, UnicodeError, ValueError) as exc:
         raise SubmissionError("credential_write_unavailable", 503) from exc
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Script-friendly offline key generation and revocation; no secret output."""
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(prog="repocache-submissions-keys")
+    sub = parser.add_subparsers(dest="operation", required=True)
+    add = sub.add_parser("issue")
+    add.add_argument("--id", required=True)
+    add.add_argument("--client-output", type=Path, required=True)
+    add.add_argument("--approve", action="store_true", required=True)
+    remove = sub.add_parser("revoke")
+    remove.add_argument("--id", required=True)
+    remove.add_argument("--approve", action="store_true", required=True)
+    args = parser.parse_args(argv)
+    keyring = Path("/etc/repocache-intake/keyring.json")
+    try:
+        if args.operation == "issue":
+            issue_key(keyring, args.client_output, args.id, approved=args.approve)
+            print("Key issued; protected client credential written. Restart service after approved change.")
+        else:
+            revoke_key(keyring, args.id, approved=args.approve)
+            print("Key revoked in persisted keyring. Restart service after approved change.")
+        return 0
+    except (SubmissionError, OSError) as exc:
+        status = exc.code if isinstance(exc, SubmissionError) else "credential_write_unavailable"
+        print("ERROR: " + status, file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
