@@ -2,3 +2,6 @@
 # Reconcile with existing NGINX ownership, TLS, and rate-limit policies.
 limit_req_zone $binary_remote_addr zone=repocache_submit:10m rate=10r/m;
 limit_conn_zone $binary_remote_addr zone=repocache_submit_connections:10m;
+
+# In the HTTPS server{} block set client_header_timeout 5s;
+# Do not place client_header_timeout in location{} (NGINX rejects it).
