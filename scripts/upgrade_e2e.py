@@ -128,6 +128,20 @@ def main() -> None:
         check(protected_launcher.stat().st_uid == 0
               and not Path("/usr/bin/repocache").exists(),
               "global launcher is root-owned; no second unmanaged CLI link")
+        # Probe the real launcher ancestors in disposable CI images. A service
+        # account must never accept a globally writable parent of its root-
+        # owned command path, even when the launcher file itself looks safe.
+        launcher_parent = protected_launcher.parent
+        original_mode = launcher_parent.stat().st_mode & 0o777
+        launcher_parent.chmod(0o777)
+        try:
+            result = user_python(
+                old, "from repocache import updater; updater._safe_links()",
+                success=False)
+            check("Unsafe global launcher ancestor" in result.stderr,
+                  "writable global launcher directory rejected before runtime execution")
+        finally:
+            launcher_parent.chmod(original_mode)
         for protected_file in (Path("/usr/local/bin/repocache"),
                                Path("/etc/ssl/repocache-test.key"),
                                Path("/etc/nginx/nginx.conf")):
