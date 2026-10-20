@@ -58,6 +58,9 @@ def verify(output: Path) -> None:
         contents = wheelhouse.verified_extract(
             from_zip, sha(from_zip), clean / "wheels")
         wheelhouse.verify_application_wheel(contents, version)
+        if ((contents.parent / "THIRD_PARTY_NOTICES.md").read_bytes()
+                != (ROOT / "THIRD_PARTY_NOTICES.md").read_bytes()):
+            raise ValueError("Wheelhouse license notices differ from authenticated source")
         artifacts: dict[str, tuple[str, str]] = {}
         for filename in (contents.parent / "wheels").glob("*.whl"):
             parts = filename.name.split("-")
