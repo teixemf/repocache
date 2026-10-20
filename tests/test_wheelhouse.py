@@ -117,7 +117,7 @@ def test_standalone_wheelhouse_requires_bounded_license_notices(tmp_path, mutati
         files["THIRD_PARTY_NOTICES.md"] = b"\\xff"
     else:
         files["THIRD_PARTY_NOTICES.md"] = b"Binary\\x00content"
-    with pytest.raises(wheelhouse.WheelhouseError, match="license notices"):
+    with pytest.raises(wheelhouse.WheelhouseError, match="license notice"):
         _check(files, tmp_path / "invalid-notices")
 
 
