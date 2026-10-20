@@ -1,12 +1,9 @@
 name: Debian 13 and AlmaLinux 10 upgrade rehearsal
 
 on:
+  # Required on every PR: path-filtered workflows omit mandatory security
+  # contexts for tests/docs-only changes and weaken pre-merge acceptance.
   pull_request:
-    paths:
-      - 'src/repocache/**'
-      - 'scripts/**'
-      - 'release-policy.json'
-      - '.github/workflows/upgrade-distros.yml'
   workflow_dispatch:
 
 permissions:
