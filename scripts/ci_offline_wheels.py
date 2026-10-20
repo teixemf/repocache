@@ -79,6 +79,11 @@ def build(out, release=False, poison_backend=False):
             raise RuntimeError("Build backend dependency SHA-256 mismatch: " + name)
         backend_lock.append("./build-tools/" + found[0].name +
                             " --hash=sha256:" + expected)
+    # The backend wheels are separately pinned before they can execute.
+    # Preserve rights metadata evidence for the build-time supply chain too.
+    from audit_wheel_licenses import format_inventory
+    print("CI BUILD LICENSE EVIDENCE: " +
+          format_inventory(sorted(build_tools.glob("*.whl"))).strip(), flush=True)
     lockfile = out / "build-tools.lock"
     lockfile.write_text("\n".join(backend_lock) + "\n")
     run(interpreter, "-m", "pip", "install", "--no-index", "--no-deps",
