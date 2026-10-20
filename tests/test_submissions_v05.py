@@ -180,7 +180,7 @@ def test_permission_check_audit_and_reopen(queue, monkeypatch):
     with pytest.raises(SubmissionError, match="stale_decision"):
         queue.decide(ident, "reopen", expected_version=0)
     with pytest.raises(SubmissionError, match="invalid_transition"):
-        queue.decide(ident, "review")
+        queue.decide(ident, "review", expected_version=1)
     queue.decide(ident, "reopen", expected_version=1)
     queue.decide(ident, "reject", expected_version=2)
     assert [x[0] for x in queue.audit(ident)] == ["review", "reopen", "reject"]
