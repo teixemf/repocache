@@ -20,6 +20,7 @@ from pathlib import Path
 MAX_WHEELHOUSE = 100_000_000
 MAX_MEMBERS = 120
 MAX_WHEEL = 25_000_000
+MAX_NOTICES = 65_536
 MAX_UNPACKED = 200_000_000
 HASH_LINE = re.compile(
     r"^\./wheels/([A-Za-z0-9_][A-Za-z0-9_.+-]{0,220}\.whl) --hash=sha256:([a-f0-9]{64})$"
@@ -58,7 +59,7 @@ def bounded_tar(archive: bytes, maximum: int):
 
 
 def verified_extract(archive: bytes, digest: str, destination: Path) -> Path:
-    """Materialize exactly hash-pinned wheel files and a lock, no symlinks."""
+    """Materialize hash-pinned wheel files, a lock, SBOM and release notices."""
     if (not re.fullmatch(r"[a-f0-9]{64}", digest)
             or not archive or len(archive) > MAX_WHEELHOUSE
             or hashlib.sha256(archive).hexdigest() != digest):
@@ -73,7 +74,7 @@ def verified_extract(archive: bytes, digest: str, destination: Path) -> Path:
             for member in stream:
                 name = member.name
                 if (not member.isfile() or member.pax_headers or name in files or
-                        name not in ("requirements.lock", "sbom.json") and (
+                        name not in ("requirements.lock", "sbom.json", "THIRD_PARTY_NOTICES.md") and (
                             not name.startswith("wheels/") or
                             HASH_LINE.fullmatch("./" + name + " --hash=sha256:" + "0" * 64) is None)
                         or member.size < 0 or member.size > MAX_WHEEL or
@@ -91,6 +92,18 @@ def verified_extract(archive: bytes, digest: str, destination: Path) -> Path:
                 files[name] = value
         if "requirements.lock" not in files or "sbom.json" not in files:
             raise WheelhouseError("Missing locked wheel inventory or signed SBOM")
+        # A wheelhouse is a separately downloadable distribution. The MIT/ISC
+        # notices for pinned wheels lacking embedded licenses must travel with
+        # the wheels, even when the source archive is not downloaded.
+        notices = files.get("THIRD_PARTY_NOTICES.md")
+        if notices is None or not notices or len(notices) > MAX_NOTICES:
+            raise WheelhouseError("Missing or oversized wheelhouse license notices")
+        try:
+            notice_text = notices.decode("utf-8")
+        except UnicodeError as exc:
+            raise WheelhouseError("Invalid wheelhouse license notice encoding") from exc
+        if "\x00" in notice_text:
+            raise WheelhouseError("Non-text wheelhouse license notices refused")
         try:
             text = files["requirements.lock"].decode("ascii")
         except UnicodeError as exc:
