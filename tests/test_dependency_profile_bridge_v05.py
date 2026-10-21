@@ -185,3 +185,33 @@ def test_signed_future_profile_refused_before_archive_or_install(
             selected=version, bundle=bundle, checksum=checksum,
             system={"ID": os_id, "VERSION_ID": os_version},
         )
+
+
+@pytest.mark.parametrize("system", [
+    {"ID": "debian", "VERSION_ID": "13"},
+    {"ID": "almalinux", "VERSION_ID": "10"},
+])
+def test_v05_schema_one_compatibility_bridge_policy_fixture(system):
+    """A v0.4.0 updater can parse a schema-1 target policy for v0.5.0.
+
+    This is a synthetic policy-only acceptance test, NOT an actual owner-signed
+    v0.5.0 release or verification of real migration/rollback.
+    """
+    policy_path = Path(__file__).resolve().parents[1] / "release-policy.json"
+    baseline = json.loads(policy_path.read_text(encoding="utf-8"))
+    assert baseline["schema"] == 1 and baseline["version"] == "0.4.0"
+    assert baseline["compatible_from"] == []
+    bridge = {**baseline, "version": "0.5.0",
+              "compatible_from": ["0.4.0"]}
+    assert upgrade._policy(
+        bridge, "0.5.0", {"version": "0.4.0"}, system,
+    )["compatible_from"] == ["0.4.0"]
+
+    no_bridge = {**bridge, "compatible_from": []}
+    with pytest.raises(upgrade.UpgradeError, match="Compatibility"):
+        upgrade._policy(no_bridge, "0.5.0", {"version": "0.4.0"}, system)
+    with pytest.raises(upgrade.UpgradeError, match="Compatibility"):
+        upgrade._policy(bridge, "0.5.0", {"version": "0.3.0"}, system)
+    # Installing a compatible forward release is not permission to downgrade.
+    with pytest.raises(upgrade.UpgradeError, match="Compatibility"):
+        upgrade._policy(baseline, "0.4.0", {"version": "0.5.0"}, system)
