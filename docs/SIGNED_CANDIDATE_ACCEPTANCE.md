@@ -27,7 +27,9 @@ or rebuilt equivalents. See #76 and docs/RELEASE_ACCEPTANCE_POLICY.md.
    A Draft remains mutable, is not an immutable public release and requires a
    read-only authenticated API to access its assets. **Do not Publish**.
 4. Run the read-only Signed release candidate acceptance workflow by manual
-   workflow_dispatch on protected main. Its GH_TOKEN has only contents:read.
+   workflow_dispatch on protected main. Its GH_TOKEN has only contents:read
+   and actions:read (source-run/job and evidence-artifact API access), with
+   NO contents:write, actions:write or publisher signing permissions.
    Credentials are NEVER forwarded from api.github.com to a redirect/CDN.
 5. The verifier checks immutable reviewed tag/source ancestry, owner-triggered
    official run, 8 draft asset IDs and SHA-256, real Ed25519 manifesto and
