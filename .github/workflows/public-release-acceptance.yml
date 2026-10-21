@@ -1,0 +1,106 @@
+name: Public release acceptance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/public-release-acceptance.yml'
+      - 'scripts/public_release_acceptance.py'
+      - 'scripts/ci_public_release_native.py'
+      - 'scripts/public_release_targets.json'
+      - 'docs/RELEASE_ACCEPTANCE_POLICY.md'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Reviewed, immutable release target
+        type: choice
+        required: true
+        default: v0.4.0
+        options:
+          - v0.4.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-release-acceptance-\${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  public-distribution:
+    name: Anonymous real release and publisher signatures
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Fetch exact immutable public bytes without credentials
+        env:
+          RELEASE_TAG: \${{ inputs.tag || 'v0.4.0' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/repocache-release"
+          python3 scripts/public_release_acceptance.py fetch \
+            --tag "$RELEASE_TAG" --dest "$RUNNER_TEMP/repocache-release"
+          printf 'PASS: actual anonymous public release authenticated\n'
+
+  native-public-install:
+    name: Public signed install and rollback (\${{ matrix.image }})
+    needs: public-distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:13-slim
+            platform: debian13
+          - image: almalinux:10
+            platform: almalinux10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Fetch independently verified public release assets
+        env:
+          RELEASE_TAG: \${{ inputs.tag || 'v0.4.0' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/repocache-release"
+          python3 scripts/public_release_acceptance.py fetch \
+            --tag "$RELEASE_TAG" --dest "$RUNNER_TEMP/repocache-release"
+      - name: Prepare disposable native target image
+        env:
+          BASE_IMAGE: \${{ matrix.image }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > "$RUNNER_TEMP/Dockerfile.repocache-test" <<'DOCKERFILE'
+          ARG BASE_IMAGE
+          FROM \${BASE_IMAGE}
+          RUN if command -v apt-get >/dev/null 2>&1; then \
+                apt-get update -qq && \
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  python3 python3-venv python3-pip python3-setuptools python3-wheel \
+                  ca-certificates openssl util-linux passwd; \
+              else \
+                dnf -y -q install python3 python3-pip python3-devel python3-setuptools \
+                  python3-wheel ca-certificates openssl util-linux util-linux-user shadow-utils; \
+              fi
+          DOCKERFILE
+          docker build --pull --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+            -t "repocache-public-ci:\${{ matrix.platform }}" \
+            -f "$RUNNER_TEMP/Dockerfile.repocache-test" "$RUNNER_TEMP"
+          docker image inspect "repocache-public-ci:\${{ matrix.platform }}" \
+            --format 'Built disposable image ID: {{.Id}}'
+      - name: Install from actual public assets, repair and refuse corrupted inputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge --user 0:0 \
+            --mount "type=bind,source=\${{ github.workspace }},target=/repo,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/repocache-release,target=/artifacts,readonly" \
+            "repocache-public-ci:\${{ matrix.platform }}" \
+            /usr/bin/python3 /repo/scripts/ci_public_release_native.py
