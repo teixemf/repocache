@@ -40,8 +40,27 @@ def build_release(output: Path, tag: str = "") -> tuple[Path, Path]:
         policy = json.loads((ROOT / "release-policy.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ValueError("Incomplete release bundle: release-policy.json") from error
-    if policy.get("version") != version or policy.get("schema") != 1:
+    schema = policy.get("schema")
+    if policy.get("version") != version or type(schema) is not int:
         raise ValueError("Release compatibility policy version does not match the project")
+    if schema == 1:
+        # The immutable v0.4.0 profile remains an exact schema-1 contract.
+        if "dependency_profile" in policy:
+            raise ValueError("Legacy release policy must not specify a dependency profile")
+    elif schema == 2:
+        # A future transition release can still carry the original signed
+        # offline wheelhouse. Online profiles are deliberately NOT buildable
+        # until #83/#84 define and verify their signed dependency locks.
+        if (tuple(map(int, version.split("."))) < (0, 5, 0)
+                or policy.get("dependency_profile") != "legacy-offline-wheelhouse"
+                or set(policy) != {
+                    "schema", "version", "python_min", "python_max_exclusive",
+                    "targets", "compatible_from", "downgrade_from",
+                    "config_schema", "api_schema", "dependency_profile"
+                }):
+            raise ValueError("Unsupported transition dependency profile")
+    else:
+        raise ValueError("Unsupported release compatibility policy schema")
     output.mkdir(parents=True, exist_ok=True)
     package = output / f"repocache-v{version}.tar.gz"
     with package.open("wb") as handle:
