@@ -149,11 +149,32 @@ def _validate_native_runtime(system: Dict[str, str], python_version: Tuple[int, 
 def _policy(data: Any, version: str, previous: Dict[str, Any],
             system: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Explicit allowlist of supported paths between release versions."""
-    if not isinstance(data, dict) or set(data) != {
+    fields = {
         "schema", "version", "python_min", "python_max_exclusive",
         "targets", "compatible_from", "downgrade_from",
         "config_schema", "api_schema"
-    } or data["schema"] != 1 or data["version"] != version:
+    }
+    # Schema 1 is the immutable v0.4.0 release contract. Schema 2 is the
+    # transitional v0.5.0 contract: an explicit dependency profile is
+    # authenticated by the original Ed25519 manifest's policy_sha256.
+    # Online installation is NOT enabled here; #83/#84 own its signed lock,
+    # download trust policy and distinct release asset layout.
+    if not isinstance(data, dict) or type(data.get("schema")) is not int:
+        raise UpgradeError("Missing or mismatched compatibility policy")
+    schema = data["schema"]
+    if schema == 1:
+        if set(data) != fields:
+            raise UpgradeError("Missing or mismatched compatibility policy")
+    elif schema == 2:
+        if (set(data) != fields | {"dependency_profile"}
+                or updater._version_tuple(version) < (0, 5, 0)):
+            raise UpgradeError("Unsupported dependency profile policy schema")
+        if data["dependency_profile"] != "legacy-offline-wheelhouse":
+            raise UpgradeError(
+                "Online or unknown dependency profile is not supported by this updater")
+    else:
+        raise UpgradeError("Unsupported compatibility policy schema")
+    if data["version"] != version:
         raise UpgradeError("Missing or mismatched compatibility policy")
     def py_pair(raw: Any) -> Tuple[int, int]:
         if not isinstance(raw, str) or not re.fullmatch(r"[0-9]+\.[0-9]+", raw):
@@ -203,6 +224,12 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
         raise UpgradeError("Compatibility with the installed version is not established")
     if updater._version_tuple(version) < updater._version_tuple(current):
         current_policy = previous.get("release_policy")
+        # A later online-profile runtime must never be downgraded to a legacy
+        # wheelhouse generation on the strength of an old version allowlist.
+        # Future signed compatibility/migration rules are scoped to #84/#10.
+        if (isinstance(current_policy, dict)
+                and current_policy.get("dependency_profile") == "online-hash-locked-wheels"):
+            raise UpgradeError("Downgrade across dependency profiles is not approved")
         if (not isinstance(current_policy, dict)
                 or version not in current_policy.get("downgrade_from", [])
                 or current_policy.get("config_schema") != data["config_schema"]
