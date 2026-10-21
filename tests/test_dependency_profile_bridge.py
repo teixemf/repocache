@@ -209,3 +209,42 @@ def test_authenticated_online_profile_not_activated_or_downloaded(
     with pytest.raises(upgrade.UpgradeError, match="dependency profile"):
         upgrade.upgrade("0.5.0", bundle, checksum, system=PLATFORM)
     assert not called
+
+
+def test_release_builder_only_emits_approved_transition_profiles(
+        tmp_path, monkeypatch):
+    import importlib.util
+
+    module = Path(__file__).resolve().parents[1] / "scripts" / "build_release.py"
+    spec = importlib.util.spec_from_file_location("repocache_profile_builder_test", module)
+    assert spec and spec.loader
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    for name in builder.FILES:
+        destination = tmp_path / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("synthetic release fixture\n")
+    (tmp_path / "pyproject.toml").write_text('version = "0.5.0"\n')
+    (tmp_path / "src/repocache/__init__.py").write_text(
+        '__version__ = "0.5.0"\n')
+    source_policy = tmp_path / "release-policy.json"
+    source_policy.write_text(json.dumps(policy()) + "\n")
+    archive, checksum = builder.build_release(tmp_path / "dist", "v0.5.0")
+    assert archive.is_file() and checksum.is_file()
+    with tarfile.open(archive, mode="r:gz") as src:
+        extracted = src.extractfile("repocache-v0.5.0/release-policy.json")
+        assert extracted is not None
+        assert json.loads(extracted.read())["dependency_profile"] == (
+            "legacy-offline-wheelhouse")
+    source_policy.write_text(
+        json.dumps(policy(profile="online-hash-locked-wheels")) + "\n")
+    with pytest.raises(ValueError, match="dependency profile"):
+        builder.build_release(tmp_path / "dist2", "v0.5.0")
+    bad = policy(version="0.4.0")
+    source_policy.write_text(json.dumps(bad) + "\n")
+    (tmp_path / "pyproject.toml").write_text('version = "0.4.0"\n')
+    (tmp_path / "src/repocache/__init__.py").write_text(
+        '__version__ = "0.4.0"\n')
+    with pytest.raises(ValueError, match="dependency profile"):
+        builder.build_release(tmp_path / "dist3", "v0.4.0")
