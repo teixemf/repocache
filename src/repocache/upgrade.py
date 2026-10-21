@@ -211,6 +211,32 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
     return data
 
 
+def _verified_dependency_profile(signed: Dict[str, Any],
+                                 policy: Dict[str, Any], version: str) -> str:
+    """Identify the *already authenticated* release's dependency profile.
+
+    A v0.4.0 updater understands only the schema-1 signed manifest/policy and
+    publisher-bound wheelhouse. v0.5.0 must preserve that envelope so the
+    immutable public v0.4.0 can install the transition release. Future online
+    schemas need separately implemented, accepted download/rollback controls.
+
+    Only call after signatures.verify() and the signed policy digest check;
+    this returned label is never an independent trust anchor.
+    """
+    # Production verification supplies schema/version; historical test doubles
+    # may omit the two already verified, redundant fields.
+    schema = signed.get("schema", 1)
+    if (type(schema) is not int or schema != 1 or
+            signed.get("version", version) != version or
+            not isinstance(policy, dict) or policy.get("schema") != 1 or
+            policy.get("version") != version):
+        raise UpgradeError("Unsupported signed dependency profile or compatibility policy")
+    digest = signed.get("wheelhouse_sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
+        raise UpgradeError("Signed legacy dependency profile requires a verified wheelhouse")
+    return updater.LEGACY_DEPENDENCY_PROFILE
+
+
 def _write_staged_member(root: Path, relative: str, value: bytes,
                          mode: int) -> None:
     """Write once beneath the new staging inode, refusing symlinked parents.
@@ -388,6 +414,7 @@ def _upgrade_locked(selected: Optional[str] = None, bundle: Optional[Path] = Non
         source, policy = _extract_verified(
             archive_data, version, Path(temp), previous, system,
             signed_policy_sha256=signed["policy_sha256"])
+        profile = _verified_dependency_profile(signed, policy, version)
         # Signed digest validation precedes any zip/tar interpretation; all
         # wheel bytes and lock directives are verified before source execution.
         try:
@@ -407,6 +434,7 @@ def _upgrade_locked(selected: Optional[str] = None, bundle: Optional[Path] = Non
                 "publisher_key_id": signed["key_id"],
                 "release_commit": signed["commit"],
                 "wheelhouse_sha256": wheel_digest,
+                "dependency_profile": profile,
             })
 
 
