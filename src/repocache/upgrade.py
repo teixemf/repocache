@@ -365,6 +365,15 @@ def _upgrade_locked(selected: Optional[str] = None, bundle: Optional[Path] = Non
         signed = signatures.verify(archive_data, manifest_data, signature_data, version)
     except signatures.SignatureError as exc:
         raise UpgradeError(str(exc)) from exc
+    # The v0.4.0/v0.5.0 bridge may install only the historical signed
+    # schema-1 offline-wheelhouse profile. Schema-2 profiles can be signature
+    # authenticated by signatures.verify(), but MUST NOT be interpreted as
+    # installable before #83/#84 implement complete signed lock, asset-set,
+    # index and platform verification. No network-based pip fallback exists.
+    if signed.get("schema", 1) != 1:
+        raise UpgradeError(
+            "Signed dependency profile is recognized but installation is "
+            "not supported by this updater")
     _verify_checksum(archive_data, checksum_data, version)
     wheel_digest = signed.get("wheelhouse_sha256")
     if not isinstance(wheel_digest, str) or len(wheel_digest) != 64:
