@@ -72,9 +72,11 @@ def sha(data: bytes) -> str:
 
 
 def normal(tag: str, commit: str, release_id: int, run_id: int, attempt: int):
-    require(TAG.fullmatch(tag) is not None
-            and tuple(map(int, tag[1:].split("."))) > (0, 4, 0),
-            "Unapproved post-0.4.0 candidate tag")
+    # This initial gate is intentionally reviewed for one upgrade baseline:
+    # actual public v0.4.0 -> signed v0.5.0. Refuse later versions until a
+    # reviewed PR changes BOTH this trust policy and the public baseline.
+    require(tag == "v0.5.0",
+            "Unreviewed candidate: prior public release baseline must be updated")
     require(COMMIT.fullmatch(commit) is not None
             and type(release_id) is int and release_id > 0
             and type(run_id) is int and run_id > 0
@@ -102,11 +104,11 @@ def request(url: str, *, token: str, binary: bool = False, maximum: int = MAX_AP
     current = url
     for redirect in range(5):
         urlparts = urllib.parse.urlsplit(current)
-        api_origin = redirect == 0 and urlparts.hostname == "api.github.com"
+        host = urlparts.hostname or ""
+        api_origin = redirect == 0 and host == "api.github.com"
         if not api_origin:
             require(urlparts.scheme == "https" and
-                    (urlparts.hostname in CDN or
-                     urlparts.hostname.endswith(".blob.core.windows.net"))
+                    (host in CDN or host.endswith(".blob.core.windows.net"))
                     and urlparts.port in (None, 443)
                     and not urlparts.username and not urlparts.password
                     and not urlparts.fragment, "Off-host or insecure asset redirect")
