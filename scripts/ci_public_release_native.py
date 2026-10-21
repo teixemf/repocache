@@ -65,11 +65,14 @@ def main() -> None:
     check(os.geteuid() == 0 and Path("/.dockerenv").exists(),
           "running as disposable Docker test harness")
     os_release = Path("/etc/os-release").read_text()
-    native = (("ID=debian" in os_release and "VERSION_ID=\"13\"" in os_release
-               and sys.version_info[:2] == (3, 13))
-              or ("ID=\"almalinux\"" in os_release or "ID=almalinux" in os_release)
-              and "VERSION_ID=\"10\"" in os_release
-              and sys.version_info[:2] == (3, 12))
+    os_fields = dict(line.split("=", 1) for line in os_release.splitlines()
+                     if "=" in line)
+    distro = os_fields.get("ID", "").strip('"')
+    major = os_fields.get("VERSION_ID", "").strip('"').split(".", 1)[0]
+    native = (distro, major, sys.version_info[:2]) in (
+        ("debian", "13", (3, 13)),
+        ("almalinux", "10", (3, 12)),
+    )
     check(native, "genuine Debian 13/Python 3.13 or AlmaLinux 10/Python 3.12")
 
     # Verify every downloaded byte and both authentic publisher signatures
@@ -108,11 +111,15 @@ def main() -> None:
         check((key_dir / "repocache-2026-10.pem").stat().st_uid == 0,
               "independently provisioned root-owned release trust anchor")
 
-        for path in PRESERVE:
+        distro_sentinel = ("/etc/apt/sources.list.d/repocache-keep.sources"
+                           if distro == "debian"
+                           else "/etc/yum.repos.d/repocache-keep.repo")
+        preserve = (*PRESERVE, distro_sentinel)
+        for path in preserve:
             file = Path(path)
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_bytes(b"repocache-public-release-acceptance:DO-NOT-CHANGE\n")
-        sentinel = {s: Path(s).read_bytes() for s in PRESERVE}
+        sentinel = {s: Path(s).read_bytes() for s in preserve}
 
         cmd("/bin/bash", str(source / "scripts/bootstrap-rootless.sh"),
             "--launcher-sha256", target["launcher_sha256"],
@@ -186,6 +193,21 @@ def main() -> None:
                 okay=False)
         check(managed()[:2] == (after_link, after_raw),
               "tampered local wheelhouse refused before activation")
+        # Controlled post-build failure: use the exact signed public bundle,
+        # then require the old active generation and manifest to survive.
+        rollback_script = (
+            "import sys; from pathlib import Path; "
+            "from repocache import updater; "
+            "from repocache.upgrade import upgrade; "
+            "updater._write_manifest=lambda *_args: "
+            "(_ for _ in ()).throw(updater.UpdateError('injected manifest failure')); "
+            "upgrade(selected='0.4.0',bundle=Path(sys.argv[1]),"
+            "checksum=Path(sys.argv[2]))"
+        )
+        service(source, rollback_script, str(BUNDLE),
+                str(ASSETS / (BUNDLE.name + ".sha256")), okay=False)
+        check(managed()[:2] == (after_link, after_raw),
+              "injected manifest-commit failure rolls back signed generation")
         # Simulate a denied network endpoint through an explicit impossible
         # proxy, on the real upgrade code path, not a substitute mock release.
         remote_script = (
@@ -198,8 +220,8 @@ def main() -> None:
         })
         check(managed()[:2] == (after_link, after_raw),
               "network outage refused without changing signed active generation")
-        check(all(Path(s).read_bytes() == sentinel[s] for s in PRESERVE),
-              "NGINX, TLS and cache sentinels preserved")
+        check(all(Path(s).read_bytes() == sentinel[s] for s in preserve),
+              "NGINX, TLS, cache and APT/DNF source sentinels preserved")
         print("PASS: real immutable public v0.4.0 native rootless install, repair, recovery boundaries")
         print("NOT TESTED: booted systemd/SELinux and physical power loss")
 
