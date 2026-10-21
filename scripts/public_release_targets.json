@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "policy": "Reviewed published-release identity. Amend only by a reviewed PR; never trust release-provided checksums alone.",
+  "releases": {
+    "v0.4.0": {
+      "release_id": 419296178,
+      "commit": "063c86c9a138bffca6f76f7407e8f1c86bfe4390",
+      "run_id": 39559317114,
+      "run_attempt": 1,
+      "publisher_key_id": "repocache-2026-10",
+      "publisher_der_sha256": "7bbf4b840f762a610da648869564a5b77669f24191d0c5c7af04c14c043dc0fb",
+      "launcher_sha256": "22ad659765fb505a115cac32773540e2a4ee85de6d6e90c55812560102bbd38d",
+      "recovery_sha256": "462c17cee2f6861c08225d92f2cbd154e946b300bddca9b2707262f425a0fa6f",
+      "assets": {
+        "repocache-v0.4.0.tar.gz": {
+          "id": 661785059,
+          "sha256": "76e0179f060c51550d75bfde381216407bdb71b2f60143af50b84a120c96c867",
+          "size": 62775
+        },
+        "repocache-v0.4.0.tar.gz.sha256": {
+          "id": 661785065,
+          "sha256": "d842c25acd1b823c4b16573d38d43d1c5f34562bccde6e9b758fcfe10cb51751",
+          "size": 90
+        },
+        "repocache-v0.4.0.tar.gz.wheelhouse.tar.gz": {
+          "id": 661785063,
+          "sha256": "78b7ae3f939169e63265e2403e8e19a1c7614bf98abf837923e9e60b314280de",
+          "size": 2679328
+        },
+        "repocache-v0.4.0.tar.gz.wheelhouse.tar.gz.sha256": {
+          "id": 661785060,
+          "sha256": "7c35b22b34102936292cc1991bd9d8651a66f0533080e7aa32c5f369e3efbea9",
+          "size": 64
+        },
+        "repocache-v0.4.0.tar.gz.manifest.json": {
+          "id": 661785061,
+          "sha256": "03eb12fbde33322ffb18a70c2115f6eee519ec40fa211af32677cd5b477306e8",
+          "size": 501
+        },
+        "repocache-v0.4.0.tar.gz.manifest.json.sig": {
+          "id": 661785094,
+          "sha256": "2d2b870649e8c3970d960f8996a9f2d97096ea7272e6f6c896af7e7a47bb9960",
+          "size": 64
+        },
+        "repocache-v0.4.0.tar.gz.provenance.json": {
+          "id": 661785091,
+          "sha256": "9731e86e2cc4305f1cdf83104b6a7232a914e1cefdc51000d32cdff4a666a108",
+          "size": 1227
+        },
+        "repocache-v0.4.0.tar.gz.provenance.json.sig": {
+          "id": 661785104,
+          "sha256": "8568e607be738db1b3f300df4d2eb63d49fe9baf7df010a54fcd238ce5eb3eb2",
+          "size": 64
+        }
+      }
+    }
+  }
+}
