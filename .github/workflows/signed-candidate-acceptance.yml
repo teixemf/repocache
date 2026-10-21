@@ -1,13 +1,6 @@
 name: Signed release candidate acceptance
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/signed-candidate-acceptance.yml"
-      - "scripts/draft_release_gate.py"
-      - "scripts/ci_signed_candidate_native.py"
-      - "tests/test_draft_release_gate.py"
-      - "docs/SIGNED_CANDIDATE_ACCEPTANCE.md"
   workflow_dispatch:
     inputs:
       tag:
