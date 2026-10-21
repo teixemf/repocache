@@ -9,28 +9,28 @@ The immutable v0.4.0 publisher manifest, signed eight-asset wheelhouse, installe
 | Compatibility policy | Allowed application version | Authenticated dependency profile | Install transport |
 | --- | --- | --- | --- |
 | `schema: 1` | Existing versions, including v0.4.0 | Implicit `legacy-offline-wheelhouse` | Authenticated offline hash-pinned wheelhouse only |
-| `schema: 2` | v0.5.0 or newer transitional release | Required exact string `legacy-offline-wheelhouse` | Same authenticated offline wheelhouse, **not** PyPI |
+| `schema: 2` | v0.6.0 or newer, after a schema-1 v0.5.0 bridge | Required exact string `legacy-offline-wheelhouse` | Same authenticated offline wheelhouse, **not** PyPI |
 | Future online profile | Not yet supported | `online-hash-locked-wheels` | **Fail closed** pending #83/#84 |
 
 The normal release manifest still uses its original **Ed25519 signed schema 1** with `archive_sha256`, `policy_sha256` and `wheelhouse_sha256`. A future schema-2 compatibility policy is bound by the already-authenticated signed `policy_sha256`; it **does not** create a second unsigned trust root.
 
 The release builder rejects new unsigned/unknown policy profile values. The actual upgrader validates the complete schema and explicit allowlists after signature, wheelhouse digest and source archive authentication. Unknown or premature future online profile values are rejected before any supplied source is installed; there is **no** fallback that treats these as legacy or contacts an unapproved index.
 
-The `v0.4.0 -> v0.5.0` migration requires an authentic signed v0.5.0 source archive, explicit v0.4.0 in the new policy's `compatible_from`, the original signed wheelhouse format and a successful new isolated versioned environment. Do not claim a real-world migration is proven by ephemeral-key fixtures.
+**Critical bootstrap invariant:** the immutable v0.4.0 updater rejects policy schema 2. Therefore the **first v0.5.0 release MUST still use signed policy schema 1** with explicit v0.4.0 in `compatible_from` and the original offline wheelhouse. Only a successfully installed v0.5.0 runtime can recognize schema 2 in a subsequent **v0.6.0+** release. Synthetic fixtures cannot prove actual owner-signed migration.
 
-### Example transitional release-policy.json (illustrative only)
+### Example post-bridge v0.6+ legacy-profile policy (illustrative only)
 
 ```json
 {
   "schema": 2,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "python_min": "3.12",
   "python_max_exclusive": "3.14",
   "targets": [
     {"id": "debian", "major": "13"},
     {"id": "almalinux", "major": "10"}
   ],
-  "compatible_from": ["0.4.0"],
+  "compatible_from": ["0.5.0"],
   "downgrade_from": [],
   "config_schema": 1,
   "api_schema": 1,
@@ -38,7 +38,7 @@ The `v0.4.0 -> v0.5.0` migration requires an authentic signed v0.5.0 source arch
 }
 ```
 
-This is not a signed actual publisher release. The live v0.4.0 compatibility policy and installed main branch remain version 0.4.0/schema 1 until release engineering explicitly approves the next version.
+This is not a signed actual publisher release. This is **not** an acceptable v0.5.0 release policy: the first v0.5.0 remains schema 1. The unchanged v0.4.0 release is immutable. Future online/source-only profile semantics must be designed separately under #83/#84.
 
 ## Trust and failure boundaries
 
@@ -50,7 +50,7 @@ This is not a signed actual publisher release. The live v0.4.0 compatibility pol
 
 ## Tests and remaining acceptance
 
-`tests/test_dependency_profile_bridge.py` covers strict schema/profile/version checks, v0.4.0 schema preservation, explicit predecessor allowlists, refusal of online/unknown profile, inadmissible downgrade, actual ephemeral Ed25519 verification of synthetic v0.5.0 archive/policy/wheelhouse identity, altered signed policy digest and rejection before installer invocation. Existing CI/real signed legacy tests remain the regressions of record.
+`tests/test_dependency_profile_bridge.py` covers strict schema/profile/version checks, v0.4.0 schema preservation, explicit predecessor allowlists, refusal of online/unknown profile, inadmissible downgrade, actual ephemeral Ed25519 verification of synthetic **v0.6.0 post-bridge** archive/policy/wheelhouse identity, altered signed policy digest and rejection before installer invocation. Existing CI/real signed legacy tests remain the regressions of record.
 
 **Synthetic test trust limitation:** Tests stub the wheelhouse installation and service-account environment to avoid privileged live-host installation. They validate signature/authenticated-profile dispatch and rejection, **not** actual v0.5.0 publisher signature, native systemd/SELinux, online wheel download or end-to-end migration. All real publisher-key release candidate tests stay mandatory under [#76](https://github.com/teixemf/repocache/issues/76), [#78](https://github.com/teixemf/repocache/issues/78) and [PR #77](https://github.com/teixemf/repocache/pull/77).
 
