@@ -7,6 +7,7 @@ on:
       - 'scripts/public_release_acceptance.py'
       - 'scripts/ci_public_release_native.py'
       - 'scripts/public_release_targets.json'
+      - 'tests/test_public_release_acceptance.py'
       - 'docs/RELEASE_ACCEPTANCE_POLICY.md'
   workflow_dispatch:
     inputs:
