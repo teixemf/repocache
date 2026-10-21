@@ -154,9 +154,10 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
         "targets", "compatible_from", "downgrade_from",
         "config_schema", "api_schema"
     }
-    # Schema 1 is the immutable v0.4.0 release contract. Schema 2 is the
-    # transitional v0.5.0 contract: an explicit dependency profile is
-    # authenticated by the original Ed25519 manifest's policy_sha256.
+    # Immutable v0.4.0 only understands schema 1. Thus the first v0.5.0
+    # bridge release MUST still ship schema 1; the upgraded v0.5.0 runtime
+    # may recognize schema 2 only for a subsequent v0.6.0+ release.
+    # Schema 2's explicit profile is bound by signed policy_sha256.
     # Online installation is NOT enabled here; #83/#84 own its signed lock,
     # download trust policy and distinct release asset layout.
     if not isinstance(data, dict) or type(data.get("schema")) is not int:
@@ -167,7 +168,7 @@ def _policy(data: Any, version: str, previous: Dict[str, Any],
             raise UpgradeError("Missing or mismatched compatibility policy")
     elif schema == 2:
         if (set(data) != fields | {"dependency_profile"}
-                or updater._version_tuple(version) < (0, 5, 0)):
+                or updater._version_tuple(version) < (0, 6, 0)):
             raise UpgradeError("Unsupported dependency profile policy schema")
         if data["dependency_profile"] != "legacy-offline-wheelhouse":
             raise UpgradeError(
