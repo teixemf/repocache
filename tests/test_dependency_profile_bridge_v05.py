@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from repocache import upgrade, updater
+from repocache import signatures, upgrade, updater
 
 
 DEBIAN13 = {"ID": "debian", "VERSION_ID": "13"}
@@ -82,9 +82,8 @@ def test_unrecognized_or_unpinned_authenticated_manifest_rejected(change):
     # Extra fields cannot be passed through the real strict signature verifier.
     # Here ensure our application boundary still refuses invented profiles.
     if "distribution_profile" in change:
-        with pytest.raises(Exception):
+        with pytest.raises(signatures.SignatureError, match="Unsupported signed release manifest schema"):
             # Strict signed-manifest parsing must reject unknown schema-1 keys.
-            from repocache import signatures
             payload = {
                 "schema": 1, "key_id": "fixture", "repository": "teixemf/repocache",
                 "channel": "stable", "version": "0.5.0",
