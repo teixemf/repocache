@@ -229,7 +229,11 @@ def _verified_dependency_profile(signed: Dict[str, Any],
     if (type(schema) is not int or schema != 1 or
             signed.get("version", version) != version or
             not isinstance(policy, dict) or policy.get("schema") != 1 or
-            policy.get("version") != version):
+            set(policy) != {
+                "schema", "version", "python_min", "python_max_exclusive",
+                "targets", "compatible_from", "downgrade_from",
+                "config_schema", "api_schema"
+            } or policy.get("version") != version):
         raise UpgradeError("Unsupported signed dependency profile or compatibility policy")
     digest = signed.get("wheelhouse_sha256")
     if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
