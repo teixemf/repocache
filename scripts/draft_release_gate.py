@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 REPO = "teixemf/repocache"
@@ -100,9 +102,11 @@ def request(url: str, *, token: str, binary: bool = False, maximum: int = MAX_AP
     current = url
     for redirect in range(5):
         urlparts = urllib.parse.urlsplit(current)
-        api_origin = urlparts.hostname == "api.github.com"
+        api_origin = redirect == 0 and urlparts.hostname == "api.github.com"
         if not api_origin:
-            require(urlparts.scheme == "https" and urlparts.hostname in CDN
+            require(urlparts.scheme == "https" and
+                    (urlparts.hostname in CDN or
+                     urlparts.hostname.endswith(".blob.core.windows.net"))
                     and urlparts.port in (None, 443)
                     and not urlparts.username and not urlparts.password
                     and not urlparts.fragment, "Off-host or insecure asset redirect")
@@ -342,6 +346,46 @@ def fetch(release_id: int, tag: str, commit: str, run_id: int, attempt: int,
     return record
 
 
+def recheck(report: dict, token: str) -> None:
+    normal(report["tag"], report["commit"], report["release_id"],
+           report["build_run_id"], report["build_run_attempt"])
+    identity(report["tag"], report["commit"],
+             report["build_run_id"], report["build_run_attempt"], token)
+    require(inventory(report["release_id"], report["tag"],
+                      report["commit"], token) == report["assets"],
+            "Draft modified after original authenticated signed handoff")
+    print("PASS: candidate draft inventory unchanged after native acceptance")
+
+
+def authenticated_ci_evidence(run_id: int, token: str) -> dict:
+    require(type(run_id) is int and run_id > 0, "Invalid accepted CI run")
+    artifacts = api("/actions/runs/" + str(run_id) + "/artifacts?per_page=100", token)
+    matches = [item for item in artifacts.get("artifacts", [])
+               if item.get("name") == "signed-candidate-acceptance"]
+    require(len(matches) == 1 and
+            artifacts.get("total_count", 0) <= 30
+            and not matches[0].get("expired") and
+            matches[0].get("workflow_run", {}).get("id") == run_id,
+            "Missing, ambiguous or expired immutable acceptance artifact")
+    identity = matches[0]
+    require(type(identity.get("id")) is int
+            and identity.get("size_in_bytes", 0) <= 100_000
+            and identity.get("digest", "").startswith("sha256:")
+            and HEX.fullmatch(identity["digest"][7:]),
+            "Acceptance proof artifact has no immutable GitHub digest")
+    raw = request(API + "/actions/artifacts/" + str(identity["id"]) + "/zip",
+                  token=token, binary=True, maximum=100_000)
+    require(sha(raw) == identity["digest"][7:],
+            "Downloaded CI acceptance artifact differs from stored SHA-256")
+    with zipfile.ZipFile(io.BytesIO(raw)) as packaged:
+        files = packaged.infolist()
+        require(len(files) == 1 and
+                files[0].filename == "publisher-candidate-acceptance.json" and
+                0 < files[0].file_size < 20000,
+                "Malformed acceptance artifact ZIP")
+        return document(packaged.read(files[0]))
+
+
 def from_file(path: Path) -> dict:
     require(path.is_file() and not path.is_symlink()
             and 0 < path.stat().st_size < 20000, "Invalid evidence file")
@@ -397,7 +441,7 @@ def guard(report: dict, token: str) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("mode", choices=("fetch", "verify-local", "freeze", "guard"))
+    p.add_argument("mode", choices=("fetch", "verify-local", "recheck", "freeze", "guard"))
     p.add_argument("--release-id", type=int)
     p.add_argument("--tag")
     p.add_argument("--commit")
@@ -412,8 +456,11 @@ def main() -> None:
     args = p.parse_args()
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
     if args.mode == "guard":
-        require(args.evidence is not None, "Missing final acceptance proof")
-        guard(from_file(args.evidence), token)
+        guard(authenticated_ci_evidence(args.ci_run_id, token), token)
+        return
+    if args.mode == "recheck":
+        require(args.inventory is not None, "Missing reviewed candidate inventory")
+        recheck(from_file(args.inventory), token)
         return
     if args.mode == "freeze":
         require(args.inventory is not None and args.evidence is not None,
