@@ -22,14 +22,15 @@ from repocache import signatures, updater, upgrade, wheelhouse
 PLATFORM = {"ID": "debian", "VERSION_ID": "13"}
 
 
-def policy(version: str = "0.5.0", *, schema: int = 2,
+def policy(version: str = "0.6.0", *, schema: int = 2,
            profile: str = "legacy-offline-wheelhouse") -> dict:
     result = {
         "schema": schema, "version": version,
         "python_min": "3.12", "python_max_exclusive": "3.14",
         "targets": [{"id": "debian", "major": "13"},
                     {"id": "almalinux", "major": "10"}],
-        "compatible_from": ["0.4.0"] if version != "0.4.0" else [],
+        "compatible_from": (["0.5.0"] if version.startswith("0.6.") else
+                            ["0.4.0"] if version.startswith("0.5.") else []),
         "downgrade_from": [], "config_schema": 1, "api_schema": 1,
     }
     if schema == 2:
@@ -46,12 +47,16 @@ def test_original_v04_policy_unchanged_and_rejects_additional_keys():
 
 
 def test_signed_legacy_bridge_requires_explicit_previous_allowlist():
-    previous = {"version": "0.4.0"}
+    # Immutable v0.4.0 can only bootstrap a schema-1 v0.5.0 release.
+    first = policy("0.5.0", schema=1)
+    assert upgrade._policy(first, "0.5.0", {"version": "0.4.0"}, PLATFORM) == first
+    # The new v0.5.0 updater can then recognize schema 2 for future releases.
+    previous = {"version": "0.5.0"}
     target = policy()
-    assert upgrade._policy(target, "0.5.0", previous, PLATFORM) == target
+    assert upgrade._policy(target, "0.6.0", previous, PLATFORM) == target
     denied = dict(target, compatible_from=[])
     with pytest.raises(upgrade.UpgradeError, match="Compatibility"):
-        upgrade._policy(denied, "0.5.0", previous, PLATFORM)
+        upgrade._policy(denied, "0.6.0", previous, PLATFORM)
 
 
 @pytest.mark.parametrize("bad", [
@@ -60,33 +65,33 @@ def test_signed_legacy_bridge_requires_explicit_previous_allowlist():
 ])
 def test_new_unimplemented_profiles_never_fall_back_to_legacy(bad):
     with pytest.raises(upgrade.UpgradeError, match="dependency profile"):
-        upgrade._policy(policy(profile=bad), "0.5.0", {"version": "0.4.0"}, PLATFORM)
+        upgrade._policy(policy(profile=bad), "0.6.0", {"version": "0.5.0"}, PLATFORM)
 
 
 def test_schema_requires_exact_version_and_fields():
     with pytest.raises(upgrade.UpgradeError, match="schema"):
-        upgrade._policy(policy("0.4.0"), "0.4.0", {"version": "0.0.0"}, PLATFORM)
+        upgrade._policy(policy("0.5.0"), "0.5.0", {"version": "0.4.0"}, PLATFORM)
     for schema in (True, 0, 3):
         bad = policy()
         bad["schema"] = schema
         with pytest.raises(upgrade.UpgradeError, match="policy|schema"):
-            upgrade._policy(bad, "0.5.0", {"version": "0.4.0"}, PLATFORM)
+            upgrade._policy(bad, "0.6.0", {"version": "0.5.0"}, PLATFORM)
     bad = dict(policy(), attacker_index="https://invalid.example/")
     with pytest.raises(upgrade.UpgradeError, match="schema"):
-        upgrade._policy(bad, "0.5.0", {"version": "0.4.0"}, PLATFORM)
+        upgrade._policy(bad, "0.6.0", {"version": "0.5.0"}, PLATFORM)
 
 
 def test_runtime_profile_downgrade_cannot_use_old_version_allowlist():
-    target = policy("0.5.0", schema=2)
-    target["compatible_from"] = ["0.6.0"]
+    target = policy("0.6.0", schema=2)
+    target["compatible_from"] = ["0.7.0"]
     previous = {
-        "version": "0.6.0",
-        "release_policy": dict(policy("0.6.0", schema=2,
+        "version": "0.7.0",
+        "release_policy": dict(policy("0.7.0", schema=2,
                                       profile="online-hash-locked-wheels"),
-                               downgrade_from=["0.5.0"]),
+                               downgrade_from=["0.6.0"]),
     }
     with pytest.raises(upgrade.UpgradeError, match="dependency profiles"):
-        upgrade._policy(target, "0.5.0", previous, PLATFORM)
+        upgrade._policy(target, "0.6.0", previous, PLATFORM)
 
 
 def _pack(version: str, selected: dict) -> bytes:
@@ -164,24 +169,24 @@ def _mock_install(monkeypatch):
     monkeypatch.setattr(updater, "update_transaction", contextlib.nullcontext)
     monkeypatch.setattr(updater, "recover_transaction", lambda: None)
     monkeypatch.setattr(updater, "_require_service_account", lambda: None)
-    monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.4.0"})
+    monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.5.0"})
     monkeypatch.setattr(
         wheelhouse, "verified_extract",
         lambda data, digest, dest: dest / "requirements.lock")
     monkeypatch.setattr(wheelhouse, "verify_application_wheel", lambda lock, v: None)
     def install(source, **kw):
         observed.append(kw)
-        return {"status": "installed", "version": "0.5.0"}
+        return {"status": "installed", "version": "0.6.0"}
     monkeypatch.setattr(updater, "install_source", install)
     return observed
 
 
-def test_real_ed25519_signed_bridge_checks_policy_before_install(
+def test_real_ed25519_signed_post_bridge_profile_checks_before_install(
         tmp_path, signing_key, monkeypatch):
     called = _mock_install(monkeypatch)
     selected = policy()
     bundle, checksum = _signed_local_fixture(tmp_path, signing_key, selected)
-    result = upgrade.upgrade("0.5.0", bundle, checksum, system=PLATFORM)
+    result = upgrade.upgrade("0.6.0", bundle, checksum, system=PLATFORM)
     assert result["status"] == "installed"
     assert len(called) == 1
     assert called[0]["release_policy"]["dependency_profile"] == "legacy-offline-wheelhouse"
@@ -197,7 +202,7 @@ def test_signed_policy_digest_disagreement_refused_before_install(
     bundle, checksum = _signed_local_fixture(
         tmp_path, signing_key, selected, signed_policy=altered)
     with pytest.raises(upgrade.UpgradeError, match="policy digest mismatch"):
-        upgrade.upgrade("0.5.0", bundle, checksum, system=PLATFORM)
+        upgrade.upgrade("0.6.0", bundle, checksum, system=PLATFORM)
     assert not called
 
 
@@ -207,11 +212,11 @@ def test_authenticated_online_profile_not_activated_or_downloaded(
     bundle, checksum = _signed_local_fixture(
         tmp_path, signing_key, policy(profile="online-hash-locked-wheels"))
     with pytest.raises(upgrade.UpgradeError, match="dependency profile"):
-        upgrade.upgrade("0.5.0", bundle, checksum, system=PLATFORM)
+        upgrade.upgrade("0.6.0", bundle, checksum, system=PLATFORM)
     assert not called
 
 
-def test_release_builder_only_emits_approved_transition_profiles(
+def test_release_builder_only_emits_approved_post_bridge_profiles(
         tmp_path, monkeypatch):
     import importlib.util
 
@@ -225,26 +230,26 @@ def test_release_builder_only_emits_approved_transition_profiles(
         destination = tmp_path / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text("synthetic release fixture\n")
-    (tmp_path / "pyproject.toml").write_text('version = "0.5.0"\n')
+    (tmp_path / "pyproject.toml").write_text('version = "0.6.0"\n')
     (tmp_path / "src/repocache/__init__.py").write_text(
-        '__version__ = "0.5.0"\n')
+        '__version__ = "0.6.0"\n')
     source_policy = tmp_path / "release-policy.json"
     source_policy.write_text(json.dumps(policy()) + "\n")
-    archive, checksum = builder.build_release(tmp_path / "dist", "v0.5.0")
+    archive, checksum = builder.build_release(tmp_path / "dist", "v0.6.0")
     assert archive.is_file() and checksum.is_file()
     with tarfile.open(archive, mode="r:gz") as src:
-        extracted = src.extractfile("repocache-v0.5.0/release-policy.json")
+        extracted = src.extractfile("repocache-v0.6.0/release-policy.json")
         assert extracted is not None
         assert json.loads(extracted.read())["dependency_profile"] == (
             "legacy-offline-wheelhouse")
     source_policy.write_text(
         json.dumps(policy(profile="online-hash-locked-wheels")) + "\n")
     with pytest.raises(ValueError, match="dependency profile"):
-        builder.build_release(tmp_path / "dist2", "v0.5.0")
-    bad = policy(version="0.4.0")
+        builder.build_release(tmp_path / "dist2", "v0.6.0")
+    bad = policy(version="0.5.0")
     source_policy.write_text(json.dumps(bad) + "\n")
-    (tmp_path / "pyproject.toml").write_text('version = "0.4.0"\n')
+    (tmp_path / "pyproject.toml").write_text('version = "0.5.0"\n')
     (tmp_path / "src/repocache/__init__.py").write_text(
-        '__version__ = "0.4.0"\n')
+        '__version__ = "0.5.0"\n')
     with pytest.raises(ValueError, match="dependency profile"):
-        builder.build_release(tmp_path / "dist3", "v0.4.0")
+        builder.build_release(tmp_path / "dist3", "v0.5.0")
