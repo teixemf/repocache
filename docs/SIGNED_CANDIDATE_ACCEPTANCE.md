@@ -1,5 +1,12 @@
 # Signed release candidate acceptance (v0.5.0+)
 
+This initial implementation is strictly for an **actual v0.5.0 candidate
+upgraded from published v0.4.0**. The workflow framework can be adapted for
+later releases, but the verifier deliberately refuses v0.5.1, v0.6.0 and other
+unreviewed tags until a separate reviewed PR changes the pinned prior-public
+baseline, approved version choice, compatibility requirements and native tests.
+A passing v0.5.0 test is NOT evidence of v0.6.0 compatibility.
+
 This is a controlled **prepublication operator runbook**, not authorization to
 tag, sign, merge, publish, bypass GitHub rulesets or change production systems.
 This workflow consumes the **actual FINAL owner-signed bytes**, not CI fixtures
