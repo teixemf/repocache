@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  actions: read # Required for source-run/job and immutable evidence-artifact API reads.
 
 concurrency:
   group: signed-candidate-${{ github.ref }}
