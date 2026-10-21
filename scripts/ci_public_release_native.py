@@ -127,18 +127,39 @@ def main() -> None:
         check(MANAGED.exists() and (MANAGED.parent / ".updater.lock").exists(),
               "root-protected bootstrap and persistent updater lock created")
 
-        # Initial install must use the source-tree updater: protected launcher
-        # has no managed runtime yet. All actual assets are from public CDN.
-        install_script = (
-            "import json,sys; from pathlib import Path; "
-            "from repocache.upgrade import upgrade; "
-            "print(json.dumps(upgrade(selected='0.4.0', "
-            "bundle=Path(sys.argv[1]), checksum=Path(sys.argv[2]))))"
+        # The root-owned launcher has no runtime yet. Bootstrap only a TEMPORARY
+        # user-owned CLI from the authenticated, hash-pinned offline wheelhouse.
+        # Then use the real, noninteractive user-facing CLI for the first
+        # installation and real public asset download (not a Python API bypass).
+        scratch = work / "bootstrap"
+        scratch.mkdir(mode=0o700)
+        uid = int(cmd("/usr/bin/id", "-u", "repocache").stdout.strip())
+        gid = int(cmd("/usr/bin/id", "-g", "repocache").stdout.strip())
+        os.chown(scratch, uid, gid)
+        temp_wheels = scratch / "wheels"
+        temp_venv = scratch / "venv"
+        bootstrap = (
+            "import sys,subprocess; from pathlib import Path; "
+            "from repocache import wheelhouse; "
+            "b=Path(sys.argv[1]); "
+            "lock=wheelhouse.verified_extract(b.read_bytes(),sys.argv[2],Path(sys.argv[3])); "
+            "wheelhouse.verify_application_wheel(lock,'0.4.0'); "
+            "subprocess.run([sys.executable,'-m','venv',sys.argv[4]],check=True); "
+            "subprocess.run([sys.argv[4]+'/bin/python','-m','pip','install',"
+            "'--no-index','--require-hashes','-r',str(lock)],"
+            "cwd=str(lock.parent),check=True)"
         )
-        result = service(source, install_script, str(BUNDLE),
-                         str(ASSETS / (BUNDLE.name + ".sha256")))
+        service(source, bootstrap,
+                str(ASSETS / (BUNDLE.name + ".wheelhouse.tar.gz")),
+                target["assets"][BUNDLE.name + ".wheelhouse.tar.gz"]["sha256"],
+                str(temp_wheels), str(temp_venv))
+        check((temp_venv / "bin/repocache").is_file(),
+              "temporary offline CLI bootstrapped from verified public wheelhouse")
+        cli_prefix = ("/usr/sbin/runuser", "-u", "repocache", "--",
+                      str(temp_venv / "bin/repocache"))
+        result = cmd(*cli_prefix, "update", "--version", VERSION, "--json")
         check(json.loads(result.stdout)["version"] == VERSION,
-              "normal authenticated local-bundle initial installation as unprivileged service UID")
+              "normal noninteractive public-CDN initial install via signed CLI")
         old_link, _, old = managed()
         check(old["version"] == VERSION
               and old["archive_sha256"] == target["assets"][BUNDLE.name]["sha256"]
@@ -175,9 +196,8 @@ def main() -> None:
               target["assets"][BUNDLE.name]["sha256"],
               "same-version repair created a fresh signed installation generation")
         # Negative requests must fail without changing the existing installation.
-        negative = service(source, install_script.replace("'0.4.0'", "'0.3.0'"),
-                           str(BUNDLE), str(ASSETS / (BUNDLE.name + ".sha256")),
-                           okay=False)
+        negative = cmd(*cli_prefix, "update", "--version", "0.3.0",
+                       "--json", okay=False)
         check(negative.returncode != 0 and managed()[:2] == (after_link, after_raw),
               "unsupported version refused without changing active installation")
         poisoned = work / (BUNDLE.name + ".wheelhouse.tar.gz")
