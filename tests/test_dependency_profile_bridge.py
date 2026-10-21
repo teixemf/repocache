@@ -253,3 +253,16 @@ def test_release_builder_only_emits_approved_post_bridge_profiles(
         '__version__ = "0.5.0"\n')
     with pytest.raises(ValueError, match="dependency profile"):
         builder.build_release(tmp_path / "dist3", "v0.5.0")
+    # This is the only publishable transition for an existing v0.4.0 client:
+    # it cannot parse schema 2 until the v0.5.0 updater is installed.
+    source_policy.write_text(json.dumps(policy("0.5.0", schema=1)) + "\n")
+    first_bundle, first_checksum = builder.build_release(
+        tmp_path / "dist4", "v0.5.0")
+    assert first_bundle.is_file() and first_checksum.is_file()
+    with tarfile.open(first_bundle, mode="r:gz") as source:
+        member = source.extractfile("repocache-v0.5.0/release-policy.json")
+        assert member is not None
+        first_policy = json.loads(member.read())
+    assert first_policy["schema"] == 1
+    assert "dependency_profile" not in first_policy
+    assert first_policy["compatible_from"] == ["0.4.0"]
