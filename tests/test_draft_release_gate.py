@@ -217,5 +217,5 @@ def test_canonical_frozen_evidence_roundtrip(tmp_path):
     assert result["acceptance_run_id"] == 500
     assert result["acceptance_commit"] == "b" * 40
     assert output.read_bytes() == gate.canonical(result)
-    with pytest.raises(gate.Refused, match="already exists"):
+    with pytest.raises(gate.Refused, match="already exist"):
         gate.freeze(record(), 500, 1, "b" * 40, output)
