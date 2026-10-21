@@ -5,6 +5,7 @@ real owner-signed v0.5.0 candidate or a successful prepublication upgrade.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import io
 import json
@@ -51,7 +52,7 @@ def record():
             "assets": assets()}
 
 
-@pytest.mark.parametrize("tag", ("v0.4.0", "v0.3.1", "v0.5.0-rc1",
+@pytest.mark.parametrize("tag", ("v0.4.0", "v0.3.1", "v0.5.1", "v0.6.0", "v0.5.0-rc1",
                                  "../v0.5.0", "v0.5.0/x", "v00.5.0"))
 def test_reject_non_candidate_tag(tag):
     with pytest.raises(gate.Refused):
@@ -219,3 +220,11 @@ def test_canonical_frozen_evidence_roundtrip(tmp_path):
     assert output.read_bytes() == gate.canonical(result)
     with pytest.raises(gate.Refused, match="already exist"):
         gate.freeze(record(), 500, 1, "b" * 40, output)
+
+def test_disposable_native_harness_syntax_compiles():
+    script = Path(__file__).resolve().parents[1] / "scripts/ci_signed_candidate_native.py"
+    ast.parse(script.read_text(encoding="utf-8"), filename=str(script))
+
+
+def test_reviewed_v050_identity_is_accepted():
+    gate.normal("v0.5.0", SHA, 42, 99, 1)
