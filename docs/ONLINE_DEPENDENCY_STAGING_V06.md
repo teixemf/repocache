@@ -1,6 +1,6 @@
 # Online wheel staging prototype — trust and acceptance
 
-**Status:** PARTIAL / UNWIRED / NOT PRODUCTION-READY. Issue [#83](https://github.com/teixemf/repocache/issues/83). Design [#80](https://github.com/teixemf/repocache/issues/80) and [online lock contract](ONLINE_DEPENDENCY_LOCK_SPEC_V1.md) are proposals; real publisher signing/release layout is [#84](https://github.com/teixemf/repocache/issues/84). Do not distribute or activate online-profile releases using this module alone.
+**Status:** PARTIAL / UNWIRED / NOT PRODUCTION-READY. Issue [#83](https://github.com/teixemf/repocache/issues/83). Design [#80](https://github.com/teixemf/repocache/issues/80) and [online lock contract in draft PR #86](https://github.com/teixemf/repocache/blob/docs/v0.5.0-online-deps-adr-80/docs/ONLINE_DEPENDENCY_LOCK_SPEC_V1.md) are proposals; real publisher signing/release layout is [#84](https://github.com/teixemf/repocache/issues/84). Do not distribute or activate online-profile releases using this module alone.
 
 ## Implementation slice
 
