@@ -19,6 +19,12 @@ The declarative security contract is further detailed in
 This document is still a proposal; publishing source-only artifacts and
 switching a production updater remain separately gated under #83/#84.
 
+## Current bridge reconciliation (2026-10-22)
+
+The overlapping [#89](https://github.com/teixemf/repocache/pull/89), [#90](https://github.com/teixemf/repocache/pull/90) and [#91](https://github.com/teixemf/repocache/pull/91) signed-update drafts are now **consolidated for review** in [PR #98](https://github.com/teixemf/repocache/pull/98). The consolidated implementation carries strict *schema-1* legacy verification and installed-profile refusal, recognizes provisionally signed schema-2 envelopes for **v0.6.0+**, but **refuses every schema-2 install** until the authenticated lock/asset inventory and staged install have been verified under #83/#84. This is an engineering proposal, not approval to merge #82 or publish v0.5.0.
+
+The proposed schema-2 signed envelope field names are `dependency_profile`, `dependency_lock_sha256`, `asset_inventory_sha256`, and the inherited `wheelhouse_sha256` with profile-dependent values. The first v0.5.0 signed bundle MUST retain schema 1, because the immutable v0.4.0 updater knows no other format. Final field/schema approval and real owner-signed native candidate evidence remain outstanding.
+
 ## Context, goal and non-goals
 
 REPOCACHE v0.4.0 ships an immutable, owner-Ed25519-signed source release and its own separate signed offline wheelhouse. The v0.4.0 updater rejects source-only installs, and its publisher acceptance checks expect an exact legacy asset set. The project aims to stop **publishing copies of third-party Python distributions** while retaining a structured **Typer + Rich CLI**, a full **Textual TUI**, resilient self-update/rollback and safe native Linux provisioning.
