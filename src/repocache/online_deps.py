@@ -93,6 +93,37 @@ def _valid_wheel_name(name: str, version: str, filename: object) -> bool:
     return len(tags) == 3 and all(_TAG.fullmatch(tag) for tag in tags)
 
 
+def _bounded_json_nesting(raw: bytes, maximum: int = 32) -> None:
+    """Reject excessive nesting before invoking Python's JSON decoder.
+
+    Scan only structural bytes outside JSON strings. Handle escaped quotes
+    explicitly; the strict decoder performs the final syntax validation.
+    """
+    depth = 0
+    quoted = False
+    escaped = False
+    for char in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == 0x5c:  # Backslash.
+                escaped = True
+            elif char == 0x22:  # Quote.
+                quoted = False
+        elif char == 0x22:
+            quoted = True
+        elif char in (0x7b, 0x5b):  # { [
+            depth += 1
+            if depth > maximum:
+                raise DependencyError("Invalid dependency lock nesting depth")
+        elif char in (0x7d, 0x5d):  # } ]
+            depth -= 1
+            if depth < 0:
+                raise DependencyError("Invalid dependency lock nesting depth")
+    if quoted or depth != 0:
+        raise DependencyError("Invalid dependency lock nesting depth")
+
+
 def parse_verified_lock(raw: bytes, expected_signed_digest: str, target: str) -> tuple[Wheel, ...]:
     """Parse lock only after comparing its bytes with a publisher-authenticated digest.
 
@@ -106,6 +137,7 @@ def parse_verified_lock(raw: bytes, expected_signed_digest: str, target: str) ->
         raise DependencyError("Publisher-bound dependency lock digest mismatch")
     if target not in TARGETS:
         raise DependencyError("Unsupported native dependency target")
+    _bounded_json_nesting(raw)
     try:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique)
     except (ValueError, UnicodeError, RecursionError) as exc:
