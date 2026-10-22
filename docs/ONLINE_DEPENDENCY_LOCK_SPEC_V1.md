@@ -2,11 +2,22 @@
 
 **Status: PROPOSED / NOT RELEASE-ACCEPTED.** Owner: [#80](https://github.com/teixemf/repocache/issues/80), implementation [#83](https://github.com/teixemf/repocache/issues/83), publisher/release schema [#84](https://github.com/teixemf/repocache/issues/84), monitoring [#81](https://github.com/teixemf/repocache/issues/81). This defines the minimal auditable dependency interface before implementing network-dependent production upgrades. It is not a signed release manifest itself.
 
+## Provisional signed envelope interface — integration review 2026-10-22
+
+The reconciled [#82 implementation PR #98](https://github.com/teixemf/repocache/pull/98) proposes **signed release manifest schema 2** with the following exact additional field names, subject to the #80/#84 security design gate:
+
+- `dependency_profile`: exact `legacy-offline-wheelhouse` or `online-hash-locked-wheels`.
+- `dependency_lock_sha256`: SHA-256 of the complete runtime lock bytes **only for online**; `null` for legacy.
+- `asset_inventory_sha256`: SHA-256 of the manifest-format-defined immutable asset inventory for either profile.
+- `wheelhouse_sha256`: **required for legacy**; `null` for online.
+
+These additional fields are all covered by the existing root-anchored publisher Ed25519 signature. The provisional parser refuses schema 2 for versions before **v0.6.0**, and the current updater refuses **every** schema-2 installation. The *signed digest fields alone do not prove the referenced bytes are present, safe or verified*; #84 owns their authenticated retrieval and final schema review. The term `dependency_lock_sha256` used in prior examples is not a second accepted field: use the proposed `dependency_lock_sha256` consistently.
+
 ## Version and migration rules
 
 - **Published v0.4.0** has a publisher-signed manifest schema 1, compatibility policy schema 1 and offline wheelhouse. Its updater cannot parse a different compatibility schema or a source-only release.
 - The first **v0.5.0 bootstrap** MUST retain **policy schema 1**, with an explicit permitted upgrade from v0.4.0 and the genuine signed wheelhouse. Its updated runtime can subsequently recognize a future profile. Do not introduce a policy-schema 2 v0.5.0 artifact (#82, PR #90).
-- **v0.6.0+ proposed online profile:** introduce a new signed release-manifest schema containing an additional \`runtime_lock_sha256\` and explicit \`online-hash-locked-wheels\` profile. This must be cryptographically verified with the independently provisioned Ed25519 publisher key BEFORE the installer parses the external lock or makes any network requests.
+- **v0.6.0+ proposed online profile:** introduce a new signed release-manifest schema containing an additional \`dependency_lock_sha256\` and explicit \`online-hash-locked-wheels\` profile. This must be cryptographically verified with the independently provisioned Ed25519 publisher key BEFORE the installer parses the external lock or makes any network requests.
 - The production installer must **never** accept an arbitrary user-supplied digest as a substitute for an authenticated signed manifest. The digest is a caller precondition to the v1 lock parsing primitive; only the trusted updater may supply it after signature verification (#84).
 - No rewrite, substitution or re-signing of historic v0.4.0 assets. Genuine v0.4.0 → signed v0.5.0 → signed online v0.6.0 upgrade proof is mandatory, not a synthetic fixture.
 
@@ -15,7 +26,7 @@
 1. \`pyproject.toml\` keeps upstream compatible bounds and original CLI/TUI entrypoints (Typer, Rich, Textual).
 2. The reviewed, exact resolved constraints for both runtime targets are exposed as **Dependabot-recognizable pip requirements** at \`deps/requirements-debian13-py313.txt\` and \`deps/requirements-almalinux10-py312.txt\`, using PEP 508 normalized names, pinned exact versions and hashes. GitHub's *actual* ingestion and full transitive alerts remain NOT VERIFIED until #81 provides evidence.
 3. Build-time tools are separately locked; build wheels are never fetched or built on the installed production host merely to install runtime dependencies.
-4. The version-specific signed **runtime lock JSON** is a derived, machine-oriented manifest: exact filename, hash and independently reviewed upstream download URL for each package for each supported target. Its bytes are bound by the publisher's signed \`runtime_lock_sha256\`, not simply by a GitHub checksum.
+4. The version-specific signed **runtime lock JSON** is a derived, machine-oriented manifest: exact filename, hash and independently reviewed upstream download URL for each package for each supported target. Its bytes are bound by the publisher's signed \`dependency_lock_sha256\`, not simply by a GitHub checksum.
 5. Lock-generation CI must verify exact package/version/hash equivalence across the per-target pip requirements, JSON manifest, CycloneDX SBOM, expected original application package metadata and *actual* resolved installation. File presence is not proof of a complete transitive graph.
 6. The installer **does not** resolve latest stable dependencies; Dependabot opens review PRs for candidate versions. Newest compatible stable versions enter a new immutable REPOCACHE release only after CI and reviewer approval. No automatic merge, release publication or silent pip upgrades.
 
@@ -62,7 +73,7 @@ The following structure uses fictitious digests and wheel URLs. It is **illustra
 
 ## Staged installation boundary
 
-1. An independently trusted updater has verified the exact source release signature, source SHA-256, release compatibility and new signed \`runtime_lock_sha256\`. Reject untrusted lock before reading or processing a URL.
+1. An independently trusted updater has verified the exact source release signature, source SHA-256, release compatibility and new signed \`dependency_lock_sha256\`. Reject untrusted lock before reading or processing a URL.
 2. Select exactly the native OS/Python profile from preflight; refuse unsupported distributions/versions/architectures. Create a private staging location owned by the non-root REPOCACHE account.
 3. Fetch only the signed filenames from approved hosts with bounded TLS transport, no redirected auth, no env-supplied proxy/CA override or user pip config. Compare SHA-256 **as a stream**; delete partial files on failure.
 4. Check local wheel filename and wheel archive structure, fail on non-wheel/invalid ZIP, unexpected metadata or unsafe member paths before install; do not import or execute any downloaded Python yet.
