@@ -35,6 +35,11 @@ def sign(bundle: Path, key: Path, key_id: str, commit: str,
         raise ValueError("Invalid release commit")
     if expires_at <= issued_at or issued_at <= 0:
         raise ValueError("Invalid release validity interval")
+    # Reject conflicting signed dependency profiles before reading any
+    # legacy wheelhouse bytes or computing release authority.
+    if ((online_lock is not None or online_sbom is not None)
+            and wheelhouse_sha256 is not None):
+        raise ValueError("Online signing requires no wheelhouse")
     if wheelhouse_sha256 is not None:
         if not re.fullmatch(r"[a-f0-9]{64}", wheelhouse_sha256):
             raise ValueError("Invalid wheelhouse digest")
