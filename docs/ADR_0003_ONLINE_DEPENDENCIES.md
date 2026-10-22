@@ -2,6 +2,23 @@
 
 **Status:** PROPOSED — issue [#80](https://github.com/teixemf/repocache/issues/80), epic [#79](https://github.com/teixemf/repocache/issues/79). Architecture/design only; no runtime change, no approval to merge/publish/enable new services.
 
+## Bootstrap compatibility decision — 2026-10-22
+
+**The first v0.5.0 release MUST use the unchanged signed compatibility policy
+`schema: 1` and the authentic offline wheelhouse.** The *already published*
+v0.4.0 updater rejects schema 2 and requires signed wheelhouse bytes. Shipping
+schema 2 for v0.5.0 would strand currently installed clients regardless of the
+publisher's signature. After v0.5.0 is correctly bootstrapped, its updater
+may recognize a new, authenticated profile for **v0.6.0 or later**; current
+draft [PR #90](https://github.com/teixemf/repocache/pull/90) explicitly
+refuses unimplemented online profiles. Real owner-signed native candidate
+evidence remains a distinct requirement (#76/#78).
+
+The declarative security contract is further detailed in
+[ONLINE_DEPENDENCY_LOCK_SPEC_V1.md](ONLINE_DEPENDENCY_LOCK_SPEC_V1.md).
+This document is still a proposal; publishing source-only artifacts and
+switching a production updater remain separately gated under #83/#84.
+
 ## Context, goal and non-goals
 
 REPOCACHE v0.4.0 ships an immutable, owner-Ed25519-signed source release and its own separate signed offline wheelhouse. The v0.4.0 updater rejects source-only installs, and its publisher acceptance checks expect an exact legacy asset set. The project aims to stop **publishing copies of third-party Python distributions** while retaining a structured **Typer + Rich CLI**, a full **Textual TUI**, resilient self-update/rollback and safe native Linux provisioning.
@@ -17,7 +34,7 @@ REPOCACHE v0.4.0 ships an immutable, owner-Ed25519-signed source release and its
 3. **Two resolution moments.** CI/maintainer reviews the newest non-prerelease compatible upstream candidates, security advisories, licenses and platform coverage. A **specific release** then pins a complete tested direct+transitive+build dependency closure and SHA-256 hashes. Runtime does **not** resolve a new highest version or dynamically update that signed lock. Emergency fixes require a new reviewed, signed REPOCACHE release or separately approved signed policy mechanism.
 4. **Isolated runtime.** Acquire approved wheels in a private bounded download staging directory as a dedicated non-root service user; check signed lock and all sha256 bytes before an offline `pip install --no-index --only-binary=:all: --no-deps --require-hashes` into a fresh versioned virtual environment. The program-owned application wheel is itself signed/hash-pinned and installed without dependency resolution, build isolation or third-party build execution at runtime. `pip check`, CLI/JSON smoke and Textual/headless smoke precede atomic activation. Root only performs audited bootstrap/native-package operations.
 5. **Fail closed.** Missing dependencies, expired CA trust, HTTP/index/CDN redirects outside reviewed policy, missing wheels for target tags, malicious `PIP_*` env, altered hashes, insufficient space, incompatible versions and network outages must not change the active generation/NGINX/APT/DNF/TLS. Avoid arbitrary proxy environment inheritance and credential leakage. A separately acquired, verified exact offline wheel set supplied by the operator is a possible optional mode, **not** a REPOCACHE-uploaded wheelhouse.
-6. **Continuity.** A signed, legacy-compatible transition runtime (target v0.5.0, [#82](https://github.com/teixemf/repocache/issues/82)) is needed because unchanged public v0.4.0 cannot bootstrap an unfamiliar wheelhouse-free manifest. v0.4.0 and any v0.5.0 legacy profile may continue to ship unchanged audited offline wheels. Target v0.6.0 introduces the wheelhouse-free online profile only after genuine signed-candidate migration/install/repair/rollback evidence ([#83–#85](https://github.com/teixemf/repocache/issues/83)).
+6. **Continuity.** A **schema-1 signed, legacy-compatible** transition runtime (target v0.5.0, [#82](https://github.com/teixemf/repocache/issues/82)) is needed because unchanged public v0.4.0 cannot bootstrap an unfamiliar wheelhouse-free manifest. v0.4.0 and any v0.5.0 legacy profile may continue to ship unchanged audited offline wheels. Target v0.6.0 introduces the wheelhouse-free online profile only after genuine signed-candidate migration/install/repair/rollback evidence ([#83–#85](https://github.com/teixemf/repocache/issues/83)).
 7. **Maintain monitoring.** Dependabot watches recognized Python project and lock manifests, plus pinned GitHub Actions ([#81](https://github.com/teixemf/repocache/issues/81), [#74](https://github.com/teixemf/repocache/issues/74)); alert/settings effectiveness needs real GitHub proof. Its update PRs are review candidates, not deployment triggers. Separate actual deployed-host inventories are the operator's responsibility.
 
 ## Release profiles and trust boundaries
