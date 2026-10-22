@@ -11,7 +11,7 @@ The reconciled [#82 implementation PR #98](https://github.com/teixemf/repocache/
 - `asset_inventory_sha256`: SHA-256 of the manifest-format-defined immutable asset inventory for either profile.
 - `wheelhouse_sha256`: **required for legacy**; `null` for online.
 
-These additional fields are all covered by the existing root-anchored publisher Ed25519 signature. The provisional parser refuses schema 2 for versions before **v0.6.0**, and the current updater refuses **every** schema-2 installation. The *signed digest fields alone do not prove the referenced bytes are present, safe or verified*; #84 owns their authenticated retrieval and final schema review. The term `dependency_lock_sha256` used in prior examples is not a second accepted field: use the proposed `dependency_lock_sha256` consistently.
+These additional fields are all covered by the existing root-anchored publisher Ed25519 signature. The provisional parser refuses schema 2 for versions before **v0.6.0**, and the current updater refuses **every** schema-2 installation. The *signed digest fields alone do not prove the referenced bytes are present, safe or verified*; #84 owns their authenticated retrieval and final schema review. Earlier drafts used `runtime_lock_sha256`; that alias is not accepted by the proposed parser. Use only `dependency_lock_sha256` in the signed schema-2 manifest.
 
 ## Version and migration rules
 
