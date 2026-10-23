@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
+import urllib.error
 import os
 import stat
 import sys
@@ -534,3 +536,117 @@ def test_authenticated_ci_record_must_match_local_release_id_and_hashes(monkeypa
         publication.signed_acceptance(release, FakeGate(), "v0.5.0",
                                       record, 777, "dummy")
     assert caught.value.code == "ACCEPTANCE_MISMATCH"
+
+
+def unsigned_zip(version="v0.5.0"):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED) as package:
+        for name in release.files_for(version):
+            package.writestr(name, ("checked-" + name).encode())
+    return stream.getvalue()
+
+
+def test_authenticated_zip_download_drops_token_on_allowed_redirect(monkeypatch, tmp_path):
+    payload = unsigned_zip()
+    digest = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(release, "gh_json", lambda url: {
+        "total_count": 1,
+        "artifacts": [{
+            "name": "unsigned-release-candidate",
+            "id": 17,
+            "size_in_bytes": len(payload),
+            "digest": "sha256:" + digest,
+            "expired": False,
+            "workflow_run": {"id": 50},
+        }]})
+    monkeypatch.setattr(release, "command",
+                        lambda argv, **kw: b"test-gh-token\n" if "token" in argv else 1 / 0)
+    requests = []
+    class FakeOpener:
+        def open(self, req, timeout):
+            requests.append((req.full_url, dict(req.header_items())))
+            if len(requests) == 1:
+                raise urllib.error.HTTPError(
+                    req.full_url, 302, "redirect",
+                    {"Location": "https://release-assets.githubusercontent.com/download/zip"},
+                    None)
+            return io.BytesIO(payload)
+    monkeypatch.setattr(release.urllib.request, "build_opener", lambda *args: FakeOpener())
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    release.download_unsigned(50, assets, "v0.5.0")
+    assert len(requests) == 2
+    assert requests[0][1].get("Authorization") == "Bearer test-gh-token"
+    assert "Authorization" not in requests[1][1]
+    assert sorted(p.name for p in assets.iterdir()) == sorted(release.files_for("v0.5.0"))
+
+
+def test_authenticated_zip_download_rejects_changed_github_digest(monkeypatch, tmp_path):
+    payload = unsigned_zip()
+    monkeypatch.setattr(release, "gh_json", lambda url: {
+        "total_count": 1,
+        "artifacts": [{
+            "name": "unsigned-release-candidate",
+            "id": 17,
+            "size_in_bytes": len(payload),
+            "digest": "sha256:" + "0" * 64,
+            "expired": False,
+            "workflow_run": {"id": 50},
+        }]})
+    monkeypatch.setattr(release, "command",
+                        lambda argv, **kw: b"test-token\n" if "token" in argv else 1 / 0)
+    monkeypatch.setattr(release.urllib.request, "build_opener",
+                        lambda *args: type("Opener", (), {
+                            "open": lambda self, req, timeout: io.BytesIO(payload)})())
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    with pytest.raises(release.OperatorError) as caught:
+        release.download_unsigned(50, assets, "v0.5.0")
+    assert caught.value.code == "ASSET_DRIFT"
+    assert list(assets.iterdir()) == []
+
+
+def test_authenticated_zip_download_refuses_bad_redirect_before_token_leak(
+        monkeypatch, tmp_path):
+    payload = unsigned_zip()
+    monkeypatch.setattr(release, "gh_json", lambda url: {
+        "total_count": 1,
+        "artifacts": [{
+            "name": "unsigned-release-candidate",
+            "id": 17,
+            "size_in_bytes": len(payload),
+            "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "expired": False,
+            "workflow_run": {"id": 50},
+        }]})
+    monkeypatch.setattr(release, "command",
+                        lambda argv, **kw: b"test-token\n" if "token" in argv else 1 / 0)
+    requests = []
+    class FakeOpener:
+        def open(self, req, timeout):
+            requests.append(req)
+            raise urllib.error.HTTPError(
+                req.full_url, 302, "attacker redirect",
+                {"Location": "https://attacker.example.org/private"},
+                None)
+    monkeypatch.setattr(release.urllib.request, "build_opener", lambda *a: FakeOpener())
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    with pytest.raises(release.OperatorError) as caught:
+        release.download_unsigned(50, assets, "v0.5.0")
+    assert caught.value.code == "UNSAFE_REDIRECT"
+    assert len(requests) == 1
+
+
+def test_unsigned_candidate_requires_github_artifact_sha256(monkeypatch, tmp_path):
+    monkeypatch.setattr(release, "gh_json", lambda url: {
+        "total_count": 1, "artifacts": [{
+            "name": "unsigned-release-candidate",
+            "id": 17, "size_in_bytes": 512,
+            "expired": False, "workflow_run": {"id": 50}}]})
+    monkeypatch.setattr(release, "command", lambda *a, **kw: 1 / 0)
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    with pytest.raises(release.OperatorError) as caught:
+        release.download_unsigned(50, assets, "v0.5.0")
+    assert caught.value.code == "UNSAFE_ASSET"
