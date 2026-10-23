@@ -159,8 +159,12 @@ def read_state(version: str) -> dict[str, Any] | None:
             or record.get("version") != version
             or not HEX40.fullmatch(str(record.get("commit", "")))
             or not isinstance(record.get("assets"), dict)
-            or not isinstance(record.get("run_id"), int)
-            or not isinstance(record.get("attempt"), int)):
+            or record.get("phase") not in ("prepared", "signed")
+            or type(record.get("run_id")) is not int or record["run_id"] < 1
+            or type(record.get("attempt")) is not int or record["attempt"] < 1
+            or set(record["assets"]) != set(files_for(version, record["phase"] == "signed"))
+            or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
+                   for value in record["assets"].values())):
         raise OperatorError("INVALID_STATE", "Release state identity invalid")
     return record
 
@@ -250,9 +254,9 @@ def approved_build(version: str) -> tuple[str, int, int]:
 
 
 def environment() -> dict[str, Any]:
-    repo = root_path()
     if os.geteuid() == 0:
         raise OperatorError("UNSAFE_PRIVILEGE", "Release operator must run as a normal user")
+    repo = root_path()
     for tool in ("git", "gh", "/usr/bin/openssl"):
         command([tool, "version"] if tool == "/usr/bin/openssl" else [tool, "--version"])
     command(["gh", "auth", "status"])
@@ -458,6 +462,9 @@ def sign(version: str, fd: int) -> dict[str, Any]:
         raise OperatorError("UNSAFE_STATE", "Candidate checkout is missing")
     if command(["git", "-C", str(checkout), "rev-parse", "HEAD"]).decode().strip() != record["commit"]:
         raise OperatorError("ASSET_DRIFT", "Candidate worktree commit changed")
+    if command(["git", "-C", str(checkout), "status", "--porcelain",
+                "--untracked-files=all"]):
+        raise OperatorError("ASSET_DRIFT", "Candidate worktree has unreviewed files or modifications")
     password = read_passphrase(fd)
     scripts = checkout / "scripts"
     # Load the approved exact-commit signer, not executable bytes from a
