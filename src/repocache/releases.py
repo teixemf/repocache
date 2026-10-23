@@ -164,7 +164,8 @@ def _release(record: Any) -> Optional[Dict[str, Any]]:
             "manifest": names["archive"] + ".manifest.json",
             "signature": names["archive"] + ".manifest.json.sig",
         })
-        online_markers = {names["inventory"], names["dependency_lock"], names["sbom"]}
+        online_markers = {names["inventory"], names["dependency_lock"],
+                          names["sbom"], names["application_wheel"]}
         if any(isinstance(asset, dict) and asset.get("name") in online_markers
                for asset in assets):
             return _online_release(record, tag, url, assets, names)
