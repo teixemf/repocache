@@ -672,3 +672,72 @@ def test_existing_matching_draft_can_be_recovered_without_reupload(monkeypatch):
     out = release.stage("v0.5.0")
     assert out["changed"] is False and out["release_id"] == 42
     assert recorded[0]["phase"] == "staged"
+
+
+def test_environment_refuses_nonowner_before_private_signer_inspection(
+        monkeypatch, tmp_path):
+    (tmp_path / "keys").mkdir()
+    monkeypatch.setattr(release.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(release, "root_path", lambda: tmp_path)
+    monkeypatch.setattr(release, "command", lambda args, **kw:
+                        b'{"login":"nonowner"}' if args == ["gh", "api", "user"] else b"")
+    with pytest.raises(release.OperatorError) as caught:
+        release.environment()
+    assert caught.value.code == "AUTHORIZATION_REQUIRED"
+
+
+def test_status_missing_readonly_gate_reports_not_verified_not_pass(monkeypatch):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "staged", "commit": "a" * 40,
+              "run_id": 4, "attempt": 1, "release_id": 42, "assets": {}}
+    monkeypatch.setattr(release, "verify_state", lambda *args: {})
+    monkeypatch.setattr(release, "verify_checkout", lambda *args: None)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_:
+                        (_ for _ in ()).throw(release.OperatorError(
+                            "GATE_NOT_AVAILABLE", "Verifier has not been merged")))
+    result = publication.acceptance_status(release, "v0.5.0", record, 123)
+    assert result["acceptance"] == "NOT VERIFIED"
+    assert result["ready_to_publish"] is False
+
+
+def test_status_wrong_signed_ci_candidate_is_fail_not_success(monkeypatch):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "staged", "commit": "a" * 40,
+              "run_id": 4, "attempt": 1, "release_id": 42, "assets": {}}
+    monkeypatch.setattr(release, "verify_state", lambda *args: {})
+    monkeypatch.setattr(release, "verify_checkout", lambda *args: None)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: object())
+    monkeypatch.setattr(publication, "token", lambda *_: "test-token")
+    monkeypatch.setattr(publication, "local_proof", lambda *args: None)
+    monkeypatch.setattr(publication, "signed_acceptance", lambda *args:
+                        (_ for _ in ()).throw(release.OperatorError(
+                            "ACCEPTANCE_MISMATCH", "Stale proof")))
+    result = publication.acceptance_status(release, "v0.5.0", record, 123)
+    assert result["acceptance"] == "FAIL"
+    assert result["ready_to_publish"] is False
+
+
+def test_publish_checks_protected_tag_again_after_server_mutation(monkeypatch):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "staged", "commit": "a" * 40,
+              "run_id": 4, "attempt": 1, "release_id": 42, "assets": {}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    class FakeGate:
+        def identity(self, *args):
+            raise ValueError("untrusted rewritten ref")
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: FakeGate())
+    monkeypatch.setattr(publication, "token", lambda *_: "test-token")
+    monkeypatch.setattr(publication, "local_proof", lambda *args: None)
+    monkeypatch.setattr(publication, "signed_acceptance", lambda *args: {
+        "release_id": 42, "assets": {}})
+    monkeypatch.setattr(publication, "release_metadata", lambda *_: {
+        "id": 42, "tag_name": "v0.5.0",
+        "draft": False, "immutable": True, "assets": []})
+    commands = []
+    monkeypatch.setattr(release, "command", lambda args, **kw:
+                        commands.append(args) or b"")
+    monkeypatch.setattr(release, "save_state", lambda *args: 1 / 0)
+    with pytest.raises(release.OperatorError) as caught:
+        release.publish("v0.5.0", 100, publication.fingerprint(release, record))
+    assert caught.value.code == "POST_PUBLISH_UNVERIFIED"
+    assert len(commands) == 1
