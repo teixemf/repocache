@@ -391,4 +391,4 @@ def test_invalid_cli_smoke_refuses_activation(rootless_staging, monkeypatch,
         _rehearse()
     assert events[-1] == "lock-release"
     assert not (root / "current").exists()
-    assert not list((root / "online-preparations").iterdir()
+    assert not list((root / "online-preparations").iterdir())
