@@ -29,6 +29,7 @@ repocache-vX.Y.Z.tar.gz
 repocache-vX.Y.Z.tar.gz.sha256
 repocache-vX.Y.Z.tar.gz.dependency-lock.json
 repocache-vX.Y.Z.tar.gz.sbom.json
+repocache_control-X.Y.Z-py3-none-any.whl
 repocache-vX.Y.Z.tar.gz.assets.json
 repocache-vX.Y.Z.tar.gz.manifest.json
 repocache-vX.Y.Z.tar.gz.manifest.json.sig
@@ -38,7 +39,7 @@ The immutable v0.4.0 and initial v0.5.0 legacy profile **still require schema-1 
 
 ## Public discovery is not installation authority
 
-For v0.6.0+ GitHub releases, the read-only anonymous discovery parser recognizes the online layout **only if** all seven exact names, unique positive asset IDs, positive lengths, \`draft=false\`, \`prerelease=false\` and \`immutable=true\` are present. Missing, duplicate, extra and mixed wheelhouse assets cause rejection. The original legacy layout remains discoverable even for later versions, so compatibility is not implicitly removed.
+For v0.6.0+ GitHub releases, the read-only anonymous discovery parser recognizes the online layout **only if** all eight exact names, unique positive asset IDs, positive lengths, \`draft=false\`, \`prerelease=false\` and \`immutable=true\` are present. Missing, duplicate, extra and mixed wheelhouse assets cause rejection. The original legacy layout remains discoverable even for later versions, so compatibility is not implicitly removed.
 
 A result has \`dependency_profile_hint=online-hash-locked-wheels\`, \`eligible=false\`, \`compatibility=unknown\` and an explicit warning that the installed updater cannot yet execute it. These are **untrusted GitHub API labels**: a manifest and every asset must still be downloaded and authenticated independently with the owner-provisioned Ed25519 public trust anchor. The existing production updater **continues to refuse schema-2 installations**. The discovery enhancement cannot be used to bypass that guard.
 
