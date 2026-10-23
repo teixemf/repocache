@@ -126,6 +126,7 @@ def test_guard_refuses_unfinished_or_failed_acceptance(
         "head_sha": "b" * 40, "run_attempt": 1, "actor": {"login": "teixemf"},
         "status": run_status, "conclusion": run_result,
         "name": "Signed release candidate acceptance",
+        "path": ".github/workflows/signed-candidate-acceptance.yml",
     })
     with pytest.raises(gate.Refused, match="not approved"):
         gate.guard(rec, "dummy")
@@ -148,10 +149,52 @@ def test_guard_refuses_missing_or_skipped_jobs(monkeypatch):
                 "head_sha": "b" * 40, "run_attempt": 1,
                 "actor": {"login": "teixemf"}, "status": "completed",
                 "conclusion": "success",
-                "name": "Signed release candidate acceptance"}
+                "name": "Signed release candidate acceptance",
+                "path": ".github/workflows/signed-candidate-acceptance.yml"}
 
     monkeypatch.setattr(gate, "api", fake)
     with pytest.raises(gate.Refused, match="jobs"):
+        gate.guard(rec, "dummy")
+
+
+@pytest.mark.parametrize("workflow", (
+    ".github/workflows/other.yml", "",
+    ".github/workflows/public-release-acceptance.yml",
+))
+def test_source_run_is_bound_to_official_release_workflow(monkeypatch, workflow):
+    def fake(path, token):
+        if path.startswith("/git/ref/tags/"):
+            return {"ref": "refs/tags/" + TAG,
+                    "object": {"sha": SHA, "type": "commit"}}
+        if path.startswith("/compare/"):
+            return {"status": "ahead", "base_commit": {"sha": SHA}}
+        if path.startswith("/actions/runs/"):
+            return {"head_sha": SHA, "head_branch": TAG, "run_attempt": 1,
+                    "actor": {"login": "teixemf"},
+                    "event": "workflow_dispatch", "status": "completed",
+                    "conclusion": "success", "path": workflow}
+        raise AssertionError("Unexpected API " + path)
+
+    monkeypatch.setattr(gate, "api", fake)
+    with pytest.raises(gate.Refused, match="unsigned build run"):
+        gate.identity(TAG, SHA, 99, 1, "dummy")
+
+
+def test_guard_rejects_same_name_workflow_from_wrong_path(monkeypatch):
+    rec = record() | {
+        "acceptance_run_id": 500, "acceptance_run_attempt": 1,
+        "acceptance_commit": "b" * 40,
+    }
+    monkeypatch.setattr(gate, "identity", lambda *_: None)
+    monkeypatch.setattr(gate, "inventory", lambda *_: rec["assets"])
+    monkeypatch.setattr(gate, "api", lambda path, token: {
+        "event": "workflow_dispatch", "head_branch": "main",
+        "head_sha": "b" * 40, "run_attempt": 1, "actor": {"login": "teixemf"},
+        "status": "completed", "conclusion": "success",
+        "name": "Signed release candidate acceptance",
+        "path": ".github/workflows/other.yml",
+    })
+    with pytest.raises(gate.Refused, match="not approved"):
         gate.guard(rec, "dummy")
 
 
