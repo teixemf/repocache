@@ -178,7 +178,10 @@ def test_inventory_structure_fails_closed(tmp_path, signer_key, variant):
     ("../outside.py", b"bad"),
 ])
 def test_source_only_binary_and_traversal_rejected(entry, payload):
-    with pytest.raises(release_inventory.InventoryError):
+    # The first-party wheel builder may reject traversal before the signed
+    # inventory parser sees it; both are mandatory fail-closed pre-signing gates.
+    with pytest.raises((release_inventory.InventoryError,
+                        application_wheel.ApplicationWheelError)):
         release_inventory.build_inventory(
             "0.6.0", _parts(_archive(entry=entry, content=payload)))
 
