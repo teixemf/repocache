@@ -46,11 +46,11 @@ def _sources(archive: bytes, version: str) -> tuple[dict[str, bytes], dict]:
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as source:
             for member in source:
-                if (not member.isfile() or member.name in members
+                if (not member.isfile()
                         or not member.name.startswith(prefix) or member.size > 1_000_000):
                     raise ApplicationWheelError("Unexpected application source entry")
                 path = member.name[len(prefix):]
-                if not path or ".." in path.split("/") or "\\" in path:
+                if not path or path in members or ".." in path.split("/") or "\\" in path:
                     raise ApplicationWheelError("Unsafe application source path")
                 fp = source.extractfile(member)
                 if fp is None:
@@ -94,10 +94,6 @@ def _sources(archive: bytes, version: str) -> tuple[dict[str, bytes], dict]:
     return modules, {"project": project, "license": license_content}
 
 
-def _member(data: bytes, name: str, content: bytes) -> None:
-    raise RuntimeError("Wheel member writer is local to build()")
-
-
 def build(archive: bytes, version: str) -> bytes:
     """Generate a deterministic PEP 427-compatible wheel without build hooks."""
     filename(version)
@@ -105,7 +101,7 @@ def build(archive: bytes, version: str) -> bytes:
     project = info["project"]
     base = f"{DIST}-{version}.dist-info"
     lines = [
-        "Metadata-Version: 2.2",
+        "Metadata-Version: 2.4",
         "Name: repocache-control",
         f"Version: {version}",
         "Summary: REPOCACHE Linux package repository proxy management",
