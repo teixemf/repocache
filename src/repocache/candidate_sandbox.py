@@ -140,10 +140,10 @@ def _checked_command(workspace: Path, argv: list[str]) -> None:
     interpreter = str(workspace / "venv/bin/python")
     console = str(workspace / "venv/bin/repocache")
     if argv[0] == interpreter:
-        if argv[1:4] == ["-I", "-m", "pip"]:
-            if len(argv) <= 4 or argv[4] not in _ALLOWED_PIP_OPS:
+        if argv[1:5] == ["-I", "-m", "pip", "--isolated"]:
+            if len(argv) <= 5 or argv[5] not in _ALLOWED_PIP_OPS:
                 raise SandboxError("Unapproved pip operation in sandbox")
-            if argv[4] == "install":
+            if argv[5] == "install":
                 # Exact argument vector: additional pip flags may change
                 # install target, permissions, resolver or index behavior.
                 required = ["--no-index", "--no-deps", "--only-binary=:all:",
@@ -153,9 +153,9 @@ def _checked_command(workspace: Path, argv: list[str]) -> None:
                     str(workspace / "download/requirements.lock"),
                     str(workspace / "owned-app/application.lock"),
                 }
-                if argv[5:-1] != required or argv[-1] not in allowed:
+                if argv[6:-1] != required or argv[-1] not in allowed:
                     raise SandboxError("Noncanonical offline wheel installation")
-            elif argv[4:] not in (["check"], ["list", "--format=json"]):
+            elif argv[5:] not in (["check"], ["list", "--format=json"]):
                 raise SandboxError("Unapproved pip inspection command")
         elif argv[1:3] == ["-I", "-c"]:
             from repocache.online_generation import TUI_HEADLESS_SMOKE
