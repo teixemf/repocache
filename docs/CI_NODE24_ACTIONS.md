@@ -16,7 +16,7 @@ on 2026-10-23:
 | actions/checkout | v5.0.1 | `93cb6efe18208431cddfb8368fd83d5badbf9bfd` | node24 |
 | actions/setup-python | v6.0.0 | `e797f83bcb11b83ae66e0230d6156d7c80228e7c` | node24 |
 | actions/upload-artifact | v6.0.0 | `b7c566a772e6b6bfb58ed0dc250532a479d7789f` | node24 |
-| actions/download-artifact (future #77) | v7.0.0 | `37930b1c2abaa49bbe596cd826c3c89aef350131` | node24 |
+| actions/download-artifact (merged #77) | v7.0.0 | `37930b1c2abaa49bbe596cd826c3c89aef350131` | node24 |
 
 The tags above resolved to Git commit objects (not a floating branch),
 and each action manifest was inspected at its versioned upstream tag.
@@ -36,7 +36,9 @@ changes before any update.
 - Every checkout explicitly uses `persist-credentials: false`.
 - The existing nine required test contexts and their names must remain
   present, across unit tests, bundle integrity, offline wheels and native
-  synthetic upgrade rehearsal.
+  synthetic upgrade rehearsal. All three required workflows also run on
+  protected `main` pushes, so integration-commit checks can be inspected
+  against that exact SHA without an unauthorized workflow dispatch.
 - `release.yml` remains an explicit owner-triggered `workflow_dispatch`
   on an approved version tag, checks tag-to-main ancestry, and only
   **uploads unsigned candidate assets**. It never signs or publishes them.
@@ -78,6 +80,6 @@ Do not silently downgrade to vulnerable Node.js 20 actions in a future
 release; any exception needs explicit risk acceptance and a documented
 time-bounded remediation.
 
-The draft signed-candidate acceptance workflow in PR #77 is independently
-updated to this Node24 set before integration. Its owner-signed native
-acceptance criteria remain unaffected and NOT VERIFIED until executed.
+The read-only signed-candidate acceptance workflow merged via PR #77 uses
+these Node24 pins. Its real owner-signed v0.5.0 native acceptance criteria
+remain NOT VERIFIED until separately authorized and executed under #76.

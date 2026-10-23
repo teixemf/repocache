@@ -16,7 +16,7 @@ EXPECTED = {
     "actions/checkout": ("93cb6efe18208431cddfb8368fd83d5badbf9bfd", "v5.0.1"),
     "actions/setup-python": ("e797f83bcb11b83ae66e0230d6156d7c80228e7c", "v6.0.0"),
     "actions/upload-artifact": ("b7c566a772e6b6bfb58ed0dc250532a479d7789f", "v6.0.0"),
-    # The pending signed draft acceptance PR (#77) adds this action.
+    # The signed candidate acceptance workflow merged in PR #77 uses this action.
     "actions/download-artifact": ("37930b1c2abaa49bbe596cd826c3c89aef350131", "v7.0.0"),
 }
 USE = re.compile(r"^\s*-\s+uses:\s+([^\s#]+)", re.MULTILINE)
@@ -109,3 +109,14 @@ def test_runner_minimum_and_exception_policy_documented() -> None:
     assert "2.327.1" in doc
     assert "NOT VERIFIED" in doc
     assert "v0.4.0" in doc
+
+
+def test_protected_main_push_emits_all_nine_required_contexts() -> None:
+    # The #74 parent requires the actual protected integration SHA, not
+    # just a PR-head result. Never trigger release.yml automatically.
+    for workflow in ("tests.yml", "offline-wheelhouse.yml", "upgrade-distros.yml"):
+        text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
+        assert "push:\n    branches: [main, release/v0.4.0]" in text
+    release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in release
+    assert "push:" not in release.split("permissions:", 1)[0]
