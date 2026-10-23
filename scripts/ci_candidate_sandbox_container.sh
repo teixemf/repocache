@@ -15,8 +15,11 @@ repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 printf 'OS userspace: %s\nKernel: GitHub runner (NOT native distro kernel)\n' "$image"
 # GitHub Docker's user namespace syscalls must be exposed. This is scoped
 # to a disposable test-only container, not a REPOCACHE production host.
-# Never use --privileged, add host capabilities, or mount the Docker socket.
+# Never use --privileged, host networking or the Docker socket. Test-only
+# CAP_NET_ADMIN is scoped to this disposable container network namespace
+# to let bwrap set up loopback; it does not grant host network access.
 docker run --rm --pull=always \
+  --cap-add NET_ADMIN \
   --security-opt seccomp=unconfined \
   --security-opt apparmor=unconfined \
   --mount "type=bind,source=$repo,target=/source,readonly" \
