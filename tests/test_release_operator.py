@@ -105,8 +105,12 @@ def test_pinned_workflow_identity_rejects_unreviewed_or_ambiguous(monkeypatch):
                 return {"sha": "a" * 40}
             if "/compare/" in endpoint:
                 return {"status": status}
+            if "/jobs?" in endpoint:
+                return {"total_count": 5, "jobs": [
+                    {"name": str(n), "status": "completed", "conclusion": "success"}
+                    for n in range(5)]}
             if "/runs?" in endpoint:
-                return {"workflow_runs": [{
+                return {"total_count": runs, "workflow_runs": [{
                     "head_sha": "a" * 40, "head_branch": "v0.5.0",
                     "event": "workflow_dispatch", "status": "completed",
                     "conclusion": "success", "actor": {"login": "teixemf"},
@@ -355,3 +359,178 @@ def test_workstation_package_entrypoint_is_isolated_from_server_distribution():
     assert metadata["project"]["dependencies"] == []
     server = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert "repocache-release" not in server["project"]["scripts"]
+
+
+def test_candidate_lock_rejects_parallel_local_writes(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    with release.candidate_lock("v0.5.0"):
+        with pytest.raises(release.OperatorError) as caught:
+            with release.candidate_lock("v0.5.0"):
+                pass
+        assert caught.value.code == "BUSY"
+    with release.candidate_lock("v0.5.0"):
+        pass
+
+
+def test_candidate_lock_rejects_symlink_to_foreign_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    release.state_root().mkdir(mode=0o700)
+    target = tmp_path / "outside"
+    target.write_text("no changes")
+    (release.state_root() / "v0.5.0.lock").symlink_to(target)
+    with pytest.raises((OSError, release.OperatorError)):
+        with release.candidate_lock("v0.5.0"):
+            pass
+    assert target.read_text() == "no changes"
+
+
+def test_build_run_must_prove_all_jobs_completed(monkeypatch):
+    def remote(endpoint):
+        if "/git/ref/tags/" in endpoint:
+            return {"ref": "refs/tags/v0.5.0"}
+        if "/commits/" in endpoint:
+            return {"sha": "a" * 40}
+        if "/compare/" in endpoint:
+            return {"status": "ahead"}
+        if "/runs?" in endpoint:
+            return {"total_count": 1, "workflow_runs": [
+                {"head_sha": "a" * 40, "head_branch": "v0.5.0",
+                 "event": "workflow_dispatch", "status": "completed",
+                 "conclusion": "success", "actor": {"login": "teixemf"},
+                 "id": 4, "run_attempt": 1}]}
+        if "/jobs?" in endpoint:
+            return {"total_count": 5, "jobs": [
+                {"name": str(n), "status": "completed",
+                 "conclusion": "failure" if n == 2 else "success"}
+                for n in range(5)]}
+        raise AssertionError(endpoint)
+    monkeypatch.setattr(release, "gh_json", remote)
+    with pytest.raises(release.OperatorError) as caught:
+        release.approved_build("v0.5.0")
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+
+
+def test_release_stage_requires_reviewed_gate_before_any_remote_write(monkeypatch, tmp_path):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "signed",
+              "commit": "a" * 40, "run_id": 1, "attempt": 1, "assets": {}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(publication, "reviewed_gate",
+                        lambda *_: (_ for _ in ()).throw(release.OperatorError(
+                            "GATE_NOT_AVAILABLE", "Not merged on protected main")))
+    monkeypatch.setattr(publication, "token", lambda *_: 1 / 0)
+    monkeypatch.setattr(release, "command", lambda *a, **kw: 1 / 0)
+    with pytest.raises(release.OperatorError) as caught:
+        release.stage("v0.5.0")
+    assert caught.value.code == "GATE_NOT_AVAILABLE"
+
+
+def test_stage_refuses_existing_publication_before_any_upload(monkeypatch):
+    from repocache_release import publication
+    record = {"schema": 1, "version": "v0.5.0", "phase": "signed",
+              "commit": "a" * 40, "run_id": 1, "attempt": 1, "assets": {}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: object())
+    monkeypatch.setattr(publication, "token", lambda *_: "dummy")
+    monkeypatch.setattr(publication, "local_proof", lambda *args: None)
+    monkeypatch.setattr(publication, "release_metadata", lambda *_:
+                        {"id": 4, "draft": False, "immutable": True})
+    monkeypatch.setattr(release, "command", lambda *a, **kw: 1 / 0)
+    with pytest.raises(release.OperatorError) as caught:
+        release.stage("v0.5.0")
+    assert caught.value.code == "DRAFT_CONFLICT"
+
+
+def test_stage_records_only_exact_readback_after_single_remote_upload(monkeypatch):
+    from repocache_release import publication
+    record = {"schema": 1, "version": "v0.5.0", "phase": "signed",
+              "commit": "a" * 40, "run_id": 1, "attempt": 1,
+              "assets": {item: "b" * 64 for item in release.files_for("v0.5.0", True)}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: object())
+    monkeypatch.setattr(publication, "token", lambda *_: "dummy")
+    monkeypatch.setattr(publication, "local_proof", lambda *args: None)
+    monkeypatch.setattr(publication, "release_metadata", lambda *_: None)
+    monkeypatch.setattr(publication, "remote_exact", lambda *_: (42, {}))
+    monkeypatch.setattr(release, "candidate_dir", lambda _: Path("/trusted/fake"))
+    calls, saved = [], []
+    monkeypatch.setattr(release, "command", lambda args, **kw: calls.append(args) or b"")
+    monkeypatch.setattr(release, "save_state", lambda _, data: saved.append(data))
+    outcome = release.stage("v0.5.0")
+    assert outcome["release_id"] == 42 and outcome["acceptance"] == "NOT VERIFIED"
+    assert len(calls) == 1
+    assert calls[0][:4] == ["gh", "release", "create", "v0.5.0"]
+    assert "--draft" in calls[0] and "--verify-tag" in calls[0]
+    assert saved[0]["phase"] == "staged"
+
+
+def test_publish_requires_owner_exact_candidate_hash_before_gate_access(monkeypatch):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "staged", "commit": "a" * 40,
+              "run_id": 4, "attempt": 1, "assets": {}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: 1 / 0)
+    with pytest.raises(release.OperatorError) as caught:
+        release.publish("v0.5.0", 100, "f" * 64)
+    assert caught.value.code == "APPROVAL_REQUIRED"
+
+
+def test_publish_refuses_wrong_remote_evidence_before_release_write(monkeypatch):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "staged", "commit": "a" * 40,
+              "run_id": 4, "attempt": 1, "release_id": 42, "assets": {}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: object())
+    monkeypatch.setattr(publication, "token", lambda *_: "dummy")
+    monkeypatch.setattr(publication, "local_proof", lambda *args: None)
+    monkeypatch.setattr(publication, "signed_acceptance",
+                        lambda *args: (_ for _ in ()).throw(
+                            release.OperatorError("ACCEPTANCE_MISMATCH",
+                                                  "Changed signed CI digest")))
+    monkeypatch.setattr(release, "command", lambda *a, **kw: 1 / 0)
+    with pytest.raises(release.OperatorError) as caught:
+        release.publish("v0.5.0", 100, publication.fingerprint(release, record))
+    assert caught.value.code == "ACCEPTANCE_MISMATCH"
+
+
+def test_publish_readback_requires_immutable_same_assets_after_one_write(monkeypatch):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "staged", "commit": "a" * 40,
+              "run_id": 4, "attempt": 1, "release_id": 42, "assets": {}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: object())
+    monkeypatch.setattr(publication, "token", lambda *_: "dummy")
+    monkeypatch.setattr(publication, "local_proof", lambda *args: None)
+    monkeypatch.setattr(publication, "signed_acceptance",
+                        lambda *args: {"release_id": 42, "assets": {}})
+    monkeypatch.setattr(publication, "release_metadata", lambda *_: {
+        "id": 42, "tag_name": "v0.5.0",
+        "draft": False, "immutable": False, "assets": []})
+    calls = []
+    monkeypatch.setattr(release, "command", lambda args, **kw:
+                        calls.append(args) or b"")
+    monkeypatch.setattr(release, "save_state", lambda *args: 1 / 0)
+    with pytest.raises(release.OperatorError) as caught:
+        release.publish("v0.5.0", 100, publication.fingerprint(release, record))
+    assert caught.value.code == "POST_PUBLISH_UNVERIFIED"
+    assert calls == [["gh", "release", "edit", "v0.5.0", "--repo",
+                      "teixemf/repocache", "--draft=false"]]
+
+
+def test_authenticated_ci_record_must_match_local_release_id_and_hashes(monkeypatch):
+    from repocache_release import publication
+    record = {"version": "v0.5.0", "phase": "staged", "commit": "a" * 40,
+              "run_id": 4, "attempt": 1, "release_id": 42, "assets": {}}
+    bad = {"tag": "v0.5.0", "commit": "a" * 40,
+           "release_id": 43, "build_run_id": 4, "build_run_attempt": 1,
+           "assets": {}}
+    class FakeGate:
+        def authenticated_ci_evidence(self, run, token):
+            return bad
+        def guard(self, report, token):
+            raise AssertionError("Guard must not execute for mismatched candidate")
+    monkeypatch.setattr(publication, "remote_exact", lambda *args: (42, {}))
+    with pytest.raises(release.OperatorError) as caught:
+        publication.signed_acceptance(release, FakeGate(), "v0.5.0",
+                                      record, 777, "dummy")
+    assert caught.value.code == "ACCEPTANCE_MISMATCH"
