@@ -28,6 +28,7 @@ def rootless_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(updater, "ROOT", root)
     monkeypatch.setattr(updater, "CURRENT", root / "current")
     monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.0.0"})
+    monkeypatch.setattr(online_generation, "_current_host_target", lambda: "debian13-py313")
     observations = []
     active = {"yes": False}
 
@@ -213,4 +214,37 @@ def test_rootful_managed_working_directory_is_not_trusted(tmp_path, monkeypatch)
     monkeypatch.setattr(online_generation.os, "geteuid", lambda: 0)
     with pytest.raises(online_generation.PreparationInstallError, match="root"):
         online_generation._managed_parent()
+    assert not (root / "online-preparations").exists()
+
+
+@pytest.mark.parametrize("contents,py,expect", [
+    ('ID=debian\nVERSION_ID="13"\n', (3, 13), "debian13-py313"),
+    ('ID=almalinux\nVERSION_ID="10.1"\n', (3, 12), "almalinux10-py312"),
+])
+def test_host_target_resolves_only_supported_native_python(contents, py, expect):
+    assert online_generation._host_target(contents, py) == expect
+
+
+@pytest.mark.parametrize("contents,py", [
+    ("ID=ubuntu\nVERSION_ID=24.04\n", (3, 13)),
+    ("ID=debian\nVERSION_ID=12\n", (3, 13)),
+    ("ID=debian\nVERSION_ID=13\n", (3, 12)),
+    ("ID=almalinux\nVERSION_ID=10\n", (3, 13)),
+    ("ID=debian\nID=debian\nVERSION_ID=13\n", (3, 13)),
+    ("ID=debian\nVERSION_ID=13x\n", (3, 13)),
+])
+def test_wrong_native_os_or_python_never_resolves_an_online_lock(contents, py):
+    with pytest.raises(online_generation.PreparationInstallError):
+        online_generation._host_target(contents, py)
+
+
+def test_wrong_signed_target_is_refused_before_candidate_read_or_network(
+        rootless_staging, monkeypatch):
+    root, events, _ = rootless_staging
+    monkeypatch.setattr(online_generation, "_current_host_target",
+                        lambda: "almalinux10-py312")
+    with pytest.raises(online_generation.PreparationInstallError, match="native OS"):
+        _rehearse()
+    assert "signed-lock-verified" not in events
+    assert "download" not in events
     assert not (root / "online-preparations").exists()
