@@ -25,7 +25,7 @@ MAX_APP_WHEEL = 8_000_000
 DIST = "repocache_control"
 DATE = (1980, 1, 1, 0, 0, 0)
 _FILENAME = re.compile(r"0|[1-9][0-9]*")
-_MODULE = re.compile(r"src/repocache/[a-z][a-z0-9_]*\.py\Z")
+_MODULE = re.compile(r"src/repocache/[a-z_][a-z0-9_]*\.py\Z")
 
 
 def filename(version: str) -> str:
