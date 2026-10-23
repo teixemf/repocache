@@ -574,7 +574,8 @@ def update_install(
 
     # Validate before updater locks, network requests, filesystem writes or
     # installation. The updater still owns signing and compatibility checks.
-    if len(version) > 64 or releases._version("v" + version) is None:
+    if (len(version) > 64 or version == "0.0.0" or
+            releases._version("v" + version) is None):
         _cli_error(ctx, "INVALID_VERSION", "Expected a stable X.Y.Z version.",
                    status=2, local_json=json_output)
     _perform_signed_update(
