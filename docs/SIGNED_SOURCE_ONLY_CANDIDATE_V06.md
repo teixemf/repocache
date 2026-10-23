@@ -6,16 +6,17 @@
 
 The offline publisher signs a **v0.6.0+ schema-2** Ed25519 manifest containing `dependency_profile=online-hash-locked-wheels`, `dependency_lock_sha256`, `asset_inventory_sha256`, and `wheelhouse_sha256=null`. The manifest also binds release version/commit, original source archive and compatibility policy hashes, validity times, key ID and official repository. No signing key enters Actions.
 
-The proposed source-only candidate input inventory contains exactly these **four signed-by-inventory assets** (in addition to the inventory JSON itself, detached manifest and detached signature):
+The proposed source-only candidate input inventory contains exactly these **five signed-by-inventory assets** (in addition to the inventory JSON itself, detached manifest and detached signature):
 
 | Role | On-disk filename | Purpose |
 | --- | --- | --- |
 | `archive` | `repocache-vX.Y.Z.tar.gz` | Original REPOCACHE release source; tar member audit |
 | `checksum` | `repocache-vX.Y.Z.tar.gz.sha256` | Exact SHA-256 and filename of source |
 | `dependency_lock` | `repocache-vX.Y.Z.tar.gz.dependency-lock.json` | Two-profile package closure intended for Debian13/Python3.13 and Alma10/Python3.12 |
+| `application_wheel` | `repocache_control-X.Y.Z-py3-none-any.whl` | Deterministic REPOCACHE-owned wheel, verified against signed source; never upstream packages |
 | `sbom` | `repocache-vX.Y.Z.tar.gz.sbom.json` | External dependency CycloneDX inventory |
 
-The exact deterministic `repocache-vX.Y.Z.tar.gz.assets.json` inventory is additionally bound by the detached offline owner Ed25519 signature of the final `repocache-vX.Y.Z.tar.gz.manifest.json`; the detached signature is `.manifest.json.sig`. **No circular hashing** of the signature or manifest occurs. Final publication must verify exactly the intended **seven** candidate asset names (four listed, inventory, manifest, signature), sizes, public asset identity and immutable release metadata before upload; the code here does not publish, enumerate GitHub uploads, or assert that all candidate bytes are ready.
+The exact deterministic `repocache-vX.Y.Z.tar.gz.assets.json` inventory is additionally bound by the detached offline owner Ed25519 signature of the final `repocache-vX.Y.Z.tar.gz.manifest.json`; the detached signature is `.manifest.json.sig`. **No circular hashing** of the signature or manifest occurs. Final publication must verify exactly the intended **eight** candidate asset names (five listed, inventory, manifest, signature), sizes, public asset identity and immutable release metadata before upload; the code here does not publish, enumerate GitHub uploads, or assert that all candidate bytes are ready.
 
 ## Trust boundaries and usage
 

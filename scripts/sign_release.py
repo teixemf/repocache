@@ -60,8 +60,14 @@ def sign(bundle: Path, key: Path, key_id: str, commit: str,
         checksum = bundle.with_name(expected["checksum"])
         if checksum.is_symlink() or not checksum.is_file():
             raise ValueError("Candidate checksum is missing or unsafe")
+        application_path = bundle.with_name(expected["application_wheel"])
+        if application_path.is_symlink() or not application_path.is_file():
+            raise ValueError("First-party application wheel is missing or unsafe")
+        if application_path.stat().st_size > release_inventory.application_wheel.MAX_APP_WHEEL:
+            raise ValueError("First-party application wheel is oversized")
         assets = {"archive": bundle.read_bytes(), "checksum": checksum.read_bytes(),
-                  "dependency_lock": online_lock.read_bytes(), "sbom": online_sbom.read_bytes()}
+                  "dependency_lock": online_lock.read_bytes(), "sbom": online_sbom.read_bytes(),
+                  "application_wheel": application_path.read_bytes()}
         try:
             inventory_bytes = release_inventory.build_inventory(version, assets)
         except release_inventory.InventoryError as exc:

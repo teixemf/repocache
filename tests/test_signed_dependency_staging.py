@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from repocache import online_deps, release_inventory, signatures, signed_dependency_staging
+from repocache import application_wheel, online_deps, release_inventory, signatures, signed_dependency_staging
 
 VERSION = "0.6.0"
 TARGET = "debian13-py313"
@@ -61,10 +61,19 @@ def _policy():
 
 def _archive(policy=None):
     data = (json.dumps(_policy() if policy is None else policy) + "\n").encode()
+    project = (
+        '[project]\nname = "repocache-control"\nversion = "0.6.0"\n'
+        'requires-python = ">=3.12"\nlicense = "Apache-2.0"\n'
+        'dependencies = ["typer>=0.12,<1", "rich>=13,<16", "textual>=0.80,<10"]\n'
+        '[project.scripts]\nrepocache = "repocache.cli:app"\n'
+    ).encode()
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tf:
         for path, payload in [
             ("release-policy.json", data),
+            ("pyproject.toml", project),
+            ("LICENSE", b"Original owned license fixture\n"),
+            ("src/repocache/__init__.py", b'__version__ = "0.6.0"\n'),
             ("src/repocache/cli.py", b"# original synthetic test source\n"),
         ]:
             item = tarfile.TarInfo("repocache-v" + VERSION + "/" + path)
@@ -91,6 +100,7 @@ def _parts(policy=None, *, upstream=URL, duplicate=False):
         "checksum": (hashlib.sha256(source).hexdigest() + "  " + base + "\n").encode(),
         "dependency_lock": (json.dumps(lock) + "\n").encode(),
         "sbom": (json.dumps(sbom) + "\n").encode(),
+        "application_wheel": application_wheel.build(source, VERSION),
     }
 
 
