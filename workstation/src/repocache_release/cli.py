@@ -260,6 +260,9 @@ def environment() -> dict[str, Any]:
     for tool in ("git", "gh", "/usr/bin/openssl"):
         command([tool, "version"] if tool == "/usr/bin/openssl" else [tool, "--version"])
     command(["gh", "auth", "status"])
+    info = gh_json(f"repos/{REPO}/actions/workflows/release.yml")
+    if info.get("path") != ".github/workflows/release.yml":
+        raise OperatorError("UNTRUSTED_REPOSITORY", "Release workflow is not readable or mismatched")
     pub = repo / "keys/repocache-2026-10.pem"
     trusted = command(["/usr/bin/openssl", "pkey", "-pubin", "-in", str(pub),
                        "-outform", "DER"])
@@ -357,6 +360,19 @@ def download_unsigned(run_id: int, assets: Path, version: str) -> None:
         os.unlink(temporary)
 
 
+def verify_checkout(version: str, record: dict[str, Any]) -> Path:
+    checkout = candidate_dir(version) / "checkout"
+    if checkout.is_symlink() or not checkout.is_dir():
+        raise OperatorError("UNSAFE_STATE", "Candidate checkout is missing")
+    local = command(["git", "-C", str(checkout), "rev-parse", "HEAD"]).decode().strip()
+    if local != record["commit"]:
+        raise OperatorError("ASSET_DRIFT", "Candidate worktree commit changed")
+    if command(["git", "-C", str(checkout), "status", "--porcelain",
+                "--untracked-files=all"]):
+        raise OperatorError("ASSET_DRIFT", "Candidate worktree has unreviewed files or modifications")
+    return checkout
+
+
 def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     expected = set(files_for(version))
     actual = {f.name for f in assets.iterdir()}
@@ -389,6 +405,7 @@ def prepare(version: str) -> dict[str, Any]:
         if (old["commit"], old["run_id"], old["attempt"]) != (commit, rid, attempt):
             raise OperatorError("CANDIDATE_CONFLICT", "A different build is already prepared")
         verify_state(version, old)
+        verify_checkout(version, old)
         return {"version": version, "changed": False, "phase": old["phase"],
                 "run_id": rid, "commit": commit}
     base = state_root()
@@ -457,14 +474,7 @@ def sign(version: str, fd: int) -> dict[str, Any]:
             or private.stat().st_uid != os.getuid()
             or private.stat().st_mode & 0o077):
         raise OperatorError("UNSAFE_SIGNER", "Owner Ed25519 key must be private and mode 0600")
-    checkout = candidate_dir(version) / "checkout"
-    if checkout.is_symlink() or not checkout.is_dir():
-        raise OperatorError("UNSAFE_STATE", "Candidate checkout is missing")
-    if command(["git", "-C", str(checkout), "rev-parse", "HEAD"]).decode().strip() != record["commit"]:
-        raise OperatorError("ASSET_DRIFT", "Candidate worktree commit changed")
-    if command(["git", "-C", str(checkout), "status", "--porcelain",
-                "--untracked-files=all"]):
-        raise OperatorError("ASSET_DRIFT", "Candidate worktree has unreviewed files or modifications")
+    checkout = verify_checkout(version, record)
     password = read_passphrase(fd)
     scripts = checkout / "scripts"
     # Load the approved exact-commit signer, not executable bytes from a
@@ -502,6 +512,7 @@ def status(version: str) -> dict[str, Any]:
         return {"version": version, "phase": "absent",
                 "acceptance": "NOT VERIFIED", "ready_to_publish": False}
     observed = verify_state(version, record)
+    verify_checkout(version, record)
     return {"version": version, "phase": record["phase"],
             "commit": record["commit"], "run_id": record["run_id"],
             "assets": observed, "acceptance": "NOT VERIFIED",
