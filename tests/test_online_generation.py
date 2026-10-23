@@ -162,8 +162,10 @@ def test_signed_stage_uses_exclusive_rootless_transaction_and_never_activates(
     assert not list((root / "online-preparations").iterdir())
 
 
-@pytest.mark.parametrize("phase", ["signature", "download", "venv", "install",
-                                    "check", "list"])
+@pytest.mark.parametrize("phase", ["signature", "owned-wheel", "download",
+                                    "venv", "install-deps", "install-app",
+                                    "check", "list", "cli-version", "cli-help",
+                                    "tui-import"])
 def test_every_failure_cleans_disposable_venv_and_keeps_active_generation(
         rootless_staging, monkeypatch, phase):
     root, events, _ = rootless_staging
@@ -173,6 +175,10 @@ def test_every_failure_cleans_disposable_venv_and_keeps_active_generation(
         def bad(*args, **kwargs):
             raise signed_dependency_staging.PreparationError("Unverified")
         monkeypatch.setattr(signed_dependency_staging, "verified_candidate_wheels", bad)
+    elif phase == "owned-wheel":
+        def bad_wheel(*args, **kwargs):
+            raise application_wheel.ApplicationWheelError("Unverified first-party source")
+        monkeypatch.setattr(application_wheel, "verify", bad_wheel)
     elif phase == "download":
         def bad(*args, **kwargs):
             raise signed_dependency_staging.PreparationError("Unreachable")
@@ -180,8 +186,20 @@ def test_every_failure_cleans_disposable_venv_and_keeps_active_generation(
     else:
         original = updater._run
         def fail(argv, **kwargs):
-            if phase in argv or (phase == "list" and "--format=json" in argv):
-                raise updater.UpdateError("Synthetic rejected pip/venv invocation")
+            marker = (
+                phase == "venv" and "venv" in argv
+                or phase == "install-deps" and "install" in argv
+                and kwargs.get("cwd", Path("/")).name == "download"
+                or phase == "install-app" and "install" in argv
+                and kwargs.get("cwd", Path("/")).name == "owned-app"
+                or phase == "check" and "check" in argv
+                or phase == "list" and "--format=json" in argv
+                or phase == "cli-version" and "--version" in argv
+                or phase == "cli-help" and "--help" in argv
+                or phase == "tui-import" and "-c" in argv
+            )
+            if marker:
+                raise updater.UpdateError("Synthetic rejected pip/venv or CLI/TUI operation")
             return original(argv, **kwargs)
         monkeypatch.setattr(updater, "_run", fail)
     with pytest.raises(online_generation.PreparationInstallError):
@@ -323,3 +341,54 @@ def test_failed_online_stage_preserves_preexisting_signed_legacy_generation(
     assert nginx.read_text() == "# existing operator configuration\n"
     assert not list((root / "online-preparations").iterdir())
     assert events[-1] == "lock-release"
+
+
+@pytest.mark.parametrize("defect", ["wrong-version", "missing-app",
+                                     "unexpected-package", "duplicate-package"])
+def test_bad_installed_application_or_extraneous_package_preserves_prior_release(
+        rootless_staging, monkeypatch, defect):
+    root, events, _ = rootless_staging
+    original = updater._run
+
+    def bad(argv, **kwargs):
+        if "--format=json" in argv:
+            names = [{"name": "rich", "version": "15.0.0"},
+                     {"name": "pip", "version": "25.0"},
+                     {"name": "repocache-control", "version": "0.6.0"}]
+            if defect == "wrong-version":
+                names[-1]["version"] = "0.5.0"
+            elif defect == "missing-app":
+                names.pop()
+            elif defect == "unexpected-package":
+                names.append({"name": "malicious", "version": "1.0"})
+            elif defect == "duplicate-package":
+                names.append({"name": "REPOCACHE_CONTROL", "version": "0.6.0"})
+            return json.dumps(names)
+        return original(argv, **kwargs)
+    monkeypatch.setattr(updater, "_run", bad)
+    with pytest.raises(online_generation.PreparationInstallError):
+        _rehearse()
+    assert events[-1] == "lock-release"
+    assert not (root / "current").exists()
+    assert not list((root / "online-preparations").iterdir())
+
+
+@pytest.mark.parametrize("smoke,output", [
+    ("--version", "REPOCACHE Control Center 0.5.0"),
+    ("--help", "Unexpected console output"),
+])
+def test_invalid_cli_smoke_refuses_activation(rootless_staging, monkeypatch,
+                                             smoke, output):
+    root, events, _ = rootless_staging
+    original = updater._run
+
+    def bad(argv, **kwargs):
+        if smoke in argv:
+            return output
+        return original(argv, **kwargs)
+    monkeypatch.setattr(updater, "_run", bad)
+    with pytest.raises(online_generation.PreparationInstallError):
+        _rehearse()
+    assert events[-1] == "lock-release"
+    assert not (root / "current").exists()
+    assert not list((root / "online-preparations").iterdir()
