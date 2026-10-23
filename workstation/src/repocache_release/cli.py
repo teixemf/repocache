@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import zipfile
 import os
 import re
 import shutil
@@ -33,6 +34,7 @@ SIGNED_SUFFIXES = (".manifest.json", ".manifest.json.sig",
                    ".provenance.json", ".provenance.json.sig")
 MAX_METADATA = 4_000_000
 MAX_ASSET = 2_000_000_000
+MAX_DOWNLOAD = 1_000_000_000
 
 
 class OperatorError(Exception):
@@ -270,6 +272,87 @@ def environment() -> dict[str, Any]:
             "status": "ready" if private.is_file() else "signer_missing"}
 
 
+def extract_candidate_zip(archive: Path, assets: Path, version: str) -> None:
+    """Only the four exact expected files; no traversal, symlinks or extras."""
+    expected = set(files_for(version))
+    if assets.is_symlink() or not assets.is_dir() or list(assets.iterdir()):
+        raise OperatorError("UNSAFE_ASSET", "Candidate staging must be a new empty directory")
+    if archive.is_symlink() or archive.stat().st_size > MAX_DOWNLOAD:
+        raise OperatorError("UNSAFE_ASSET", "Downloaded artifact is unsafe or oversized")
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            infos = zipped.infolist()
+            if len(infos) != len(expected) or {x.filename for x in infos} != expected:
+                raise OperatorError("UNSAFE_ASSET", "Downloaded ZIP has unexpected member paths")
+            if any((i.file_size == 0 or i.file_size > MAX_ASSET
+                    or i.compress_size == 0
+                    or i.file_size > i.compress_size * 1000
+                    or stat.S_ISLNK((i.external_attr >> 16) & 0xFFFF)
+                    or i.is_dir()) for i in infos):
+                raise OperatorError("UNSAFE_ASSET", "Downloaded ZIP has unsafe member metadata")
+            for item in infos:
+                # The validated name is one of exactly four constant leaf names.
+                dest = assets / item.filename
+                fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as stream, zipped.open(item) as source:
+                    total = 0
+                    while True:
+                        part = source.read(131072)
+                        if not part:
+                            break
+                        total += len(part)
+                        if total > item.file_size or total > MAX_ASSET:
+                            raise OperatorError("UNSAFE_ASSET", "ZIP expansion exceeds declared size")
+                        stream.write(part)
+                    if total != item.file_size:
+                        raise OperatorError("UNSAFE_ASSET", "ZIP member is truncated")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise OperatorError("UNSAFE_ASSET", "Downloaded ZIP failed strict verification") from exc
+
+
+def download_unsigned(run_id: int, assets: Path, version: str) -> None:
+    """Authenticated GitHub API archive download with strict local extraction."""
+    listing = gh_json(f"repos/{REPO}/actions/runs/{run_id}/artifacts?per_page=100")
+    items = listing.get("artifacts")
+    if not isinstance(items, list):
+        raise OperatorError("INVALID_RESPONSE", "Missing authorized workflow artifact inventory")
+    matches = [item for item in items if isinstance(item, dict)
+               and item.get("name") == "unsigned-release-candidate"
+               and item.get("expired") is False]
+    if len(matches) != 1:
+        raise OperatorError("BUILD_NOT_VERIFIED", "Missing or ambiguous authorized Actions artifact")
+    entry = matches[0]
+    artifact_id, size = entry.get("id"), entry.get("size_in_bytes")
+    if (type(artifact_id) is not int or artifact_id < 1
+            or type(size) is not int or size < 1 or size > MAX_DOWNLOAD):
+        raise OperatorError("UNSAFE_ASSET", "Invalid upstream artifact identity or size")
+    fd, temporary = tempfile.mkstemp(prefix=".actions-", suffix=".zip", dir=assets.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            # GH handles GitHub's authenticated redirect. Never redirect
+            # token-bearing requests to an arbitrary user-provided URL.
+            try:
+                result = subprocess.run(
+                    ["gh", "api", "-H", "Accept: application/vnd.github+json",
+                     f"repos/{REPO}/actions/artifacts/{artifact_id}/zip"],
+                    stdout=output, stderr=subprocess.DEVNULL,
+                    timeout=180, check=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise OperatorError("TOOL_UNAVAILABLE", "Actions artifact download failed") from exc
+            if result.returncode:
+                raise OperatorError("OPERATION_FAILED", "GitHub artifact download was refused")
+            output.flush()
+            os.fsync(output.fileno())
+        archive = Path(temporary)
+        if archive.stat().st_size > MAX_DOWNLOAD:
+            raise OperatorError("UNSAFE_ASSET", "Downloaded ZIP exceeds maximum size")
+        extract_candidate_zip(archive, assets, version)
+    finally:
+        os.unlink(temporary)
+
+
 def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     expected = set(files_for(version))
     actual = {f.name for f in assets.iterdir()}
@@ -323,9 +406,7 @@ def prepare(version: str) -> dict[str, Any]:
                  str(checkout), commit], timeout=120)
         # Restrict extraction to an empty, owner-only staging folder.
         staging.mkdir(mode=0o700)
-        command(["gh", "run", "download", str(rid), "--repo", REPO,
-                 "--name", "unsigned-release-candidate",
-                 "--dir", str(staging)], timeout=180)
+        download_unsigned(rid, staging, version)
         verify_unsigned(checkout, staging, version)
         os.replace(staging, folder / "assets")
         record = {"schema": 1, "version": version, "commit": commit,
