@@ -31,6 +31,7 @@ ONLINE_FILES = (
     "src/repocache/online_deps.py",
     "src/repocache/signed_dependency_staging.py",
     "src/repocache/online_generation.py",
+    "src/repocache/application_wheel.py",
 )
 
 
@@ -113,9 +114,14 @@ def build_release(output: Path, tag: str = "", *,
     checksum_bytes = (
         f"{hashlib.sha256(archive_bytes).hexdigest()}  {package.name}\n").encode()
     sys.path.insert(0, str(ROOT / "src"))
-    from repocache import release_inventory
+    from repocache import application_wheel, release_inventory
+    try:
+        original_wheel = application_wheel.build(archive_bytes, version)
+    except application_wheel.ApplicationWheelError as exc:
+        raise ValueError("Cannot generate first-party application wheel") from exc
     assets = {"archive": archive_bytes, "checksum": checksum_bytes,
-              "dependency_lock": lock_data, "sbom": sbom_data}
+              "dependency_lock": lock_data, "sbom": sbom_data,
+              "application_wheel": original_wheel}
     try:
         release_inventory.build_inventory(version, assets)
     except release_inventory.InventoryError as exc:
@@ -126,6 +132,7 @@ def build_release(output: Path, tag: str = "", *,
         checksum: checksum_bytes,
         output / names["dependency_lock"]: lock_data,
         output / names["sbom"]: sbom_data,
+        output / names["application_wheel"]: original_wheel,
     }
     # Reject old wheelhouses, signatures, unknown binaries and partial mixes
     # BEFORE any writes. Exact identical repeat builds are idempotent.
