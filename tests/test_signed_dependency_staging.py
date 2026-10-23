@@ -205,6 +205,12 @@ def test_authenticated_sbom_must_match_both_locked_platforms(
     else:
         document["components"][0]["version"] = "14.0.0"
     parts["sbom"] = (json.dumps(document) + "\n").encode()
+    if case == "missing":
+        # The offline publisher already refuses a completely empty SBOM;
+        # acceptance cannot proceed to installation with this candidate.
+        with pytest.raises(ValueError, match="source-only inventory"):
+            _signed(tmp_path, publisher, parts)
+        return
     manifest, signature, inventory = _signed(tmp_path, publisher, parts)
     with pytest.raises(signed_dependency_staging.PreparationError, match="SBOM"):
         signed_dependency_staging.verified_candidate_wheels(
