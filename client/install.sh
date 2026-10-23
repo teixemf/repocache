@@ -11,29 +11,42 @@ if [[ ! -x /usr/bin/python3 ]]; then
   exit 1
 fi
 /usr/bin/python3 -I "$HERE/../platform_check.py"
-SERVER="https://cache.example.org"
+# BEGIN SERVER_ARGUMENT_PREFLIGHT
+# Pure argument and TLS-origin validation; no managed filesystem writes.
+# UC-10: a server must be supplied explicitly; never install a placeholder.
+SERVER=""
 while (($#)); do
   case "$1" in
     --server)
-      [[ $# -ge 2 ]] || { echo "--server requires a value" >&2; exit 2; }
+      [[ $# -ge 2 && -n "$2" ]] || { echo "--server requires a HTTPS origin" >&2; exit 2; }
+      [[ -z "$SERVER" ]] || { echo "--server may only be provided once" >&2; exit 2; }
       SERVER="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-SOURCE="$HERE/repocache_client.py"
-TARGET_DIR="/opt/repocache-client"
-CONFIG_DIR="/etc/repocache-client"
-LAUNCHER="/usr/local/bin/repocache-client"
-PYTHON="/usr/bin/python3"
-
-"$PYTHON" - "$SERVER" <<'PY'
+[[ -n "$SERVER" ]] || {
+  echo "Missing required --server HTTPS_ORIGIN (example: --server https://cache.example.org)" >&2
+  exit 2
+}
+/usr/bin/python3 - "$SERVER" <<'PY'
 import sys
 from urllib.parse import urlsplit
+
 value = sys.argv[1]
-u = urlsplit(value)
-if u.scheme != "https" or not u.hostname or u.username or u.password or u.query or u.fragment or u.path not in ("", "/"):
-    raise SystemExit("Invalid server: use https://hostname")
+try:
+    origin = urlsplit(value)
+    port = origin.port
+except ValueError:
+    raise SystemExit("Invalid server: malformed HTTPS origin")
+
+if (value != value.strip() or origin.scheme != "https"
+        or not origin.hostname or origin.username is not None
+        or origin.password is not None or origin.path not in ("", "/")
+        or origin.query or origin.fragment or port == 0
+        or any(ch.isspace() for ch in origin.netloc)):
+    raise SystemExit("Invalid server: use a HTTPS origin without credentials, path or query")
 PY
+# END SERVER_ARGUMENT_PREFLIGHT
 
 # All filesystem-writing tools must exist before the first managed write.
 # Fail closed on an incompletely provisioned OS rather than installing partly.
