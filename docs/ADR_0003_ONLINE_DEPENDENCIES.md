@@ -16,8 +16,36 @@ evidence remains a distinct requirement (#76/#78).
 
 The declarative security contract is further detailed in
 [ONLINE_DEPENDENCY_LOCK_SPEC_V1.md](ONLINE_DEPENDENCY_LOCK_SPEC_V1.md).
-This document is still a proposal; publishing source-only artifacts and
+This document is still a proposal; publishing third-party-wheelhouse-free artifacts and
 switching a production updater remain separately gated under #83/#84.
+
+## Selected first-party wheel inventory (2026-10-23)
+
+ADR [0004](https://github.com/teixemf/repocache/blob/feat/v0.6.0-signed-first-party-wheel-84/docs/ADR_0004_SIGNED_FIRST_PARTY_WHEEL.md)
+and draft [PR #103](https://github.com/teixemf/repocache/pull/103)
+record the selected eight-asset **v0.6.0+** release design,
+superseding the earlier provisional seven-asset, TAR-only proposal:
+
+1. `repocache-vX.Y.Z.tar.gz` — reviewed first-party source.
+2. `repocache-vX.Y.Z.tar.gz.sha256` — source checksum.
+3. `repocache-vX.Y.Z.tar.gz.dependency-lock.json` — exact upstream wheel identities.
+4. `repocache-vX.Y.Z.tar.gz.sbom.json` — SBOM.
+5. `repocache_control-X.Y.Z-py3-none-any.whl` — deterministic **first-party application wheel**.
+6. `repocache-vX.Y.Z.tar.gz.assets.json` — exact five-primary-asset inventory.
+7. `repocache-vX.Y.Z.tar.gz.manifest.json` — owner-signed manifest.
+8. `repocache-vX.Y.Z.tar.gz.manifest.json.sig` — detached Ed25519 signature.
+
+The inventory binds the five primary assets by exact name, size and SHA-256;
+the manifest signs that inventory digest without a circular reference.
+The first-party wheel must be independently reproducible from authenticated
+source and installed without target-side build hooks. **No third-party wheels
+are redistributed** in this profile. The unchanged v0.5.0 predecessor still
+publishes the original eight-asset source + wheelhouse format; the identical
+asset count does NOT imply profile interchangeability.
+
+This is a selected architectural direction, **NOT** runtime activation
+approval or full #80/#83/#84/#85 acceptance. Real owner-signed candidate
+evidence, final signed schema and native rollback tests remain mandatory.
 
 ## Current bridge reconciliation (2026-10-22)
 
@@ -124,7 +152,7 @@ A final spec MUST decide signature envelope, canonical JSON, whitelist of accept
 | CLI and TUI | Original REPOCACHE Python code, preserved as first-class supported interfaces |
 | Source manifest / signature | Ed25519 owner-held key, independent trust anchor, exact final release |
 | NGINX route/cache management | Explicit opt-in changes only after existing validation and recovery gates |
-| Published third-party license notices | Required for historical wheelhouse assets; new source-only releases must retain correct code/provenance/notice wording for anything actually included |
+| Published third-party license notices | Required for historical wheelhouse assets; new first-party-only releases must retain correct code/provenance/notice wording for anything actually included |
 | Upstream dependency terms and operator cache redistribution | Responsibility follows applicable licenses and actual conduct; no blanket legal liability transfer asserted |
 
 ## Upgrade, repair, rollback and availability
@@ -147,7 +175,7 @@ A final spec MUST decide signature envelope, canonical JSON, whitelist of accept
 - [ ] Independently verify real PyPI transport policy, safe redirects/CDN host restrictions, proxy/CA behavior, and how to pass a complete lock into `pip download` without executing upstream build scripts. Reject unsupported schemes and untrusted host overrides.
 - [ ] Decide exact file name/syntax of per-target locks by testing Dependabot parsing, correct direct+transitive graph contents, and dependency update PR behavior.
 - [ ] Verify complete packages with wheels supporting *both* native targets; missing wheels are a release blocker rather than permission to build source on install.
-- [ ] Define a backwards-compatible signed `release-policy` profile/version schema and prove genuine v0.4.0 -> v0.5.0 bridge acceptance before enabling source-only profile.
+- [ ] Define a backwards-compatible signed `release-policy` profile/version schema and prove genuine v0.4.0 -> v0.5.0 bridge acceptance before enabling the first-party wheel/online dependency profile.
 - [ ] Define independent CLI/TUI/version/JSON/API acceptance matrix, online/offline native distro harness, check results and reviewer ownership.
 - [ ] Human security and legal review of new distribution terms and actual final artifacts; engineering metadata does not grant legal clearance.
 
