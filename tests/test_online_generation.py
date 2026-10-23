@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from repocache import online_deps, online_generation, signed_dependency_staging, updater
+from repocache import application_wheel, online_deps, online_generation, signed_dependency_staging, updater
 
 
 WHEEL = online_deps.Wheel(
@@ -31,6 +31,7 @@ def rootless_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(online_generation, "_current_host_target", lambda: "debian13-py313")
     observations = []
     active = {"yes": False}
+    monkeypatch.setattr(application_wheel, "verify", lambda *a: observations.append("owned-wheel-verified"))
 
     @contextlib.contextmanager
     def transaction():
@@ -67,9 +68,23 @@ def rootless_staging(tmp_path, monkeypatch):
 
     def run(argv, **kwargs):
         assert active["yes"]
-        observations.append("run-" + ("venv" if "venv" in argv else
-                                     "install" if "install" in argv else
-                                     "check" if "check" in argv else "list"))
+        if "venv" in argv:
+            action = "venv"
+        elif "install" in argv:
+            action = "install-app" if kwargs.get("cwd", Path("/")).name == "owned-app" else "install-deps"
+        elif "check" in argv:
+            action = "check"
+        elif "--format=json" in argv:
+            action = "list"
+        elif "--version" in argv:
+            action = "cli-version"
+        elif "--help" in argv:
+            action = "cli-help"
+        elif "-c" in argv:
+            action = "tui-import"
+        else:
+            pytest.fail("Unexpected command in online venv rehearsal")
+        observations.append("run-" + action)
         if "venv" in argv:
             new_venv = Path(argv[-1])
             (new_venv / "bin").mkdir(parents=True, mode=0o700)
@@ -84,11 +99,27 @@ def rootless_staging(tmp_path, monkeypatch):
                              "--require-hashes", "--no-cache-dir", "--no-input"):
                 assert required in argv
             assert "--extra-index-url" not in argv
-            assert kwargs["cwd"].name == "download"
+            assert kwargs["cwd"].name in {"download", "owned-app"}
+            if kwargs["cwd"].name == "owned-app":
+                console = Path(argv[0]).parent / "repocache"
+                console.write_text("# synthetic staged REPOCACHE executable\n")
+                console.chmod(0o700)
+                assert "--require-hashes" in argv
+                assert (kwargs["cwd"] / "application.lock").is_file()
+                assert (kwargs["cwd"] / application_wheel.filename("0.6.0")).is_file()
+            return ""
+        if "--version" in argv:
+            return "REPOCACHE Control Center 0.6.0"
+        if "--help" in argv:
+            return "Usage: repocache [OPTIONS] COMMAND [ARGS]...\nupdate"
+        if "-c" in argv:
+            assert "RepoCacheApp" in argv[-1]
+            assert "textual.app" in argv[-1]
             return ""
         if "check" in argv:
             return ""
         return json.dumps([
+            {"name": "repocache-control", "version": "0.6.0"},
             {"name": "rich", "version": "15.0.0"},
             {"name": "pip", "version": "25.0"},
         ])
@@ -104,7 +135,8 @@ def rootless_staging(tmp_path, monkeypatch):
 def _rehearse():
     return online_generation.rehearse_signed_install(
         b"fake-source", b"signed-manifest", b"fake-signature",
-        "0.6.0", b"asset-inventory", {"archive": b"fake-source"},
+        "0.6.0", b"asset-inventory",
+        {"archive": b"fake-source", "application_wheel": b"synthetic-owner-wheel"},
         "debian13-py313", cafile=Path("/etc/ssl/certs/ca-certificates.crt"),
     )
 
@@ -114,12 +146,16 @@ def test_signed_stage_uses_exclusive_rootless_transaction_and_never_activates(
     root, events, active = rootless_staging
     result = _rehearse()
     assert result == {
-        "status": "dependencies-verified-only", "version": "0.6.0",
-        "target": "debian13-py313", "dependency_count": 1, "activated": False,
+        "status": "application-and-dependencies-verified-only", "version": "0.6.0",
+        "target": "debian13-py313", "dependency_count": 1,
+        "cli_smoke": "passed", "tui_import_smoke": "passed",
+        "activated": False,
     }
     assert events == ["lock-acquire", "recover", "signed-lock-verified",
-                      "download", "run-venv", "run-install", "run-check",
-                      "run-list", "lock-release"]
+                      "owned-wheel-verified", "download", "run-venv",
+                      "run-install-deps", "owned-wheel-verified", "run-install-app",
+                      "run-check", "run-list", "run-cli-version", "run-cli-help",
+                      "run-tui-import", "lock-release"]
     assert not active["yes"]
     assert not (root / "current").exists()
     assert not (root / "installed.json").exists()
