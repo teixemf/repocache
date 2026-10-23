@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -178,16 +179,25 @@ def main() -> None:
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True)
     try:
-        need(holder.stdout is not None and holder.stdout.readline().strip() == "LOCKED",
+        need(holder.stdout is not None, "lock holder stdout is available")
+        readable, _, _ = select.select([holder.stdout], [], [], 10)
+        need(bool(readable) and holder.stdout.readline().strip() == "LOCKED",
              "persistent update lock acquired by real service account")
         busy = run(*cmd, okay=False, timeout=40)
         need(busy.returncode == 75 and installed()[:2] == (next_link, next_raw),
              "concurrent update fails BUSY without altering installed state")
     finally:
-        if holder.stdin:
-            holder.stdin.write("\n")
-            holder.stdin.flush()
-        holder.communicate(timeout=10)
+        if holder.poll() is None and holder.stdin:
+            try:
+                holder.stdin.write("\n")
+                holder.stdin.flush()
+            except BrokenPipeError:
+                pass
+        try:
+            holder.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+            holder.communicate(timeout=5)
     need(all(Path(p).read_bytes() == b for p, b in original.items()),
          "NGINX, TLS, cache and APT/DNF source sentinels preserved")
     print("PASS: real signed prepublication candidate upgraded from v0.4.0 with rollback")
