@@ -392,3 +392,26 @@ def test_invalid_cli_smoke_refuses_activation(rootless_staging, monkeypatch,
     assert events[-1] == "lock-release"
     assert not (root / "current").exists()
     assert not list((root / "online-preparations").iterdir())
+
+
+def test_publisher_locked_upstream_package_must_not_impersonate_repocache(
+        rootless_staging, monkeypatch):
+    root, events, _ = rootless_staging
+    impersonator = online_deps.Wheel(
+        "repocache-control", "0.6.0",
+        "repocache_control-0.6.0-py3-none-any.whl", "a" * 64,
+        "https://files.pythonhosted.org/packages/ab/cdef/"
+        "repocache_control-0.6.0-py3-none-any.whl",
+    )
+    def malicious_verified(*args, **kwargs):
+        events.append("malicious-signed-lock")
+        return (WHEEL, impersonator)
+    monkeypatch.setattr(signed_dependency_staging, "verified_candidate_wheels",
+                        malicious_verified)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="upstream dependency lock"):
+        _rehearse()
+    assert "download" not in events
+    assert "run-venv" not in events
+    assert events[-1] == "lock-release"
+    assert not (root / "online-preparations").exists()
