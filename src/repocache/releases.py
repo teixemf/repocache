@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from repocache import release_inventory
+
 REPOSITORY = "teixemf/repocache"
 API_ORIGIN = "https://api.github.com"
 TOKEN_FILE = Path("/etc/repocache/github-token")
@@ -147,6 +149,41 @@ def _release(record: Any) -> Optional[Dict[str, Any]]:
     assets = record.get("assets")
     if not isinstance(assets, list) or len(assets) > 100:
         return None
+    # v0.6+ has a distinct, explicitly enumerated seven-asset layout.
+    # GitHub API metadata is discovery ONLY, never signature authority. The
+    # upgrader still refuses schema 2 until real publisher-key acceptance.
+    if version >= (0, 6, 0):
+        if record.get("immutable") is not True:
+            return None
+        names = release_inventory.names(tag[1:])
+        names.update({
+            "inventory": names["archive"] + ".assets.json",
+            "manifest": names["archive"] + ".manifest.json",
+            "signature": names["archive"] + ".manifest.json.sig",
+        })
+        # Reject extra/mixed/duplicate names and IDs, including wheelhouses.
+        if (len(assets) != len(names) or any(not isinstance(a, dict)
+                for a in assets)
+                or {a.get("name") for a in assets} != set(names.values())):
+            return None
+        selected = {}
+        for role, expected in names.items():
+            matches = [a for a in assets if a["name"] == expected]
+            if len(matches) != 1:
+                return None
+            selected[role] = _asset(matches[0], expected)
+            if selected[role] is None:
+                return None
+        if len({a["id"] for a in selected.values()}) != 7:
+            return None
+        return {"version": tag[1:], "tag": tag, "url": url,
+                "assets": selected,
+                "dependency_profile_hint": "online-hash-locked-wheels",
+                "compatibility": "unknown",
+                "compatibility_reason": (
+                    "Untrusted asset metadata only; online profile is not "
+                    "installable until publisher signature and updater gates pass"),
+                "eligible": False}
     archive_name = "repocache-" + tag + ".tar.gz"
     checksum_name = archive_name + ".sha256"
     archives = [a for a in assets if isinstance(a, dict) and a.get("name") == archive_name]
