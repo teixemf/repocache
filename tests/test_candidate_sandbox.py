@@ -33,7 +33,9 @@ def workspace(tmp_path, monkeypatch):
 def _pip(work: Path):
     return [str(work / "venv/bin/python"), "-I", "-m", "pip", "install",
             "--no-index", "--no-deps", "--only-binary=:all:",
-            "--require-hashes", "-r", str(work / "download/requirements.lock")]
+            "--require-hashes", "--disable-pip-version-check",
+            "--no-cache-dir", "--no-input", "-r",
+            str(work / "download/requirements.lock")]
 
 
 def test_candidate_has_only_private_writable_root_and_no_network(workspace):
@@ -66,6 +68,10 @@ def test_candidate_has_only_private_writable_root_and_no_network(workspace):
     lambda w: [str(w / "venv/bin/python"), "-c", "exec('malicious')"],
     lambda w: [str(w / "venv/bin/python"), "-I", "-m", "pip", "download"],
     lambda w: [str(w / "venv/bin/python"), "-I", "-m", "pip", "install", "typer"],
+    lambda w: _pip(w) + ["--root=/"],
+    lambda w: _pip(w)[:-1] + ["/tmp/injected.lock"],
+    lambda w: [str(w / "venv/bin/python"), "-I", "-c",
+               "print('run_test'); exec('import os')"],
     lambda w: [str(w / "venv/bin/repocache"), "update", "--yes"],
     lambda w: [str(w / "venv/bin/repocache"), "health", "--deep"],
 ])
@@ -81,7 +87,8 @@ def test_approved_python_metadata_and_headless_smoke_commands(workspace):
     for argv in (
         [python, "-I", "-m", "pip", "check"],
         [python, "-I", "-m", "pip", "list", "--format=json"],
-        [python, "-I", "-c", "assert 'run_test'"],
+        [python, "-I", "-c", __import__(
+            "repocache.online_generation", fromlist=["TUI_HEADLESS_SMOKE"]).TUI_HEADLESS_SMOKE],
         [str(work / "venv/bin/repocache"), "--version"],
         [str(work / "venv/bin/repocache"), "--help"],
         [str(work / "venv/bin/repocache"), "update", "--help"],
