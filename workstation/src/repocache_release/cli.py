@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -135,6 +136,31 @@ def guard_state_dir(path: Path, *, create: bool = False) -> None:
             raise OperatorError("UNSAFE_STATE", "State directory must be private and owned")
 
 
+@contextlib.contextmanager
+def candidate_lock(version: str):
+    """Serialize local candidate mutations without deleting an active flock."""
+    check_tag(version)
+    base = state_root()
+    guard_state_dir(base, create=True)
+    path = base / (version + ".lock")
+    fd = -1
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1):
+            raise OperatorError("UNSAFE_STATE", "Candidate lock file is unsafe")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise OperatorError("BUSY", "Another release operation holds the candidate lock") from exc
+        yield
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def state_file(version: str) -> Path:
     return state_root() / (check_tag(version) + ".json")
 
@@ -233,8 +259,9 @@ def approved_build(version: str) -> tuple[str, int, int]:
         raise OperatorError("UNREVIEWED_RELEASE", "Release is not contained in reviewed main")
     runs = gh_json(f"repos/{REPO}/actions/workflows/release.yml/runs?event=workflow_dispatch&per_page=100")
     entries = runs.get("workflow_runs")
-    if not isinstance(entries, list):
-        raise OperatorError("INVALID_RESPONSE", "Missing release workflow runs")
+    if (not isinstance(entries, list) or type(runs.get("total_count")) is not int
+            or runs["total_count"] > 100 or len(entries) != runs["total_count"]):
+        raise OperatorError("INVALID_RESPONSE", "Release run listing is missing or incomplete")
     matches = [r for r in entries if
                isinstance(r, dict) and r.get("head_sha") == commit
                and r.get("head_branch") == tag
@@ -250,6 +277,14 @@ def approved_build(version: str) -> tuple[str, int, int]:
     if (type(rid) is not int or rid < 1 or type(attempt) is not int
             or attempt < 1):
         raise OperatorError("BUILD_NOT_VERIFIED", "Invalid Actions run identity")
+    jobs = gh_json(f"repos/{REPO}/actions/runs/{rid}/jobs?per_page=100")
+    listed = jobs.get("jobs")
+    if (not isinstance(listed, list)
+            or type(jobs.get("total_count")) is not int
+            or not 5 <= len(listed) == jobs["total_count"] <= 100
+            or any(not isinstance(j, dict) or j.get("status") != "completed"
+                   or j.get("conclusion") != "success" for j in listed)):
+        raise OperatorError("BUILD_NOT_VERIFIED", "Release build has failed, skipped or incomplete jobs")
     return commit, rid, attempt
 
 
@@ -574,15 +609,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if values.object == "environment":
             data = environment()
-        elif values.action == "prepare":
-            data = prepare(values.version)
-        elif values.action == "sign":
-            data = sign(values.version, values.passphrase_fd)
-        elif values.action == "stage":
-            data = stage(values.version)
-        elif values.action == "publish":
-            data = publish(values.version, values.acceptance_run_id,
-                           values.approve_sha256)
+        elif values.action in ("prepare", "sign", "stage", "publish"):
+            with candidate_lock(values.version):
+                if values.action == "prepare":
+                    data = prepare(values.version)
+                elif values.action == "sign":
+                    data = sign(values.version, values.passphrase_fd)
+                elif values.action == "stage":
+                    data = stage(values.version)
+                else:
+                    data = publish(values.version, values.acceptance_run_id,
+                                   values.approve_sha256)
         else:
             data = status(values.version, values.acceptance_run_id)
         payload = {"schema_version": 1, "ok": True, "result": data}
