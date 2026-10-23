@@ -13,7 +13,7 @@ import tarfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from repocache import signatures
+from repocache import application_wheel, signatures
 
 MAX_INVENTORY = 4096
 MAX_LOCK = 131072
@@ -21,7 +21,7 @@ MAX_SBOM = 262144
 MAX_ARCHIVE = 25000000
 HEX64 = re.compile(r"[a-f0-9]{64}\Z")
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
-ROLES = ("archive", "checksum", "dependency_lock", "sbom")
+ROLES = ("archive", "checksum", "dependency_lock", "sbom", "application_wheel")
 
 
 class InventoryError(RuntimeError):
@@ -53,7 +53,8 @@ def names(version):
     source = "repocache-v" + version + ".tar.gz"
     return {"archive": source, "checksum": source + ".sha256",
             "dependency_lock": source + ".dependency-lock.json",
-            "sbom": source + ".sbom.json"}
+            "sbom": source + ".sbom.json",
+            "application_wheel": application_wheel.filename(version)}
 
 
 def digest(value):
@@ -98,7 +99,8 @@ def _validate(version, assets):
     if not isinstance(assets, Mapping) or set(assets) != set(ROLES):
         raise InventoryError("Unexpected candidate artifact set")
     limits = {"archive": MAX_ARCHIVE, "checksum": 200,
-              "dependency_lock": MAX_LOCK, "sbom": MAX_SBOM}
+              "dependency_lock": MAX_LOCK, "sbom": MAX_SBOM,
+              "application_wheel": application_wheel.MAX_APP_WHEEL}
     for role in ROLES:
         raw = assets[role]
         if not isinstance(raw, bytes) or not raw or len(raw) > limits[role]:
@@ -107,6 +109,10 @@ def _validate(version, assets):
     if assets["checksum"] != checksum:
         raise InventoryError("Candidate source checksum mismatch")
     _check_archive(assets["archive"], version)
+    try:
+        application_wheel.verify(assets["application_wheel"], assets["archive"], version)
+    except application_wheel.ApplicationWheelError as exc:
+        raise InventoryError("First-party application wheel does not match signed source") from exc
     sbom = _json(assets["sbom"], MAX_SBOM)
     if (not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX"
             or sbom.get("specVersion") != "1.5"
