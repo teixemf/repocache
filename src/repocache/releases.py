@@ -15,7 +15,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from repocache import release_inventory
 
 REPOSITORY = "teixemf/repocache"
 API_ORIGIN = "https://api.github.com"
@@ -153,7 +152,12 @@ def _release(record: Any) -> Optional[Dict[str, Any]]:
     # the original signed wheelhouse layout at any version for compatibility.
     # GitHub metadata identifies possible assets but never authenticates them.
     if version >= (0, 6, 0):
-        names = release_inventory.names(tag[1:])
+        # Keep discovery self-contained in historical schema-1 bundles:
+        # v0.4.0/v0.5.0 archives do not contain release_inventory.py.
+        archive = "repocache-" + tag + ".tar.gz"
+        names = {"archive": archive, "checksum": archive + ".sha256",
+                 "dependency_lock": archive + ".dependency-lock.json",
+                 "sbom": archive + ".sbom.json"}
         names.update({
             "inventory": names["archive"] + ".assets.json",
             "manifest": names["archive"] + ".manifest.json",
