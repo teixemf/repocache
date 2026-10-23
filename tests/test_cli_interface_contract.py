@@ -11,7 +11,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-import click
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -31,7 +30,7 @@ spec.loader.exec_module(client)
 def _server_paths():
     def walk(command, prefix=()):
         paths = set()
-        if isinstance(command, click.Group):
+        if hasattr(command, "commands"):
             for name, child in command.commands.items():
                 path = (*prefix, name)
                 paths.add(" ".join(path))
