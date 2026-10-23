@@ -101,6 +101,16 @@ def test_unknown_repo_returns_one_json_error_document_without_upstream_probe(mon
     assert not result.stderr
 
 
+
+def test_failed_discovery_is_not_misreported_as_an_absent_repository(monkeypatch):
+    monkeypatch.setattr(cli, "nginx_config", lambda *_: {
+        "ok": False, "partial": True, "stdout": ""})
+    monkeypatch.setattr(cli, "discover_repos", lambda *_: [])
+    result = CliRunner().invoke(cli.app, ["--json", "repos", "show", "debian"])
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["error"]["code"] == "REPOSITORY_LOOKUP_UNAVAILABLE"
+
+
 def test_server_object_help_and_stream_json_refusal_are_read_only(monkeypatch):
     monkeypatch.setattr(cli, "nginx_config", lambda *_: 1 / 0)
     monkeypatch.setattr(cli, "command", lambda *_a, **_k: 1 / 0)
