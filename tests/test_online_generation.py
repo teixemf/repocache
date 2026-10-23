@@ -88,6 +88,8 @@ def rootless_staging(tmp_path, monkeypatch):
         observations.append("run-" + action)
         if "venv" in argv:
             new_venv = Path(argv[-1])
+            assert new_venv.is_dir()
+            assert new_venv.stat().st_mode & 0o077 == 0
             (new_venv / "bin").mkdir(parents=True, mode=0o700)
             interpreter = new_venv / "bin" / "python"
             interpreter.write_text("# synthetic native Python executable\n")
