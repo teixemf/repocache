@@ -30,6 +30,7 @@ ONLINE_FILES = (
     "src/repocache/release_inventory.py",
     "src/repocache/online_deps.py",
     "src/repocache/signed_dependency_staging.py",
+    "src/repocache/online_generation.py",
 )
 
 
