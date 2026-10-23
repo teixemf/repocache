@@ -310,7 +310,7 @@ def logs_tail(ctx: typer.Context, lines: int = typer.Option(15, "--lines", "-n",
     try:
         content, _ = _tail_bytes(path)
     except OSError as error:
-        _cli_error("LOG_READ_FAILED", "Could not read the metrics log.")
+        _cli_error(ctx, "LOG_READ_FAILED", "Could not read the metrics log.")
     selected = content[-lines:]
     if _json_enabled(ctx, json_output):
         emit_json({"lines": selected, "path": str(path)})
