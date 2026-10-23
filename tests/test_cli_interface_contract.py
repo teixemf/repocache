@@ -228,4 +228,4 @@ def test_canonical_diagnostics_object_help_never_probes_host(monkeypatch):
 
 def test_preserved_existing_cli_contract_anchors():
     assert {"check", "repos list", "repos submit", "repos sync"} <= _client_paths()
-    assert {"update list", "repos list", "repos show"} <= _server_paths()
+    assert {"update list", "update check", "update install", "repos list", "repos show"} <= _server_paths()
