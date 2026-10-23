@@ -19,7 +19,11 @@ import os
 import re
 import shutil
 import stat
+import ssl
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 import sys
 import tempfile
 from pathlib import Path
@@ -354,43 +358,101 @@ def extract_candidate_zip(archive: Path, assets: Path, version: str) -> None:
         raise OperatorError("UNSAFE_ASSET", "Downloaded ZIP failed strict verification") from exc
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
 def download_unsigned(run_id: int, assets: Path, version: str) -> None:
-    """Authenticated GitHub API archive download with strict local extraction."""
+    """Verify official Actions ZIP digest and never forward auth to the CDN.
+
+    The unsigned archive is never executed; independent deterministic source
+    and pinned dependency verification follows strict ZIP member extraction.
+    """
     listing = gh_json(f"repos/{REPO}/actions/runs/{run_id}/artifacts?per_page=100")
     items = listing.get("artifacts")
-    if not isinstance(items, list):
-        raise OperatorError("INVALID_RESPONSE", "Missing authorized workflow artifact inventory")
+    if (not isinstance(items, list) or type(listing.get("total_count")) is not int
+            or listing["total_count"] != len(items) or len(items) > 100):
+        raise OperatorError("INVALID_RESPONSE", "Incomplete GitHub artifact listing")
     matches = [item for item in items if isinstance(item, dict)
                and item.get("name") == "unsigned-release-candidate"
-               and item.get("expired") is False]
+               and item.get("expired") is False
+               and isinstance(item.get("workflow_run"), dict)
+               and item["workflow_run"].get("id") == run_id]
     if len(matches) != 1:
         raise OperatorError("BUILD_NOT_VERIFIED", "Missing or ambiguous authorized Actions artifact")
     entry = matches[0]
-    artifact_id, size = entry.get("id"), entry.get("size_in_bytes")
+    artifact_id, size, remote_sha = (entry.get("id"), entry.get("size_in_bytes"),
+                                     entry.get("digest"))
     if (type(artifact_id) is not int or artifact_id < 1
-            or type(size) is not int or size < 1 or size > MAX_DOWNLOAD):
-        raise OperatorError("UNSAFE_ASSET", "Invalid upstream artifact identity or size")
+            or type(size) is not int or size < 1 or size > MAX_DOWNLOAD
+            or not isinstance(remote_sha, str)
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", remote_sha)):
+        raise OperatorError("UNSAFE_ASSET", "Actions artifact lacks reviewed size and SHA-256 identity")
+    token = command(["gh", "auth", "token"]).decode("ascii", "strict").strip()
+    if not token or len(token) > 4096 or any(character.isspace() for character in token):
+        raise OperatorError("AUTHORIZATION_REQUIRED", "GitHub authentication unavailable")
+    endpoint = f"https://api.github.com/repos/{REPO}/actions/artifacts/{artifact_id}/zip"
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), NoRedirect(),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()))
     fd, temporary = tempfile.mkstemp(prefix=".actions-", suffix=".zip", dir=assets.parent)
     try:
         with os.fdopen(fd, "wb") as output:
-            # GH handles GitHub's authenticated redirect. Never redirect
-            # token-bearing requests to an arbitrary user-provided URL.
-            try:
-                result = subprocess.run(
-                    ["gh", "api", "-H", "Accept: application/vnd.github+json",
-                     f"repos/{REPO}/actions/artifacts/{artifact_id}/zip"],
-                    stdout=output, stderr=subprocess.DEVNULL,
-                    timeout=180, check=False)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                raise OperatorError("TOOL_UNAVAILABLE", "Actions artifact download failed") from exc
-            if result.returncode:
-                raise OperatorError("OPERATION_FAILED", "GitHub artifact download was refused")
-            output.flush()
-            os.fsync(output.fileno())
-        archive = Path(temporary)
-        if archive.stat().st_size > MAX_DOWNLOAD:
-            raise OperatorError("UNSAFE_ASSET", "Downloaded ZIP exceeds maximum size")
-        extract_candidate_zip(archive, assets, version)
+            url = endpoint
+            for attempt in range(5):
+                parsed = urllib.parse.urlsplit(url)
+                initial = attempt == 0
+                host = parsed.hostname or ""
+                if initial:
+                    if host != "api.github.com":
+                        raise OperatorError("UNSAFE_REDIRECT", "Unexpected source for authenticated request")
+                elif not (host in {"github.com", "release-assets.githubusercontent.com",
+                                   "objects.githubusercontent.com",
+                                   "github-releases.githubusercontent.com"}
+                          or host.endswith(".blob.core.windows.net")):
+                    raise OperatorError("UNSAFE_REDIRECT", "Unapproved release CDN origin")
+                if (parsed.scheme != "https" or parsed.port not in (None, 443)
+                        or parsed.username or parsed.password or parsed.fragment):
+                    raise OperatorError("UNSAFE_REDIRECT", "Insecure GitHub artifact URL")
+                headers = {"User-Agent": "repocache-release-operator/1",
+                           "Accept": "application/octet-stream",
+                           "X-GitHub-Api-Version": "2022-11-28"}
+                if initial:
+                    headers["Authorization"] = "Bearer " + token
+                request = urllib.request.Request(url, headers=headers)
+                try:
+                    response = opener.open(request, timeout=60)
+                except urllib.error.HTTPError as exc:
+                    if exc.code not in (301, 302, 303, 307, 308):
+                        raise OperatorError("REMOTE_UNAVAILABLE",
+                                            "GitHub artifact download failed") from exc
+                    redirect = exc.headers.get("Location", "")
+                    if not redirect:
+                        raise OperatorError("UNSAFE_REDIRECT", "Missing GitHub artifact redirect")
+                    url = urllib.parse.urljoin(url, redirect)
+                    continue
+                with response:
+                    total = 0
+                    h = hashlib.sha256()
+                    while True:
+                        block = response.read(131072)
+                        if not block:
+                            break
+                        total += len(block)
+                        if total > MAX_DOWNLOAD:
+                            raise OperatorError("UNSAFE_ASSET", "Downloaded ZIP is oversized")
+                        h.update(block)
+                        output.write(block)
+                if total != size or h.hexdigest() != remote_sha[7:]:
+                    raise OperatorError("ASSET_DRIFT", "GitHub Actions ZIP digest/size mismatch")
+                output.flush()
+                os.fsync(output.fileno())
+                extract_candidate_zip(Path(temporary), assets, version)
+                return
+            raise OperatorError("UNSAFE_REDIRECT", "Too many authenticated artifact redirects")
+    except (OSError, TimeoutError) as exc:
+        raise OperatorError("REMOTE_UNAVAILABLE", "Cannot verify downloaded Actions artifact") from exc
     finally:
         os.unlink(temporary)
 
