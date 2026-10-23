@@ -7,7 +7,9 @@ This is not authorization to activate a candidate or claim native acceptance.
 from __future__ import annotations
 
 import os
+import re
 import stat
+import subprocess
 from pathlib import Path
 
 from repocache import updater
@@ -24,6 +26,56 @@ _ALLOWED_OWNED_COMMANDS = {
     ("update", "--help"),
 }
 _ALLOWED_PIP_OPS = {"install", "check", "list"}
+
+
+def _safe_package_query(argv: list[str]) -> str:
+    """Use only root-owned native package metadata, never a shell or pip."""
+    try:
+        result = subprocess.run(
+            argv, env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C"},
+            text=True, capture_output=True, check=False, timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SandboxError("Cannot verify sandbox OS security update") from exc
+    if result.returncode != 0 or len(result.stdout) > 256:
+        raise SandboxError("Unverifiable sandbox OS package revision")
+    return result.stdout.strip()
+
+
+def _verify_patch_level() -> None:
+    """Require fixes for CVE-2026-87766 on both supported platforms."""
+    from repocache.online_generation import _current_host_target
+    target = _current_host_target()
+    if target == "debian13-py313":
+        version = _safe_package_query(
+            ["/usr/bin/dpkg-query", "-W", "-f=$" "{Version}", "bubblewrap"])
+        if not re.fullmatch(r"[0-9A-Za-z.+~:-]{1,100}", version):
+            raise SandboxError("Invalid Debian sandbox package version")
+        try:
+            check = subprocess.run(
+                ["/usr/bin/dpkg", "--compare-versions", version, "ge",
+                 "0.12.0-1~deb13u1"],
+                env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C"},
+                capture_output=True, check=False, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SandboxError("Cannot compare native Debian package versions") from exc
+        if check.returncode != 0:
+            raise SandboxError("Debian DSA-6472-1 bubblewrap update is missing")
+    elif target == "almalinux10-py312":
+        version = _safe_package_query(
+            ["/usr/bin/rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}",
+             "bubblewrap"])
+        match = re.fullmatch(
+            r"(\d+)\.(\d+)\.(\d+)-(\d+)\.el10_(\d+)(?:\.[A-Za-z0-9.]+)?",
+            version)
+        if match is None:
+            raise SandboxError("Unsupported AlmaLinux sandbox package revision")
+        major, minor, patch, release, update = map(int, match.groups())
+        if not ((major, minor, patch) >= (0, 12, 0) or
+                ((major, minor, patch) == (0, 10, 0)
+                 and release >= 5 and update >= 2)):
+            raise SandboxError("AlmaLinux ALSA-2026:85308 update is missing")
+    else:
+        raise SandboxError("Unsupported sandbox host")
 
 
 def require_executor() -> None:
@@ -45,9 +97,9 @@ def require_executor() -> None:
                     else not stat.S_ISREG(meta.st_mode))):
             raise SandboxError("Untrusted OS sandbox executor path")
     meta = BWRAP.lstat()
-    if (not (meta.st_mode & 0o111) or
-            meta.st_mode & (stat.S_ISUID | stat.S_ISGID)):
-        raise SandboxError("Setuid/setgid or non-executable sandbox is forbidden")
+    if not meta.st_mode & 0o111:
+        raise SandboxError("Sandbox helper is non-executable")
+    _verify_patch_level()
 
 
 def _checked_workspace(workspace: Path, cwd: Path | None) -> Path:
