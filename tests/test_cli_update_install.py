@@ -177,6 +177,91 @@ def test_update_check_and_list_remain_unmodified(monkeypatch):
         assert isinstance(json.loads(result.stdout), dict)
 
 
+
+def test_actual_signed_verifier_refuses_untrusted_offline_release_at_cli_boundary(
+        monkeypatch, tmp_path):
+    """Exercise CLI -> apply -> upgrade -> signatures.verify, not a fake apply.
+
+    Only privileged lock/service-account preconditions are replaced, because
+    this is an isolated test; the real signature verifier is never mocked.
+    """
+    import contextlib
+    import hashlib
+    from repocache import upgrade
+
+    monkeypatch.setattr(updater, "update_transaction", contextlib.nullcontext)
+    monkeypatch.setattr(updater, "recover_transaction", lambda: None)
+    monkeypatch.setattr(updater, "_require_service_account", lambda: None)
+    monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.4.0"})
+    monkeypatch.setattr(releases, "discover", lambda *_a, **_kw:
+                        pytest.fail("Offline assets must never trigger discovery"))
+    monkeypatch.setattr(upgrade, "_download_asset", lambda *_a, **_kw:
+                        pytest.fail("Offline assets must never trigger downloads"))
+    monkeypatch.setattr(upgrade, "_extract_verified", lambda *_a, **_kw:
+                        pytest.fail("Untrusted release must never be extracted"))
+    monkeypatch.setattr(updater, "install_source", lambda *_a, **_kw:
+                        pytest.fail("Untrusted release must never be installed"))
+
+    archive = tmp_path / "repocache-v0.5.0.tar.gz"
+    archive.write_bytes(b"untrusted inert bytes, not a tarball")
+    checksum = tmp_path / (archive.name + ".sha256")
+    checksum.write_text(
+        hashlib.sha256(archive.read_bytes()).hexdigest() +
+        "  " + archive.name + "\\n", encoding="ascii")
+    manifest = tmp_path / (archive.name + ".manifest.json")
+    manifest.write_bytes(b"{}")  # Unsupported schema; not an owner manifest.
+    signature = tmp_path / (manifest.name + ".sig")
+    signature.write_bytes(b"x" * 64)  # Syntactically sized, not Ed25519.
+    wheels = tmp_path / (archive.name + ".wheelhouse.tar.gz")
+    wheels.write_bytes(b"untrusted inert wheelhouse bytes")
+    original = {p.name: p.read_bytes()
+                for p in (archive, checksum, manifest, signature, wheels)}
+    result = CliRunner().invoke(cli.app, [
+        "update", "install", "0.5.0", "--json",
+        "--bundle", str(archive), "--checksum", str(checksum),
+        "--manifest", str(manifest), "--signature", str(signature),
+        "--wheelhouse", str(wheels),
+    ])
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["performed"] is False
+    assert payload["status"] == "error"
+    assert "signed release manifest schema" in payload["error"]
+    assert not result.stderr
+    assert {p.name: p.read_bytes()
+            for p in (archive, checksum, manifest, signature, wheels)} == original
+
+
+@pytest.mark.parametrize("missing", ["checksum", "bundle"])
+def test_actual_backend_rejects_partial_local_bundle_before_any_network_or_install(
+        monkeypatch, tmp_path, missing):
+    import contextlib
+    from repocache import upgrade
+
+    monkeypatch.setattr(updater, "update_transaction", contextlib.nullcontext)
+    monkeypatch.setattr(updater, "recover_transaction", lambda: None)
+    monkeypatch.setattr(updater, "_require_service_account", lambda: None)
+    monkeypatch.setattr(releases, "discover", lambda *_a, **_kw:
+                        pytest.fail("Invalid offline inputs must not contact GitHub"))
+    monkeypatch.setattr(upgrade, "_download_asset", lambda *_a, **_kw:
+                        pytest.fail("Invalid offline inputs must not download"))
+    monkeypatch.setattr(updater, "install_source", lambda *_a, **_kw:
+                        pytest.fail("Invalid offline inputs must not install"))
+    argv = ["update", "install", "0.5.0", "--json"]
+    if missing != "bundle":
+        argv += ["--bundle", str(tmp_path / "repocache-v0.5.0.tar.gz")]
+    if missing != "checksum":
+        argv += ["--checksum", str(tmp_path / "repocache-v0.5.0.tar.gz.sha256")]
+    result = CliRunner().invoke(cli.app, argv)
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "Both --bundle and --checksum" in payload["error"]
+    assert list(tmp_path.iterdir()) == []
+
+
+
 def test_updater_remains_single_source_for_signature_and_recovery():
     # An architectural guard: CLI must delegate, not bypass, signature
     # verification or implement a second updater pipeline.
