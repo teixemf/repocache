@@ -71,7 +71,7 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
         raise OperatorError("TOOL_UNAVAILABLE", "Required local tool unavailable") from exc
     if result.returncode:
         raise OperatorError("OPERATION_FAILED", "Git, GitHub or OpenSSL validation failed")
-    if len(result.stdout) > MAX_METADATA and argv[0] != "gh":
+    if len(result.stdout) > MAX_METADATA:
         raise OperatorError("OVERSIZED_RESPONSE", "Tool output exceeded supported size")
     return result.stdout
 
@@ -305,6 +305,12 @@ def environment() -> dict[str, Any]:
     for tool in ("git", "gh", "/usr/bin/openssl"):
         command([tool, "version"] if tool == "/usr/bin/openssl" else [tool, "--version"])
     command(["gh", "auth", "status"])
+    try:
+        user = json.loads(command(["gh", "api", "user"]))
+    except (ValueError, TypeError) as exc:
+        raise OperatorError("AUTHORIZATION_REQUIRED", "Cannot verify GitHub account identity") from exc
+    if not isinstance(user, dict) or user.get("login") != OWNER:
+        raise OperatorError("AUTHORIZATION_REQUIRED", "Release operator requires the official owner account")
     info = gh_json(f"repos/{REPO}/actions/workflows/release.yml")
     if info.get("path") != ".github/workflows/release.yml":
         raise OperatorError("UNTRUSTED_REPOSITORY", "Release workflow is not readable or mismatched")
@@ -705,7 +711,7 @@ def main(argv: list[str] | None = None) -> int:
     except OperatorError as exc:
         err = exc
         rc = 1
-    except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, UnicodeError, TypeError, KeyError, AttributeError) as exc:
         err = OperatorError("OPERATION_FAILED", "Release operator could not verify its inputs")
         rc = 1
     if json_mode:
