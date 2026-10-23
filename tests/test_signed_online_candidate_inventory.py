@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from repocache import release_inventory, signatures
+from repocache import application_wheel, release_inventory, signatures
 
 
 def _signer():
@@ -43,7 +43,22 @@ def _archive(version="0.6.0", *, entry="src/repocache/cli.py",
     sink = io.BytesIO()
     with tarfile.open(fileobj=sink, mode="w:gz") as tar:
         policy = json.dumps({"schema": 1, "version": version}).encode()
-        for name, raw in (("release-policy.json", policy), (entry, content)):
+        pyproject = (
+            '[project]\nname = "repocache-control"\nversion = "' + version +
+            '"\nrequires-python = ">=3.12"\nlicense = "Apache-2.0"\n'
+            'dependencies = ["typer>=0.12,<1", "rich>=13,<16", "textual>=0.80,<10"]\n'
+            '[project.scripts]\nrepocache = "repocache.cli:app"\n'
+        ).encode()
+        entries = {
+            "release-policy.json": policy,
+            "pyproject.toml": pyproject,
+            "LICENSE": b"Original REPOCACHE license fixture\n",
+            "src/repocache/__init__.py": (
+                '__version__ = "' + version + '"\n').encode(),
+            "src/repocache/cli.py": b"print('safe test fixture')\n",
+        }
+        entries[entry] = content
+        for name, raw in sorted(entries.items()):
             member = tarfile.TarInfo("repocache-v" + version + "/" + name)
             member.size = len(raw)
             member.mode = 0o644
@@ -64,6 +79,7 @@ def _parts(archive=None, version="0.6.0"):
         "checksum": (hashlib.sha256(archive).hexdigest() + "  " + basename + "\n").encode(),
         "dependency_lock": (json.dumps(lock) + "\n").encode(),
         "sbom": (json.dumps(sbom) + "\n").encode(),
+        "application_wheel": application_wheel.build(archive, version),
     }
 
 
@@ -72,11 +88,11 @@ def _candidate(tmp_path, parts):
     for role, raw in parts.items():
         (tmp_path / names[role]).write_bytes(raw)
     return (tmp_path / names["archive"], tmp_path / names["dependency_lock"],
-            tmp_path / names["sbom"])
+            tmp_path / names["sbom"], tmp_path / names["application_wheel"])
 
 
 def _signed(tmp_path, signer_key, parts):
-    source, lock, sbom = _candidate(tmp_path, parts)
+    source, lock, sbom, original_wheel = _candidate(tmp_path, parts)
     now = int(time.time())
     manifest, sig = _signer().sign(
         source, signer_key, "publisher-2026", "a" * 40, now - 10, now + 3600,
@@ -182,7 +198,7 @@ def test_future_profile_requires_v06_and_two_target_lock():
 def test_online_signer_refuses_legacy_wheelhouse_and_missing_sbom(
         tmp_path, signer_key):
     parts = _parts()
-    src, lock, sbom = _candidate(tmp_path, parts)
+    src, lock, sbom, original_wheel = _candidate(tmp_path, parts)
     now = int(time.time())
     signer = _signer()
     with pytest.raises(ValueError, match="no wheelhouse"):
