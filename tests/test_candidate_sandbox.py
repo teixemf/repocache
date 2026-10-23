@@ -220,3 +220,24 @@ def test_missing_security_package_metadata_fails_before_namespace(
     with pytest.raises(candidate_sandbox.SandboxError, match="Unverifiable"):
         candidate_sandbox._safe_package_query(
             ["/usr/bin/rpm", "-q", "bubblewrap"])
+
+
+
+def test_runtime_dispatch_never_calls_host_pip_or_console_directly(
+        workspace, monkeypatch):
+    _, work = workspace
+    invocations = []
+
+    def execute(argv, *, cwd=None, timeout=90):
+        invocations.append((argv, cwd, timeout))
+        return "verified"
+
+    monkeypatch.setattr(updater, "_run", execute)
+    result = candidate_sandbox.run_isolated(
+        _pip(work), workspace=work, cwd=work / "download", timeout=17)
+    assert result == "verified"
+    assert len(invocations) == 1
+    argv, cwd, timeout = invocations[0]
+    assert argv[0] == "/usr/bin/bwrap"
+    assert argv[argv.index("--") + 1:] == _pip(work)
+    assert cwd == work and timeout == 17
