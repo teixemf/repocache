@@ -7,6 +7,7 @@ disposable venv; publisher-signed native candidate tests remain outstanding.
 from __future__ import annotations
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from repocache import cli, online_generation
@@ -35,7 +36,7 @@ def test_actual_noninteractive_typer_contract_does_not_access_upstream(
     runner = CliRunner()
     result = runner.invoke(cli.app, argv)
     assert result.exit_code == 0, result.output
-    assert expected in result.output
+    assert expected in unstyle(result.output)
     assert "Continue?" not in result.output
     assert "Would you like" not in result.output
 
