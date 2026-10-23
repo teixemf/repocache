@@ -24,10 +24,20 @@ publish future releases before exercising their signed installers.
 6. Map EVERY acceptance criterion to executed PASS/FAIL/NOT VERIFIED evidence.
    Any applicable FAIL or NOT VERIFIED prevents release authorization.
 
-This requires a separate authenticated candidate-artifact handoff workflow
-for v0.5.0: a draft release is not yet an immutable, anonymously downloadable
-public endpoint. The new candidate gate cannot be asserted implemented merely
-because the v0.4.0 public release smoke is operational.
+For v0.5.0 onward, the read-only signed candidate staging/gating
+implementation is described in docs/SIGNED_CANDIDATE_ACCEPTANCE.md
+(issue #76): owner signs verified exact-final artifacts outside GitHub,
+stages the eight bytes in a mutable private GitHub Draft Release, and
+dispatches the signed-candidate-acceptance.yml workflow on protected main.
+Its accepted native-container tests and immutable Actions acceptance
+artifact are prerequisites for the separate operator publication approval.
+
+This workflow and publication guard cannot be declared **end-to-end PASS**
+until a real owner-signed v0.5.0 candidate and Draft Release exist. The
+private draft is not an immutable public endpoint, and a successful
+workflow alone does not prevent an administrator from overriding the
+manual publication process. Any draft asset change after the CI jobs
+invalidates their acceptance.
 
 ## Stage B: published smoke (mandatory immediately after every public release)
 
