@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import click
 import os
 import sys
 import time
@@ -31,13 +32,41 @@ update_app = typer.Typer(help="Discover trusted GitHub Releases and manage serve
 config_app = typer.Typer(help="Configuration checks and discovery", no_args_is_help=True)
 catalog_app = typer.Typer(help="Explicitly approved read-only repository catalog", no_args_is_help=True)
 app.add_typer(repos_app, name="repos")
+app.add_typer(repos_app, name="repo", hidden=True)
 app.add_typer(cache_app, name="cache")
 app.add_typer(logs_app, name="logs")
+app.add_typer(logs_app, name="log", hidden=True)
 app.add_typer(service_app, name="service")
 app.add_typer(config_app, name="config")
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(update_app, name="update")
 console = Console()
+
+
+def _json_enabled(local: bool = False) -> bool:
+    """Honor root-level and action-level --json without mutable global state."""
+    ctx = click.get_current_context(silent=True)
+    root = ctx.find_root() if ctx is not None else None
+    global_json = (root.obj.get("json", False) if root is not None
+                   and isinstance(root.obj, dict) else False)
+    return bool(local or global_json)
+
+
+def _require_text_output() -> None:
+    """Fail before side effects when a command has no finite JSON contract."""
+    if _json_enabled():
+        emit_json({"ok": False, "error": {
+            "code": "UNSUPPORTED_OUTPUT_MODE",
+            "message": "This command does not support --json."}})
+        raise typer.Exit(2)
+
+
+def _cli_error(code: str, message: str, status: int = 1) -> None:
+    if _json_enabled():
+        emit_json({"ok": False, "error": {"code": code, "message": message}})
+    else:
+        typer.echo(f"ERROR [{code}]: {message}", err=True)
+    raise typer.Exit(status)
 
 
 def settings() -> Settings:
@@ -79,7 +108,9 @@ def tui_launch(auto_refresh: bool = True, interval: int = 15) -> None:
 
 @app.callback()
 def main(ctx: typer.Context,
-         version: bool = typer.Option(False, "--version", help="Show the version", is_eager=True)) -> None:
+         version: bool = typer.Option(False, "--version", help="Show the version", is_eager=True),
+         json_output: bool = typer.Option(False, "--json", help="Machine-readable output")) -> None:
+    ctx.ensure_object(dict)["json"] = json_output
     if version:
         console.print(f"REPOCACHE Control Center {__version__}")
         raise typer.Exit()
@@ -94,6 +125,7 @@ def main(ctx: typer.Context,
 def dashboard(auto: bool = typer.Option(True, "--auto/--no-auto", help="Refresh automatically"),
               interval: int = typer.Option(15, "--interval", help="5, 15, 30 or 60 seconds")) -> None:
     """Open the interactive terminal/SSH dashboard."""
+    _require_text_output()
     if interval not in (5, 15, 30, 60):
         raise typer.BadParameter("Interval must be 5, 15, 30 or 60 seconds")
     tui_launch(auto_refresh=auto, interval=interval)
@@ -103,7 +135,7 @@ def dashboard(auto: bool = typer.Option(True, "--auto/--no-auto", help="Refresh 
 def show_status(json_output: bool = typer.Option(False, "--json", help="JSON format")) -> None:
     """Show NGINX, repository, disk and metrics status."""
     report = snapshot(settings())
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(report)
         return
     table = Table(title="◈ REPOCACHE · Overview", border_style="cyan")
@@ -123,12 +155,13 @@ def show_status(json_output: bool = typer.Option(False, "--json", help="JSON for
     console.print("[dim]Note: disk usage covers the filesystem; metrics reflect a limited JSON log sample.[/dim]")
 
 
+@repos_app.command("ls", hidden=True)
 @repos_app.command("list")
 def repos_list(json_output: bool = typer.Option(False, "--json")) -> None:
     """Discover proxy_pass routes (nginx -T or direct include-file reads)."""
     data = nginx_config(settings())
     repos = discover_repos(data["stdout"])
-    if json_output:
+    if _json_enabled(json_output):
         emit_json({"ok": data["ok"], "validated": data["validated"],
                    "source": data["source"], "partial": data["partial"],
                    "warnings": data["warnings"], "repos": repos,
@@ -157,17 +190,18 @@ def find_repo(name: str) -> Dict[str, str]:
     repos = discover_repos(result["stdout"])
     matches = [item for item in repos if item["name"] == name or item["path"] == name]
     if not matches:
-        console.print(f"[red]Repository '{name}' not found.[/red]")
-        if not result["ok"]:
-            console.print(f"[yellow]nginx -T: {result['stderr']}[/yellow]")
-        raise typer.Exit(1)
+        _cli_error("REPOSITORY_NOT_FOUND", f"Repository '{name}' not found.")
     return matches[0]
 
 
-@repos_app.command("info")
-def repo_info(name: str) -> None:
+@repos_app.command("info", hidden=True)
+@repos_app.command("show")
+def repo_info(name: str, json_output: bool = typer.Option(False, "--json")) -> None:
     """Show a repository location and its upstream."""
     repo = find_repo(name)
+    if _json_enabled(json_output):
+        emit_json({"ok": True, "repo": repo})
+        return
     table = Table(title=repo["name"], show_header=False)
     for label, key in [("Location", "path"), ("Upstream", "upstream")]:
         table.add_row(label, Text(repo[key]))
@@ -180,7 +214,7 @@ def repo_test(name: str, json_output: bool = typer.Option(False, "--json")) -> N
     repo = find_repo(name)
     result = check_upstream(repo)
     data = {"repo": repo, **result}
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(data)
     else:
         console.print(Panel(f"[{('green' if result['result']=='OK' else 'yellow' if result['result']=='WARN' else 'red')}]{result['result']}[/] — {result['detail']}", title="Upstream diagnostics"))
@@ -193,7 +227,7 @@ def repo_test(name: str, json_output: bool = typer.Option(False, "--json")) -> N
 def cache_stats(json_output: bool = typer.Option(False, "--json")) -> None:
     """Show filesystem usage for the cache mount (not cache file sizes)."""
     data = disk_status(settings().cache_dir)
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(data)
         return
     if not data["ok"]:
@@ -217,7 +251,7 @@ def show_metrics(period: str = typer.Option("24h", "--period", "-p", help="1h / 
                  json_output: bool = typer.Option(False, "--json")) -> None:
     """Display request statistics and histogram from JSON logs."""
     data = metrics_report(settings(), hours=parse_period(period), repo=repo)
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(data)
         return
     if not data["available"]:
@@ -253,7 +287,7 @@ def health(deep: bool = typer.Option(False, "--deep", help="Include external ups
            json_output: bool = typer.Option(False, "--json")) -> None:
     """Check NGINX, logs and cache; --deep performs external requests."""
     data = health_report(settings(), deep=deep)
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(data)
     else:
         table = Table(title="◈ REPOCACHE Diagnostics", border_style="cyan")
@@ -277,10 +311,9 @@ def logs_tail(lines: int = typer.Option(15, "--lines", "-n", min=1, max=200),
     try:
         content, _ = _tail_bytes(path)
     except OSError as error:
-        console.print(f"[red]Read error: {error}[/red]")
-        raise typer.Exit(1)
+        _cli_error("LOG_READ_FAILED", "Could not read the metrics log.")
     selected = content[-lines:]
-    if json_output:
+    if _json_enabled(json_output):
         emit_json({"lines": selected, "path": str(path)})
     else:
         for line in selected:
@@ -294,6 +327,7 @@ def logs_tail(lines: int = typer.Option(15, "--lines", "-n", min=1, max=200),
 @logs_app.command("follow")
 def logs_follow() -> None:
     """Follow the log (including rotation); press Ctrl+C to stop."""
+    _require_text_output()
     path = settings().metrics_log
     console.print(f"[cyan]Following {path}[/cyan] — Ctrl+C to quit")
     stream = None
@@ -331,6 +365,7 @@ def logs_follow() -> None:
 @service_app.command("status")
 def service_show() -> None:
     """Show NGINX status via systemctl."""
+    _require_text_output()
     state = service_status()
     console.print("NGINX service:", indicator(state))
     if state != "active":
@@ -340,6 +375,7 @@ def service_show() -> None:
 @service_app.command("reload")
 def service_reload(yes: bool = typer.Option(False, "--yes", help="Explicit, non-interactive acknowledgement")) -> None:
     """Run nginx -t before reloading the NGINX service."""
+    _require_text_output()
     console.print("[yellow]Operation: nginx -t → systemctl reload nginx[/yellow]")
     if not yes:
         console.print("[yellow]Reload refused: pass --yes explicitly; no changes made.[/yellow]")
@@ -359,6 +395,7 @@ def service_reload(yes: bool = typer.Option(False, "--yes", help="Explicit, non-
 @config_app.command("check")
 def config_check() -> None:
     """Run nginx -t without modifying configuration."""
+    _require_text_output()
     result = command([settings().nginx_bin, "-t"], timeout=12)
     console.print(Text(result["stderr"] or result["stdout"]))
     if not result["ok"]:
@@ -368,6 +405,7 @@ def config_check() -> None:
 @config_app.command("show")
 def config_show() -> None:
     """Show configuration sources and paths (without credentials)."""
+    _require_text_output()
     config = settings()
     table = Table(show_header=False, title="REPOCACHE data sources")
     table.add_row("Cache", str(config.cache_dir))
@@ -392,7 +430,7 @@ def update_check(json_output: bool = typer.Option(False, "--json")) -> None:
     """Check installed versus latest verified stable GitHub release (read-only)."""
     from repocache.updater import check
     result = check()
-    if json_output:
+    if _json_enabled(json_output):
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     else:
         console.print(Text(
@@ -407,7 +445,7 @@ def update_list(json_output: bool = typer.Option(False, "--json")) -> None:
     """List published stable release assets and conservative compatibility."""
     from repocache.updater import list_versions
     result = list_versions()
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(result)
     else:
         if result["releases"]:
@@ -458,12 +496,12 @@ def update_main(ctx: typer.Context,
                   exc.status if isinstance(exc, DiscoveryError) else "error")
         response = {"ok": False, "status": status, "error": str(exc),
                     "performed": False, "retryable": status == "busy"}
-        if json_output:
+        if _json_enabled(json_output):
             emit_json(response)
         else:
             console.print(Text("Update refused: " + str(exc), style="red"))
         raise typer.Exit(75 if status == "busy" else 2)
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(result)
     else:
         console.print(f"REPOCACHE {result['version']}: {result['status']} "
@@ -483,14 +521,14 @@ def catalog_publish(
         data = build_catalog(nginx_config(settings()), approved, server)
         publish_catalog(data, output)
     except (CatalogError, OSError) as exc:
-        if json_output:
+        if _json_enabled(json_output):
             emit_json({"ok": False, "error": str(exc)})
         else:
             console.print("[red]Catalog not published: " + str(exc) + "[/red]")
         raise typer.Exit(2)
     result = {"ok": True, "schema": data["schema"],
               "published_repositories": len(data["repositories"]), "output": str(output)}
-    if json_output:
+    if _json_enabled(json_output):
         emit_json(result)
     else:
         console.print(f"[green]Published {result['published_repositories']} approved routes to {output}[/green]")
