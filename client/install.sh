@@ -48,6 +48,13 @@ if (value != value.strip() or origin.scheme != "https"
 PY
 # END SERVER_ARGUMENT_PREFLIGHT
 
+# Installation paths remain fixed and are initialized before the first write.
+SOURCE="$HERE/repocache_client.py"
+TARGET_DIR="/opt/repocache-client"
+CONFIG_DIR="/etc/repocache-client"
+LAUNCHER="/usr/local/bin/repocache-client"
+PYTHON="/usr/bin/python3"
+
 # All filesystem-writing tools must exist before the first managed write.
 # Fail closed on an incompletely provisioned OS rather than installing partly.
 for required in /usr/bin/install /usr/bin/mv /usr/bin/chmod /usr/bin/grep; do
