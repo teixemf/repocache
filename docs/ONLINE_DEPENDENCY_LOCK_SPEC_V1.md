@@ -13,6 +13,26 @@ The reconciled [#82 implementation PR #98](https://github.com/teixemf/repocache/
 
 These additional fields are all covered by the existing root-anchored publisher Ed25519 signature. The provisional parser refuses schema 2 for versions before **v0.6.0**, and the current updater refuses **every** schema-2 installation. The *signed digest fields alone do not prove the referenced bytes are present, safe or verified*; #84 owns their authenticated retrieval and final schema review. Earlier drafts used `runtime_lock_sha256`; that alias is not accepted by the proposed parser. Use only `dependency_lock_sha256` in the signed schema-2 manifest.
 
+## Selected release asset inventory and owned wheel (2026-10-23)
+
+The approved **design direction** in
+[ADR 0004](https://github.com/teixemf/repocache/blob/feat/v0.6.0-signed-first-party-wheel-84/docs/ADR_0004_SIGNED_FIRST_PARTY_WHEEL.md)
+and draft PR #103 replaces the provisional seven-asset source-only v0.6.0+
+proposal. The online profile instead publishes exactly eight assets:
+`repocache-vX.Y.Z.tar.gz`, its `.sha256`, its
+`.dependency-lock.json`, its `.sbom.json`,
+`repocache_control-X.Y.Z-py3-none-any.whl`, its
+`.assets.json` inventory, its `.manifest.json`, and the
+`.manifest.json.sig` signature. The owned wheel MUST be reproducible from
+the authenticated source and verified before offline installation;
+upstream dependency wheels are never published by REPOCACHE in the new
+profile. All eight names, asset counts and trust boundaries are
+**profile-specific**. Legacy signed v0.5.0 source/wheelhouse is still required.
+
+This inventory decision does NOT prove that the resulting bytes are
+safe, signed, native-installable or accepted; #84 owns real release
+acceptance, and #83/#85 own installer and CLI/TUI regressions.
+
 ## Version and migration rules
 
 - **Published v0.4.0** has a publisher-signed manifest schema 1, compatibility policy schema 1 and offline wheelhouse. Its updater cannot parse a different compatibility schema or a source-only release.
@@ -80,13 +100,13 @@ The following structure uses fictitious digests and wheel URLs. It is **illustra
 5. Create a **fresh, versioned venv**. Invoke the interpreter's pip with **offline/no-index**, \`--no-deps\`, \`--no-input\`, \`--no-cache-dir\`, and \`--require-hashes\` using a locally generated exact-file requirements inventory. Explicitly disable source builds; wheel tag compatibility is checked by pip on the target runtime.
 6. Install the separately authenticated original REPOCACHE application artifact without resolving unreviewed dependencies. Run \`pip check\`, CLI version/JSON smoke, Textual headless smoke and rootless recovery hooks; activate atomically with existing journal only after all validations. Never install into system site-packages or execute setup scripts as root.
 7. A missing PyPI host, missing wheel, bad signature, TLS/redirect violation, malformed lock, bad hash, incompatible wheel, permission error or application failure leaves the previous active venv, NGINX, cache, certificates and APT/DNF source configuration unchanged. A first installation fails with actionable sanitized diagnostics.
-8. Optional customer-provided *independently fetched* approved offline wheels may be supported, but REPOCACHE must never ship those third-party bytes as part of new source-only public artifacts.
+8. Optional customer-provided *independently fetched* approved offline wheels may be supported, but REPOCACHE must never ship those third-party bytes as part of new first-party-wheel / online-lock public artifacts.
 
 ## Dependencies and open gates
 
 - [#82 / PR #90](https://github.com/teixemf/repocache/pull/90) prepares the legacy-only profile schema parser. It **does not** enable this v1 online lock.
 - [#83](https://github.com/teixemf/repocache/issues/83) owns strict lock parsing, immutable URL/byte verification, least-privilege download/staging and online installation. Tests must cover hostile JSON and URLs, poisoned environment variables, malicious wheel files, file integrity and network interruption.
-- [#84](https://github.com/teixemf/repocache/issues/84) owns authenticated on-disk release layout, real owner-signed manifest schema, artifact count, public asset inventory, source-only packaging, migration and final candidate acceptance.
+- [#84](https://github.com/teixemf/repocache/issues/84) owns authenticated on-disk release layout, real owner-signed manifest schema, artifact count, public asset inventory, first-party owned-wheel packaging, migration and final candidate acceptance.
 - [#85](https://github.com/teixemf/repocache/issues/85) owns exact-version CLI/TUI and native OS regression acceptance; [#53](https://github.com/teixemf/repocache/issues/53) owns future independently trusted installed-byte attestation.
 - [#81 / PR #87](https://github.com/teixemf/repocache/pull/87) owns the actual GitHub Dependabot configuration, dependency graph, advisory behavior and alerts. YAML existence alone does not prove those work.
 - [#76/#78 / PR #77](https://github.com/teixemf/repocache/pull/77) remain the authoritative genuine owner-signed v0.5.0 **legacy profile** release acceptance, with no signing key in CI.
