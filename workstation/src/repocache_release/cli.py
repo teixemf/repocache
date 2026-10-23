@@ -159,10 +159,10 @@ def read_state(version: str) -> dict[str, Any] | None:
             or record.get("version") != version
             or not HEX40.fullmatch(str(record.get("commit", "")))
             or not isinstance(record.get("assets"), dict)
-            or record.get("phase") not in ("prepared", "signed")
+            or record.get("phase") not in ("prepared", "signed", "staged", "published")
             or type(record.get("run_id")) is not int or record["run_id"] < 1
             or type(record.get("attempt")) is not int or record["attempt"] < 1
-            or set(record["assets"]) != set(files_for(version, record["phase"] == "signed"))
+            or set(record["assets"]) != set(files_for(version, record["phase"] in ("signed", "staged", "published")))
             or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
                    for value in record["assets"].values())):
         raise OperatorError("INVALID_STATE", "Release state identity invalid")
@@ -203,7 +203,7 @@ def files_for(version: str, signed: bool = False) -> list[str]:
 
 def observed_assets(version: str, record: dict[str, Any]) -> dict[str, str]:
     folder = candidate_dir(version) / "assets"
-    expected = set(files_for(version, record.get("phase") == "signed"))
+    expected = set(files_for(version, record.get("phase") in ("signed", "staged", "published")))
     if folder.is_symlink() or not folder.is_dir():
         raise OperatorError("UNSAFE_ASSET", "Prepared asset directory is missing")
     actual = {item.name for item in folder.iterdir()}
@@ -506,18 +506,22 @@ def sign(version: str, fd: int) -> dict[str, Any]:
             "publisher_key_id": "repocache-2026-10"}
 
 
-def status(version: str) -> dict[str, Any]:
-    record = read_state(version)
-    if record is None:
-        return {"version": version, "phase": "absent",
-                "acceptance": "NOT VERIFIED", "ready_to_publish": False}
-    observed = verify_state(version, record)
-    verify_checkout(version, record)
-    return {"version": version, "phase": record["phase"],
-            "commit": record["commit"], "run_id": record["run_id"],
-            "assets": observed, "acceptance": "NOT VERIFIED",
-            "ready_to_publish": False,
-            "reason": "Signed candidate acceptance gate #76/#78 not integrated"}
+def status(version: str, acceptance_run_id: int | None = None) -> dict[str, Any]:
+    # Import only this project's workstation adapter, never a candidate archive.
+    from repocache_release import publication
+    return publication.acceptance_status(sys.modules[__name__], version,
+                                         read_state(version), acceptance_run_id)
+
+
+def stage(version: str) -> dict[str, Any]:
+    from repocache_release import publication
+    return publication.stage(sys.modules[__name__], version)
+
+
+def publish(version: str, acceptance_run_id: int, approve_sha256: str) -> dict[str, Any]:
+    from repocache_release import publication
+    return publication.publish(sys.modules[__name__], version, acceptance_run_id,
+                               approve_sha256)
 
 
 def build_parser() -> SafeParser:
@@ -533,15 +537,22 @@ def build_parser() -> SafeParser:
     candidate = objects.add_parser("candidate", help="Prepare and sign a reviewed candidate")
     candidate.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     actions = candidate.add_subparsers(dest="action", parser_class=SafeParser)
-    for action in ("prepare", "sign", "status"):
+    for action in ("prepare", "sign", "stage", "status", "publish"):
         p = actions.add_parser(action, help={
             "prepare": "Fetch and verify exact unsigned release candidate",
             "sign": "Offline Ed25519 signing; explicit protected passphrase FD",
-            "status": "Inspect current local candidate (NOT an acceptance verdict)",
+            "stage": "Create an owner-signed Draft Release (requires merged #76 gate)",
+            "status": "Inspect signed draft acceptance and detect asset drift",
+            "publish": "Publish only an owner-approved, CI-accepted unchanged Draft",
         }[action])
         p.add_argument("version")
         if action == "sign":
             p.add_argument("--passphrase-fd", required=True, type=int)
+        if action == "status":
+            p.add_argument("--acceptance-run-id", type=int)
+        if action == "publish":
+            p.add_argument("--acceptance-run-id", required=True, type=int)
+            p.add_argument("--approve-sha256", required=True)
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     return root
 
@@ -567,8 +578,13 @@ def main(argv: list[str] | None = None) -> int:
             data = prepare(values.version)
         elif values.action == "sign":
             data = sign(values.version, values.passphrase_fd)
+        elif values.action == "stage":
+            data = stage(values.version)
+        elif values.action == "publish":
+            data = publish(values.version, values.acceptance_run_id,
+                           values.approve_sha256)
         else:
-            data = status(values.version)
+            data = status(values.version, values.acceptance_run_id)
         payload = {"schema_version": 1, "ok": True, "result": data}
         if json_mode:
             print(json.dumps(payload, sort_keys=True))
