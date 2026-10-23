@@ -300,3 +300,16 @@ def test_same_name_cannot_redeclare_two_profiles():
                        "name": "repocache-v0.6.0.tar.gz.wheelhouse.tar.gz",
                        "size": 200})
     assert releases._release(r) is None
+
+
+def test_first_party_wheel_marker_cannot_silently_fall_back_to_legacy():
+    legacy = {"tag_name": "v0.6.0", "draft": False, "prerelease": False,
+              "html_url": "https://github.com/teixemf/repocache/releases/tag/v0.6.0"}
+    source = "repocache-v0.6.0.tar.gz"
+    assets = [source, source + ".sha256", source + ".manifest.json",
+              source + ".manifest.json.sig", source + ".wheelhouse.tar.gz",
+              "repocache_control-0.6.0-py3-none-any.whl"]
+    legacy["assets"] = [{"name": name, "id": i + 20, "size": i + 100}
+                        for i, name in enumerate(assets)]
+    # Mixed online+legacy candidate: fail closed before any install attempt.
+    assert releases._release(legacy) is None
