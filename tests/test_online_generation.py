@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from repocache import application_wheel, online_deps, online_generation, signed_dependency_staging, updater
+from repocache import application_wheel, candidate_sandbox, online_deps, online_generation, signed_dependency_staging, updater
 
 
 WHEEL = online_deps.Wheel(
@@ -133,6 +133,21 @@ def rootless_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(signed_dependency_staging, "verified_candidate_wheels", verified)
     monkeypatch.setattr(signed_dependency_staging, "stage_signed_candidate", stage)
     monkeypatch.setattr(updater, "_run", run)
+
+    def sandbox_ready():
+        assert active["yes"]
+        observations.append("isolation-verified")
+
+    def simulated_isolated_run(argv, *, workspace, cwd=None, timeout=90):
+        assert workspace.name.startswith(".online-v6-")
+        assert workspace.parent == root / "online-preparations"
+        assert "isolation-verified" in observations
+        return updater._run(argv, cwd=cwd, timeout=timeout)
+
+    # Mock only the secure executor boundary: subprocess handling itself
+    # remains under test by existing failure-injection fixtures.
+    monkeypatch.setattr(candidate_sandbox, "require_executor", sandbox_ready)
+    monkeypatch.setattr(candidate_sandbox, "run_isolated", simulated_isolated_run)
     return root, observations, active
 
 
@@ -157,7 +172,7 @@ def test_signed_stage_uses_exclusive_rootless_transaction_and_never_activates(
         "activated": False,
     }
     assert events == ["lock-acquire", "recover", "signed-lock-verified",
-                      "owned-wheel-verified", "download", "run-venv",
+                      "owned-wheel-verified", "isolation-verified", "download", "run-venv",
                       "run-install-deps", "owned-wheel-verified", "run-install-app",
                       "run-check", "run-list", "run-cli-version", "run-cli-help",
                       "run-cli-help", "run-tui-import", "lock-release"]
