@@ -153,3 +153,63 @@ def test_setuid_or_setgid_executables_unconditionally_refused(monkeypatch):
     monkeypatch.setattr(Path, "lstat", substitute)
     with pytest.raises(candidate_sandbox.SandboxError, match="Setuid"):
         candidate_sandbox.require_executor()
+
+
+
+@pytest.mark.parametrize("version,accepted", [
+    ("0.10.0-4.el10_2", False),
+    ("0.10.0-5.el10_1", False),
+    ("0.10.0-5.el10_2", True),
+    ("0.10.0-6.el10_3", True),
+    ("0.12.0-1.el10_2", True),
+    ("0.10.0-5.el9_8", False),
+    ("corrupted", False),
+])
+def test_almalinux_security_advisory_backport_gate(version, accepted, monkeypatch):
+    from repocache import online_generation
+    monkeypatch.setattr(online_generation, "_current_host_target",
+                        lambda: "almalinux10-py312")
+    monkeypatch.setattr(candidate_sandbox, "_safe_package_query", lambda argv: version)
+    if accepted:
+        candidate_sandbox._verify_patch_level()
+    else:
+        with pytest.raises(candidate_sandbox.SandboxError):
+            candidate_sandbox._verify_patch_level()
+
+
+@pytest.mark.parametrize("comparison_returncode", [0, 1, 2])
+def test_debian_native_version_gate_never_ignores_failed_comparison(
+        comparison_returncode, monkeypatch):
+    from repocache import online_generation
+    monkeypatch.setattr(online_generation, "_current_host_target",
+                        lambda: "debian13-py313")
+    monkeypatch.setattr(candidate_sandbox, "_safe_package_query",
+                        lambda argv: "0.12.0-1~deb13u1")
+    commands = []
+    class Result:
+        returncode = comparison_returncode
+    def compare(argv, **kwargs):
+        commands.append(argv)
+        assert kwargs["timeout"] == 5
+        assert kwargs["check"] is False
+        return Result()
+    monkeypatch.setattr(candidate_sandbox.subprocess, "run", compare)
+    if comparison_returncode == 0:
+        candidate_sandbox._verify_patch_level()
+    else:
+        with pytest.raises(candidate_sandbox.SandboxError, match="DSA-6472-1"):
+            candidate_sandbox._verify_patch_level()
+    assert commands[0][:2] == ["/usr/bin/dpkg", "--compare-versions"]
+    assert commands[0][-2:] == ["ge", "0.12.0-1~deb13u1"]
+
+
+def test_missing_security_package_metadata_fails_before_namespace(
+        monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+    monkeypatch.setattr(candidate_sandbox.subprocess, "run",
+                        lambda argv, **kwargs: Result())
+    with pytest.raises(candidate_sandbox.SandboxError, match="Unverifiable"):
+        candidate_sandbox._safe_package_query(
+            ["/usr/bin/rpm", "-q", "bubblewrap"])
