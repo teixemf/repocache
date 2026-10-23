@@ -302,7 +302,12 @@ def rehearse_signed_install(
                 lock = signed_dependency_staging.stage_signed_candidate(
                     archive, manifest, signature, version, inventory, assets,
                     target, workdir / "download", cafile=cafile)
-                interpreter = workdir / "venv" / "bin" / "python"
+                venv_root = workdir / "venv"
+                # Never rely on a process-global umask or the behavior of
+                # Python venv creation to make the managed staging root private.
+                venv_root.mkdir(mode=0o700)
+                _private_directory(venv_root)
+                interpreter = venv_root / "bin" / "python"
                 # Only the native Python/venv module bootstraps the environment.
                 # Downloaded wheels are never processed by root or system pip.
                 updater._run([
