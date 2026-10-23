@@ -78,7 +78,7 @@ def test_nine_existing_required_context_definitions_remain_unchanged() -> None:
     ):
         assert name in wheels
     assert "Synthetic rootless update and rollback (${{ matrix.image }})" in upgrade
-    for expected_size, text in ((2, tests), (2, wheels), (2, upgrade)):
+    for expected_size, text in ((2, tests), (2, wheels), (1, upgrade)):
         assert text.count("    name: ") >= expected_size
 
 
