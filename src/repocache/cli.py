@@ -64,8 +64,8 @@ def _require_text_output(ctx: typer.Context) -> None:
 
 
 def _cli_error(ctx: typer.Context, code: str, message: str,
-               status: int = 1) -> None:
-    if _json_enabled(ctx):
+               status: int = 1, local_json: bool = False) -> None:
+    if _json_enabled(ctx, local_json):
         emit_json({"ok": False, "error": {"code": code, "message": message}})
     else:
         typer.echo(f"ERROR [{code}]: {message}", err=True)
@@ -521,6 +521,17 @@ def update_main(ctx: typer.Context,
     """Install a compatible, verified release; refuse uncertain downgrades."""
     if ctx.invoked_subcommand is not None:
         return
+    _perform_signed_update(
+        ctx, version=version, bundle=bundle, checksum=checksum,
+        manifest=manifest, signature=signature, wheels=wheels,
+        json_output=json_output)
+
+
+def _perform_signed_update(ctx: typer.Context, *, version: Optional[str],
+                           bundle: Optional[Path], checksum: Optional[Path],
+                           manifest: Optional[Path], signature: Optional[Path],
+                           wheels: Optional[Path], json_output: bool) -> None:
+    """Single existing authenticated updater path for legacy and v1 CLI."""
     from repocache.updater import apply, UpdateError, UpdateBusyError
     from repocache.releases import DiscoveryError
     try:
@@ -541,6 +552,35 @@ def update_main(ctx: typer.Context,
     else:
         console.print(f"REPOCACHE {result['version']}: {result['status']} "
                       f"(previously {result['previous_version']})")
+
+
+@update_app.command("install")
+def update_install(
+        ctx: typer.Context,
+        version: str = typer.Argument(..., help="Exact stable X.Y.Z release version"),
+        bundle: Optional[Path] = typer.Option(
+            None, "--bundle", help="Verified local release tar.gz bundle"),
+        checksum: Optional[Path] = typer.Option(
+            None, "--checksum", help="Matching local SHA-256 checksum"),
+        manifest: Optional[Path] = typer.Option(
+            None, "--manifest", help="Owner-signed release manifest"),
+        signature: Optional[Path] = typer.Option(
+            None, "--signature", help="Detached Ed25519 manifest signature"),
+        wheels: Optional[Path] = typer.Option(
+            None, "--wheelhouse", help="Signed, hash-pinned offline dependencies"),
+        json_output: bool = typer.Option(False, "--json", help="JSON status")) -> None:
+    """Install exactly one verified compatible release (no implicit latest)."""
+    from repocache import releases
+
+    # Validate before updater locks, network requests, filesystem writes or
+    # installation. The updater still owns signing and compatibility checks.
+    if len(version) > 64 or releases._version("v" + version) is None:
+        _cli_error(ctx, "INVALID_VERSION", "Expected a stable X.Y.Z version.",
+                   status=2, local_json=json_output)
+    _perform_signed_update(
+        ctx, version=version, bundle=bundle, checksum=checksum,
+        manifest=manifest, signature=signature, wheels=wheels,
+        json_output=json_output)
 
 
 @catalog_app.command("publish")
