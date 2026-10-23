@@ -7,8 +7,8 @@
 | `repocache --version` exit 0 and exact version | Required | Required | Real Typer in-tree test, staged online subprocess mock |
 | `repocache --help`, `repocache update --help` non-interactive | Required | Required | Actual in-tree Typer commands; installed-v6 staged invocation mocked |
 | `repocache update check --help`, `repocache update list --help` and `--json` option | Required | Required | Actual Typer parser help, no network; online discovery remains read-only |
-| `repocache update list --json` result schema, offline/error exit codes and approved version selection | Required | Required | **NOT VERIFIED** on real native signed release; CLI help is not a live update |
-| `repocache-client check`, `repos list`, `repos submit`, `repos sync` | Required | Required | **NOT VERIFIED** in new first-party venv; client packaging is separate and not supplied by original owned server wheel |
+| `repocache update list --json` result schema, offline/error exit codes and approved version selection | Required | Required | Actual in-tree JSON offline/error exit-code tests plus parser help; **NOT VERIFIED** on real native signed release |
+| `repocache-client check`, `repos list`, `repos submit`, `repos sync` | Required | Required | Actual in-tree client argparse/JSON tests using a disposable Debian 13 APT tree, explicit submit file, sync dry-run, refused --apply and synthetic offline check; **NOT VERIFIED** in real first-party online venv; client packaging remains separate |
 | `repocache repos --help`, `repocache health --help` | Required | Required | Actual in-tree CLI parser/help test; behavior on real host requires NGINX |
 | No-argument TTY starts interactive management TUI; no-argument non-TTY follows legacy JSON/status contract | Required | Required | **NOT VERIFIED** across separately installed target versions |
 | Textual mounts `RepoCacheApp`, shows overview/repositories/metrics/diagnostics | Required | Required | Real `App.run_test` against in-tree code, installed staged invocation mocked |
