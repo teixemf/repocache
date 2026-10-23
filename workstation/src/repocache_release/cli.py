@@ -252,7 +252,7 @@ def environment() -> dict[str, Any]:
     if os.geteuid() == 0:
         raise OperatorError("UNSAFE_PRIVILEGE", "Release operator must run as a normal user")
     for tool in ("git", "gh", "/usr/bin/openssl"):
-        command([tool, "--version"] if tool != "gh" else ["gh", "--version"])
+        command([tool, "version"] if tool == "/usr/bin/openssl" else [tool, "--version"])
     command(["gh", "auth", "status"])
     pub = repo / "keys/repocache-2026-10.pem"
     trusted = command(["/usr/bin/openssl", "pkey", "-pubin", "-in", str(pub),
@@ -476,6 +476,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(json.dumps(data, indent=2, sort_keys=True))
         return 0
+    except SystemExit as exc:
+        # argparse --help is side-effect-free and exits 0.
+        return int(exc.code or 0)
     except SyntaxErrorFromParser as exc:
         err = OperatorError("INVALID_ARGUMENT", "Invalid command arguments: " + str(exc))
         rc = 2
