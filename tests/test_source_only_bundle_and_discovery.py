@@ -105,6 +105,53 @@ def test_reproducible_source_only_build(tmp_path, monkeypatch):
     assert a.read_bytes() == b.read_bytes()
 
 
+def test_identical_candidate_rebuild_is_idempotent(tmp_path, monkeypatch):
+    builder = _builder()
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    _prepare_tree(tmp_path, builder, "0.6.0")
+    lock, sbom = _metadata(tmp_path)
+    out = tmp_path / "dist"
+    archive, checksum = builder.build_release(
+        out, "v0.6.0", online_lock=lock, online_sbom=sbom)
+    original = {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+                for p in out.iterdir()}
+    same_archive, same_checksum = builder.build_release(
+        out, "v0.6.0", online_lock=lock, online_sbom=sbom)
+    assert same_archive == archive and same_checksum == checksum
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+            for p in out.iterdir()} == original
+
+
+def test_mixed_legacy_wheelhouse_rejected_before_candidate_write(tmp_path, monkeypatch):
+    builder = _builder()
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    _prepare_tree(tmp_path, builder, "0.6.0")
+    lock, sbom = _metadata(tmp_path)
+    out = tmp_path / "dist"
+    out.mkdir()
+    wheelhouse = out / "repocache-v0.6.0.tar.gz.wheelhouse.tar.gz"
+    wheelhouse.write_bytes(b"unapproved third-party wheelhouse")
+    with pytest.raises(ValueError, match="Mixed or unexpected"):
+        builder.build_release(out, "v0.6.0", online_lock=lock, online_sbom=sbom)
+    assert set(out.iterdir()) == {wheelhouse}
+    assert wheelhouse.read_bytes() == b"unapproved third-party wheelhouse"
+
+
+def test_source_change_same_release_version_does_not_replace_candidate(
+        tmp_path, monkeypatch):
+    builder = _builder()
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    _prepare_tree(tmp_path, builder, "0.6.0")
+    lock, sbom = _metadata(tmp_path)
+    out = tmp_path / "dist"
+    builder.build_release(out, "v0.6.0", online_lock=lock, online_sbom=sbom)
+    previous = {p.name: p.read_bytes() for p in out.iterdir()}
+    (tmp_path / "README.md").write_text("tampered source at same version\n")
+    with pytest.raises(ValueError, match="changed at the same version"):
+        builder.build_release(out, "v0.6.0", online_lock=lock, online_sbom=sbom)
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == previous
+
+
 @pytest.mark.parametrize("version", ["0.4.0", "0.5.0"])
 def test_online_bundle_before_v06_never_emitted(tmp_path, monkeypatch, version):
     builder = _builder()
