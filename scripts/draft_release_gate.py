@@ -159,7 +159,8 @@ def identity(tag: str, commit: str, run_id: int, attempt: int, token: str) -> No
             and cmp.get("base_commit", {}).get("sha") == commit,
             "Candidate commit is not on protected main ancestry")
     run = api("/actions/runs/" + str(run_id), token)
-    require(run.get("head_sha") == commit and run.get("head_branch") == tag
+    require(run.get("path") == ".github/workflows/release.yml"
+            and run.get("head_sha") == commit and run.get("head_branch") == tag
             and run.get("run_attempt") == attempt
             and run.get("actor", {}).get("login") == "teixemf"
             and run.get("event") == "workflow_dispatch"
@@ -418,7 +419,8 @@ def guard(report: dict, token: str) -> None:
             and COMMIT.fullmatch(report.get("acceptance_commit", "")),
             "Missing signed-candidate CI evidence")
     ci = api("/actions/runs/" + str(id_ci), token)
-    require(ci.get("event") == "workflow_dispatch" and
+    require(ci.get("path") == ".github/workflows/signed-candidate-acceptance.yml"
+            and ci.get("event") == "workflow_dispatch" and
             ci.get("head_branch") == "main" and
             ci.get("head_sha") == report["acceptance_commit"]
             and ci.get("run_attempt") == try_no
