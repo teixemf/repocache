@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import sys
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -226,3 +227,75 @@ def test_cli_sign_fails_closed_without_prepared_candidate(monkeypatch, tmp_path,
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "CANDIDATE_NOT_PREPARED"
     assert "passphrase" not in json.dumps(payload)
+
+
+def test_zip_extraction_accepts_only_expected_regular_leaves(tmp_path):
+    archive = tmp_path / "candidate.zip"
+    target = tmp_path / "assets"
+    target.mkdir()
+    names = release.files_for("v0.5.0")
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for name in names:
+            z.writestr(name, ("payload-for-" + name).encode())
+    release.extract_candidate_zip(archive, target, "v0.5.0")
+    assert sorted(p.name for p in target.iterdir()) == sorted(names)
+
+
+@pytest.mark.parametrize("malicious", [
+    "../escape.pem", "nested/manifest.json", "extra-signed.sig",
+    "/absolute/path",
+])
+def test_zip_extraction_rejects_extra_or_traversal_members(tmp_path, malicious):
+    archive = tmp_path / "candidate.zip"
+    target = tmp_path / "assets"
+    target.mkdir()
+    with zipfile.ZipFile(archive, "w") as z:
+        for name in release.files_for("v0.5.0"):
+            z.writestr(name, "payload")
+        z.writestr(malicious, "attacker")
+    with pytest.raises(release.OperatorError, match="unexpected"):
+        release.extract_candidate_zip(archive, target, "v0.5.0")
+    assert not (tmp_path / "escape.pem").exists()
+
+
+def test_zip_extraction_rejects_untrusted_symlink(tmp_path):
+    archive = tmp_path / "candidate.zip"
+    target = tmp_path / "assets"
+    target.mkdir()
+    names = release.files_for("v0.5.0")
+    with zipfile.ZipFile(archive, "w") as z:
+        for name in names:
+            info = zipfile.ZipInfo(name)
+            if name == names[0]:
+                info.create_system = 3
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            z.writestr(info, b"../../secrets")
+    with pytest.raises(release.OperatorError, match="unsafe member"):
+        release.extract_candidate_zip(archive, target, "v0.5.0")
+
+
+def test_modified_signer_worktree_refused_before_reading_passphrase(monkeypatch, tmp_path):
+    version = "v0.5.0"
+    repo = tmp_path / "candidate"
+    (repo / "checkout").mkdir(parents=True)
+    keydir = tmp_path / "repocache-signing"
+    keydir.mkdir()
+    key = keydir / "repocache-release-private.pem"
+    key.write_bytes(b"encrypted private key placeholder")
+    key.chmod(0o600)
+    monkeypatch.setattr(release.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(release, "candidate_dir", lambda _: repo)
+    monkeypatch.setattr(release, "read_state", lambda _: {
+        "schema": 1, "version": version, "commit": "a" * 40,
+        "run_id": 1, "attempt": 1, "phase": "prepared", "assets": {}})
+    monkeypatch.setattr(release, "verify_state", lambda *args: {})
+    def fake_command(args, **kw):
+        if "rev-parse" in args:
+            return ("a" * 40 + "\n").encode()
+        if "status" in args:
+            return b" M scripts/offline_sign_release.py\n"
+        raise AssertionError(args)
+    monkeypatch.setattr(release, "command", fake_command)
+    monkeypatch.setattr(release, "read_passphrase", lambda _: 1 / 0)
+    with pytest.raises(release.OperatorError, match="unreviewed"):
+        release.sign(version, 3)
