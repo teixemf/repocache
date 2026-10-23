@@ -172,6 +172,60 @@ def test_client_sync_write_opt_in_still_refuses_unsafe_work(monkeypatch, tmp_pat
     assert list(tmp_path.iterdir()) == []
 
 
+
+def test_system_status_is_read_only_equivalent_to_original_status(monkeypatch):
+    calls = []
+    report = {"ok": True, "service": "active", "repos": [],
+              "nginx_config_readable": True, "disk": {"ok": False},
+              "metrics": {"available": False}, "nginx_config_source": "fixture",
+              "nginx_config_validated": True}
+    monkeypatch.setattr(cli, "snapshot", lambda *_: calls.append("snapshot") or report)
+    runner = CliRunner()
+    for argv in (["status", "--json"], ["--json", "system", "status"],
+                 ["system", "status", "--json"]):
+        outcome = runner.invoke(cli.app, argv)
+        assert outcome.exit_code == 0, (argv, outcome.output)
+        assert json.loads(outcome.stdout) == report
+    assert calls == ["snapshot"] * 3
+
+
+def test_system_check_preserves_health_failure_and_deep_probe_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "health_report", lambda *_a, **kw:
+                        calls.append(kw["deep"]) or {"ok": False, "checks": []})
+    runner = CliRunner()
+    for argv in (["health", "--json"], ["system", "check", "--json"],
+                 ["--json", "system", "check", "--deep"]):
+        outcome = runner.invoke(cli.app, argv)
+        assert outcome.exit_code == 1, (argv, outcome.output)
+        assert json.loads(outcome.stdout) == {"ok": False, "checks": []}
+    assert calls == [False, False, True]
+
+
+def test_metrics_show_reuses_legacy_metrics_without_mutation(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "metrics_report", lambda *_a, **kw:
+                        calls.append(kw) or {"available": False, "detail": "fixture"})
+    runner = CliRunner()
+    for argv in (["metrics", "--period", "6h", "--json"],
+                 ["metrics", "show", "--period", "6h", "--json"],
+                 ["--json", "metrics", "show", "--period", "6h"]):
+        outcome = runner.invoke(cli.app, argv)
+        assert outcome.exit_code == 0, (argv, outcome.output)
+        assert json.loads(outcome.stdout)["available"] is False
+    assert calls == [{"hours": 6, "repo": None}] * 3
+
+
+def test_canonical_diagnostics_object_help_never_probes_host(monkeypatch):
+    monkeypatch.setattr(cli, "snapshot", lambda *_: 1 / 0)
+    monkeypatch.setattr(cli, "health_report", lambda *_a, **_kw: 1 / 0)
+    for group in ("system",):
+        outcome = CliRunner().invoke(cli.app, [group])
+        assert outcome.exit_code in (0, 2), outcome.output
+        assert "status" in outcome.output and "check" in outcome.output
+
+
+
 def test_preserved_existing_cli_contract_anchors():
     assert {"check", "repos list", "repos submit", "repos sync"} <= _client_paths()
     assert {"update list", "repos list", "repos show"} <= _server_paths()

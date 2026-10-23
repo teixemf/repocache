@@ -25,6 +25,8 @@ app = typer.Typer(help="REPOCACHE Control Center | NGINX proxy CLI/TUI managemen
                   add_completion=True, rich_markup_mode="rich", invoke_without_command=True)
 repos_app = typer.Typer(help="Inspect and test repositories", no_args_is_help=True)
 cache_app = typer.Typer(help="Inspect cache and storage", no_args_is_help=True)
+system_app = typer.Typer(help="Inspect server state and run diagnostics", no_args_is_help=True)
+metrics_app = typer.Typer(help="Inspect request and cache metrics", no_args_is_help=False)
 logs_app = typer.Typer(help="Read and follow logs", no_args_is_help=True)
 service_app = typer.Typer(help="NGINX status and safe operations", no_args_is_help=True)
 update_app = typer.Typer(help="Discover trusted GitHub Releases and manage server upgrades", no_args_is_help=False)
@@ -33,6 +35,8 @@ catalog_app = typer.Typer(help="Explicitly approved read-only repository catalog
 app.add_typer(repos_app, name="repos")
 app.add_typer(repos_app, name="repo", hidden=True)
 app.add_typer(cache_app, name="cache")
+app.add_typer(system_app, name="system")
+app.add_typer(metrics_app, name="metrics")
 app.add_typer(logs_app, name="logs")
 app.add_typer(logs_app, name="log", hidden=True)
 app.add_typer(service_app, name="service")
@@ -154,6 +158,13 @@ def show_status(ctx: typer.Context, json_output: bool = typer.Option(False, "--j
     console.print("[dim]Note: disk usage covers the filesystem; metrics reflect a limited JSON log sample.[/dim]")
 
 
+@system_app.command("status")
+def system_status(ctx: typer.Context,
+                  json_output: bool = typer.Option(False, "--json", help="JSON format")) -> None:
+    """Show aggregated server state without modifying the host."""
+    show_status(ctx, json_output=json_output)
+
+
 @repos_app.command("ls", hidden=True)
 @repos_app.command("list")
 def repos_list(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")) -> None:
@@ -248,7 +259,20 @@ def parse_period(period: str) -> int:
     return options[period]
 
 
-@app.command("metrics")
+@metrics_app.callback(invoke_without_command=True)
+def metrics_legacy(ctx: typer.Context,
+                   period: str = typer.Option("24h", "--period", "-p",
+                                              help="Legacy metrics period"),
+                   repo: Optional[str] = typer.Option(None, "--repo",
+                                                       help="Legacy repository filter"),
+                   json_output: bool = typer.Option(False, "--json",
+                                                    help="JSON format")) -> None:
+    """Preserve the prior bare 'metrics' invocation during CLI migration."""
+    if ctx.invoked_subcommand is None:
+        show_metrics(ctx, period=period, repo=repo, json_output=json_output)
+
+
+@metrics_app.command("show")
 def show_metrics(ctx: typer.Context, period: str = typer.Option("24h", "--period", "-p", help="1h / 6h / 24h / 7d / 30d"),
                  repo: Optional[str] = typer.Option(None, "--repo", help="Filter by repository path"),
                  json_output: bool = typer.Option(False, "--json")) -> None:
@@ -304,6 +328,14 @@ def health(ctx: typer.Context, deep: bool = typer.Option(False, "--deep", help="
             console.print("[dim]Upstream probes do not verify access through the REPOCACHE address.[/dim]")
     if not data["ok"]:
         raise typer.Exit(1)
+
+
+@system_app.command("check")
+def system_check(ctx: typer.Context,
+                 deep: bool = typer.Option(False, "--deep", help="Probe upstreams"),
+                 json_output: bool = typer.Option(False, "--json", help="JSON format")) -> None:
+    """Run server diagnostics (upstream probes only with --deep)."""
+    health(ctx, deep=deep, json_output=json_output)
 
 
 @logs_app.command("tail")
