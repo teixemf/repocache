@@ -157,7 +157,8 @@ def _release(record: Any) -> Optional[Dict[str, Any]]:
         archive = "repocache-" + tag + ".tar.gz"
         names = {"archive": archive, "checksum": archive + ".sha256",
                  "dependency_lock": archive + ".dependency-lock.json",
-                 "sbom": archive + ".sbom.json"}
+                 "sbom": archive + ".sbom.json",
+                 "application_wheel": "repocache_control-" + tag[1:] + "-py3-none-any.whl"}
         names.update({
             "inventory": names["archive"] + ".assets.json",
             "manifest": names["archive"] + ".manifest.json",
@@ -200,7 +201,7 @@ def _release(record: Any) -> Optional[Dict[str, Any]]:
 def _online_release(record: Dict[str, Any], tag: str, url: str,
                     assets: list[Dict[str, Any]], names: Dict[str, str]
                     ) -> Optional[Dict[str, Any]]:
-    """Strict seven-asset inventory from untrusted public metadata only."""
+    """Strict eight-asset inventory from untrusted public metadata only."""
     if record.get("immutable") is not True:
         return None
     if (len(assets) != len(names) or any(not isinstance(a, dict) for a in assets)
@@ -214,7 +215,7 @@ def _online_release(record: Dict[str, Any], tag: str, url: str,
         selected[role] = _asset(matches[0], expected)
         if selected[role] is None:
             return None
-    if len({a["id"] for a in selected.values()}) != 7:
+    if len({a["id"] for a in selected.values()}) != 8:
         return None
     return {"version": tag[1:], "tag": tag, "url": url,
             "assets": selected,
