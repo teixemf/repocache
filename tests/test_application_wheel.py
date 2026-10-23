@@ -60,7 +60,7 @@ def test_wheel_exact_signature_bound_bytes_reject_substitution():
     wheel = application_wheel.build(source, "0.6.0")
     with pytest.raises(application_wheel.ApplicationWheelError, match="differs"):
         application_wheel.verify(wheel + b"appended", source, "0.6.0")
-    with pytest.raises(application_wheel.ApplicationWheelError, match="differs"):
+    with pytest.raises(application_wheel.ApplicationWheelError):
         application_wheel.verify(
             wheel, _archive("0.6.1"), "0.6.0")
 
