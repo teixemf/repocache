@@ -277,6 +277,13 @@ def publish(c, version: str, ci_run: int, approved_fingerprint: str):
     if observed != proof["assets"]:
         refuse(c, "POST_PUBLISH_UNVERIFIED",
                "Published assets are different from the accepted signed candidate")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            gate.identity(version, record["commit"], record["run_id"],
+                          record["attempt"], bearer)
+    except (ValueError, KeyError, TypeError) as exc:
+        refuse(c, "POST_PUBLISH_UNVERIFIED",
+               "Protected release tag or original successful build changed")
     result = dict(record, phase="published",
                   acceptance_run_id=ci_run,
                   release_id=proof["release_id"])
@@ -299,10 +306,29 @@ def acceptance_status(c, version: str, record: dict | None, ci_run: int | None):
             "acceptance": "NOT VERIFIED", "ready_to_publish": False}
     if record["phase"] not in ("staged",) or ci_run is None:
         return base
-    gate = reviewed_gate(c)
+    try:
+        gate = reviewed_gate(c)
+    except c.OperatorError as exc:
+        if exc.code == "GATE_NOT_AVAILABLE":
+            base["reason"] = "Reviewed signed-candidate verifier is not installed on protected main"
+            return base
+        raise
     bearer = token(c)
-    local_proof(c, gate, version, record, bearer)
-    signed_acceptance(c, gate, version, record, ci_run, bearer)
+    try:
+        local_proof(c, gate, version, record, bearer)
+        signed_acceptance(c, gate, version, record, ci_run, bearer)
+    except c.OperatorError as exc:
+        if exc.code in ("DRAFT_NOT_FOUND", "REMOTE_UNAVAILABLE",
+                        "AUTHORIZATION_REQUIRED", "GATE_NOT_AVAILABLE"):
+            base["reason"] = "Required signed-candidate evidence could not be obtained"
+            return base
+        base["acceptance"] = "FAIL"
+        base["reason"] = "Signed candidate or acceptance identity verification failed"
+        return base
+    except (ValueError, KeyError, TypeError):
+        base["acceptance"] = "FAIL"
+        base["reason"] = "Signed candidate or acceptance proof rejected by trusted verifier"
+        return base
     base.update({"acceptance": "PASS", "ready_to_publish": True,
                  "acceptance_run_id": ci_run})
     return base
