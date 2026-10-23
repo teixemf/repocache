@@ -30,7 +30,12 @@ def _prepare_tree(tmp_path: Path, builder, version: str):
         entry = tmp_path / name
         entry.parent.mkdir(parents=True, exist_ok=True)
         entry.write_text("# source controlled by synthetic test\n")
-    (tmp_path / "pyproject.toml").write_text(f'version = "{version}"\n')
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "repocache-control"\nversion = "' + version +
+        '"\nrequires-python = ">=3.12"\nlicense = "Apache-2.0"\n'
+        'dependencies = ["typer>=0.12,<1", "rich>=13,<16", "textual>=0.80,<10"]\n'
+        '[project.scripts]\nrepocache = "repocache.cli:app"\n')
+
     (tmp_path / "src/repocache/__init__.py").write_text(
         f'__version__ = "{version}"\n')
     policy = {
@@ -77,6 +82,7 @@ def test_source_only_candidate_bundle_contains_owned_runtime_and_no_vendor_wheel
     assert checksum.name == expected["checksum"]
     assert (output / expected["dependency_lock"]).read_bytes() == lock.read_bytes()
     assert (output / expected["sbom"]).read_bytes() == sbom.read_bytes()
+    assert (output / expected["application_wheel"]).is_file()
     assert not (output / (archive.name + ".wheelhouse.tar.gz")).exists()
     assert not (output / (archive.name + ".manifest.json")).exists()
     assert not (output / (archive.name + ".assets.json")).exists()
@@ -88,7 +94,8 @@ def test_source_only_candidate_bundle_contains_owned_runtime_and_no_vendor_wheel
     assets = {"archive": archive.read_bytes(),
               "checksum": checksum.read_bytes(),
               "dependency_lock": lock.read_bytes(),
-              "sbom": sbom.read_bytes()}
+              "sbom": sbom.read_bytes(),
+              "application_wheel": (output / expected["application_wheel"]).read_bytes()}
     raw = release_inventory.build_inventory("0.6.0", assets)
     assert set(json.loads(raw)["assets"]) == set(release_inventory.ROLES)
 
@@ -219,7 +226,7 @@ def _public_record(version: str = "0.6.0"):
     }
 
 
-def test_public_source_only_seven_assets_discoverable_but_not_installable(
+def test_public_source_only_eight_assets_discoverable_but_not_installable(
         monkeypatch):
     candidate = _public_record()
     monkeypatch.setattr(
@@ -228,7 +235,7 @@ def test_public_source_only_seven_assets_discoverable_but_not_installable(
     result = releases.report("0.5.0", list_all=True)
     assert result["latest_version"] == "0.6.0"
     item = result["releases"][0]
-    assert len(item["assets"]) == 7
+    assert len(item["assets"]) == 8
     assert item["dependency_profile_hint"] == "online-hash-locked-wheels"
     assert item["eligible"] is False
     assert item["compatibility"] == "unknown"
@@ -238,7 +245,8 @@ def test_public_source_only_seven_assets_discoverable_but_not_installable(
 
 @pytest.mark.parametrize("case", [
     "unsigned-metadata", "missing-inventory", "missing-lock", "missing-sbom",
-    "duplicate-id", "duplicate-name", "extra-wheelhouse", "unexpected-extra",
+    "duplicate-id", "duplicate-name", "missing-own-wheel",
+    "extra-wheelhouse", "unexpected-extra",
     "zero-size", "wrong-tag", "draft",
 ])
 def test_untrusted_public_online_metadata_fails_closed(case):
@@ -252,6 +260,8 @@ def test_untrusted_public_online_metadata_fails_closed(case):
         assets[:] = [a for a in assets if not a["name"].endswith(".dependency-lock.json")]
     elif case == "missing-sbom":
         assets[:] = [a for a in assets if not a["name"].endswith(".sbom.json")]
+    elif case == "missing-own-wheel":
+        assets[:] = [a for a in assets if not a["name"].endswith("-py3-none-any.whl")]
     elif case == "duplicate-id":
         assets[1]["id"] = assets[0]["id"]
     elif case == "duplicate-name":
