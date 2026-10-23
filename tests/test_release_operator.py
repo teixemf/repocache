@@ -47,7 +47,7 @@ def test_registered_release_commands_match_reviewed_architecture_inventory():
 def test_help_without_network_key_or_mutation(monkeypatch, capsys, args):
     monkeypatch.setattr(release, "command", lambda *a, **kw: 1 / 0)
     assert release.main(args) == 0
-    assert "Usage" in capsys.readouterr().out or "usage" in capsys.readouterr().out
+    assert "usage" in capsys.readouterr().out.lower()
 
 
 def test_json_global_option_before_object_and_after_action_is_identical(monkeypatch, capsys):
@@ -146,6 +146,7 @@ def test_unsigned_candidate_checksum_strict_and_no_executed_download(monkeypatch
 def test_candidate_state_private_atomic_and_bytes_pinned(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     version = "v0.5.0"
+    release.state_root().mkdir(mode=0o700)
     folder = release.candidate_dir(version) / "assets"
     folder.mkdir(parents=True, mode=0o700)
     for name in release.files_for(version):
