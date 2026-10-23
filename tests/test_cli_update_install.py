@@ -38,7 +38,7 @@ def test_explicit_install_routes_exact_version_to_existing_updater(monkeypatch, 
 
 @pytest.mark.parametrize("version", [
     "v0.5.0", "0.5", "0.5.0rc1", "01.5.0", "0.05.0", "0.5.0/../../tmp",
-    "https://example.org/release", "0.5.0\n", "0.5.0+untrusted", "9" * 70,
+    "https://example.org/release", "0.5.0\n", "0.5.0+untrusted", "0.0.0", "9" * 70,
 ])
 @pytest.mark.parametrize("prefix,suffix", [
     (["--json", "update", "install"], []),
