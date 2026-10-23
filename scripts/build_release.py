@@ -74,9 +74,10 @@ def build_release(output: Path, tag: str = "", *,
         if online_lock.stat().st_size > 131072 or online_sbom.stat().st_size > 262144:
             raise ValueError("Online candidate metadata exceeds size limit")
         lock_data, sbom_data = online_lock.read_bytes(), online_sbom.read_bytes()
-    output.mkdir(parents=True, exist_ok=True)
     package = output / f"repocache-v{version}.tar.gz"
-    with package.open("wb") as handle:
+    checksum = package.with_name(package.name + ".sha256")
+
+    def _write_archive(handle) -> None:
         with gzip.GzipFile(filename="", mode="wb", fileobj=handle, mtime=0) as zipped:
             with tarfile.open(fileobj=zipped, mode="w", format=tarfile.PAX_FORMAT) as tar:
                 for name in (FILES + ONLINE_FILES if online else FILES):
@@ -88,30 +89,58 @@ def build_release(output: Path, tag: str = "", *,
                     item.size, item.mtime = len(data), 0
                     item.uid = item.gid = 0
                     item.uname = item.gname = "root"
-                    item.mode = 0o755 if name in ("install.sh", "client/install.sh", "client/repocache_client.py",
-                                                       "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh") else 0o644
+                    item.mode = (0o755 if name in (
+                        "install.sh", "client/install.sh", "client/repocache_client.py",
+                        "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh")
+                        else 0o644)
                     tar.addfile(item, io.BytesIO(data))
-    checksum = package.with_name(package.name + ".sha256")
-    checksum.write_text(f"{hashlib.sha256(package.read_bytes()).hexdigest()}  {package.name}\n")
-    if online:
-        # Verify owned source structure and the lock/SBOM before handing files
-        # to the independent offline Ed25519 publisher. No signing in CI.
-        sys.path.insert(0, str(ROOT / "src"))
-        from repocache import release_inventory
-        assets = {"archive": package.read_bytes(), "checksum": checksum.read_bytes(),
-                  "dependency_lock": lock_data, "sbom": sbom_data}
-        try:
-            release_inventory.build_inventory(version, assets)
-        except release_inventory.InventoryError as exc:
-            package.unlink(missing_ok=True)
-            checksum.unlink(missing_ok=True)
-            raise ValueError("Online candidate fails source-only inventory checks") from exc
-        names = release_inventory.names(version)
-        for role in ("dependency_lock", "sbom"):
-            target = output / names[role]
-            if target.is_symlink() or target.exists():
-                raise ValueError("Refusing to overwrite existing online candidate metadata")
-            target.write_bytes(assets[role])
+
+    if not online:
+        # Historical schema-1 path: preserve existing output and artifact layout.
+        output.mkdir(parents=True, exist_ok=True)
+        with package.open("wb") as handle:
+            _write_archive(handle)
+        checksum.write_text(
+            f"{hashlib.sha256(package.read_bytes()).hexdigest()}  {package.name}\n")
+        return package, checksum
+
+    # Source-only candidates are prepared and validated IN MEMORY first.
+    # No incomplete or conflicting files are left in a publication directory.
+    buffer = io.BytesIO()
+    _write_archive(buffer)
+    archive_bytes = buffer.getvalue()
+    checksum_bytes = (
+        f"{hashlib.sha256(archive_bytes).hexdigest()}  {package.name}\n").encode()
+    sys.path.insert(0, str(ROOT / "src"))
+    from repocache import release_inventory
+    assets = {"archive": archive_bytes, "checksum": checksum_bytes,
+              "dependency_lock": lock_data, "sbom": sbom_data}
+    try:
+        release_inventory.build_inventory(version, assets)
+    except release_inventory.InventoryError as exc:
+        raise ValueError("Online candidate fails source-only inventory checks") from exc
+    names = release_inventory.names(version)
+    desired = {
+        package: archive_bytes,
+        checksum: checksum_bytes,
+        output / names["dependency_lock"]: lock_data,
+        output / names["sbom"]: sbom_data,
+    }
+    # Reject old wheelhouses, signatures, unknown binaries and partial mixes
+    # BEFORE any writes. Exact identical repeat builds are idempotent.
+    if output.is_symlink() or (output.exists() and not output.is_dir()):
+        raise ValueError("Unsafe source-only candidate output directory")
+    if output.exists():
+        for child in output.iterdir():
+            if child not in desired or child.is_symlink() or not child.is_file():
+                raise ValueError("Mixed or unexpected source-only candidate output")
+        for child, expected_bytes in desired.items():
+            if child.exists() and child.read_bytes() != expected_bytes:
+                raise ValueError("Source-only candidate bytes changed at the same version")
+    output.mkdir(parents=True, exist_ok=True)
+    for child, expected_bytes in desired.items():
+        if not child.exists():
+            child.write_bytes(expected_bytes)
     return package, checksum
 
 
