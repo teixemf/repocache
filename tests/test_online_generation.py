@@ -112,6 +112,8 @@ def rootless_staging(tmp_path, monkeypatch):
         if "--version" in argv:
             return "REPOCACHE Control Center 0.6.0"
         if "--help" in argv:
+            if "update" in argv:
+                return "Usage: repocache update [OPTIONS] COMMAND [ARGS]...\nlist\ncheck"
             return "Usage: repocache [OPTIONS] COMMAND [ARGS]...\nupdate"
         if "-c" in argv:
             assert "RepoCacheApp" in argv[-1]
