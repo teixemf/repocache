@@ -124,6 +124,7 @@ def test_executor_unavailable_and_symlink_denied_even_before_any_run(
         workspace, monkeypatch, tmp_path):
     _, work = workspace
     monkeypatch.undo()
+    monkeypatch.setattr(updater, "_require_service_account", lambda: None)
     missing = tmp_path / "missing-bwrap"
     monkeypatch.setattr(candidate_sandbox, "BWRAP", missing)
     with pytest.raises(candidate_sandbox.SandboxError):
