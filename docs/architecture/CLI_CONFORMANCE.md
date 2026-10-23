@@ -39,14 +39,62 @@ repository mutation capability. The exact common numeric exit-code registry
 and versioned JSON envelopes are a separate integration dependency; payloads
 and existing error statuses remain unchanged.
 
+## Stage C — exact-version signed update adapter
+
+The canonical noninteractive entry point is now proposed as:
+
+```console
+repocache update install 0.5.0
+repocache update install 0.5.0 --json
+repocache --json update install 0.5.0
+repocache update install 0.5.0 --bundle ./repocache-v0.5.0.tar.gz \
+  --checksum ./repocache-v0.5.0.sha256 \
+  --manifest ./manifest.json --signature ./manifest.sig \
+  --wheelhouse ./wheels.tar.gz
+```
+
+**Important:** The new CLI accepts only an explicit, canonical stable `X.Y.Z`
+version, with no `v` prefix, pre-release suffix, leading-zero components,
+or unbounded numeric string. Missing/invalid version arguments are rejected
+*before* calling the updater; the underlying updater remains responsible
+for authenticating the publisher signature, metadata, signed wheelhouse,
+platform/upgrade compatibility, exclusive lock, recovery, staging and
+rollback. A local path option is **not** a bypass of these checks.
+
+The CLI adapter calls the **same** `updater.apply(...)` function used by
+the older `repocache update` entry point. For the transition, both
+`repocache update` and `repocache update --version X.Y.Z` retain their
+current mutating behavior, including their ability to select a version
+implicitly when one is omitted. This is a deliberate temporary compatibility
+exception to the v1 object-only-help rule, **not** a recommended pattern for
+new commands. After an approved deprecation/migration with two stable
+release notices once the CLI is stabilized, this exception can be retired.
+`repocache update list` and `repocache update check` remain read-only.
+
+Process exit statuses and the legacy updater's JSON fields are unchanged,
+including busy status 75. The new adapter adds a symbolic
+`INVALID_VERSION` JSON failure for malformed *provided* versions. Typer's
+missing-positional-argument parse failure remains a text usage diagnostic;
+fully structured JSON for parser failures and an agreed cross-executable
+numeric exit-code registry are separate future contract work, not falsely
+claimed as complete by this stage. The CLI never prints credentials and
+must not prompt or elevate privileges.
+
+The mandatory CLI conformance CI gate includes
+`tests/test_cli_update_install.py` on Python 3.12 and 3.13. These are
+mocked adapter tests, **not** evidence that a genuine signed candidate can be
+installed/rolled back on a native Debian 13 or AlmaLinux 10 host.
+Coordinate the dependency-profile and release-acceptance gates with #82–#85;
+do not merge incompatible updater-branch changes without semantic review.
+
 ## Known transitional differences and dependent issues
 
 | Area | Current source | Next gated work |
 | --- | --- | --- |
-| Server legacy `metrics`, `status`, `health` | Preserved alongside the new `metrics show`, `system status`, `system check` read-only commands (pending PR merge) | Test equivalent data/exit behavior and maintain the existing TUI; remove no old command before an approved deprecation/migration |
+| Server legacy `metrics`, `status`, `health` | Preserved alongside the new `metrics show`, `system status`, `system check` read-only commands (merged PR #110) | Test equivalent data/exit behavior and maintain the existing TUI; remove no old command before an approved deprecation/migration |
 | `catalog publish` | Existing legacy manual export remains | #28/#95 must implement automatic read-only discovery before safely retiring the mutator; do not silently change authorization |
 | Repository add/update/remove/enable/disable | Planned in v1.0, **not implemented by this change** | #18/#28/#95/#96 lifecycle, privilege boundaries, migrations |
-| `repocache update --version` | Existing signed updater contract retained | Align with `update install VERSION` only with authenticated updater compatibility and rollback acceptance (#82–#85) |
+| `repocache update --version` and bare `update` | Legacy compatibility entry points retained while `update install VERSION` adds explicit target validation (Stage C, pending PR) | Coordinate deprecation and full native signed-upgrade/rollback acceptance with #82–#85; no silent default-target behavior in the new verb |
 | Client `sync --apply` | Still refused for safety in current released/merged source | #24: authenticated discovery, backups, verified rollback/fallback on both supported OSs |
 | Client `submit --send` | Not exposed in current `main` | Draft PR #46 and #22/#17/#49 security gates; no listener activation by CLI normalization |
 | Numeric exit statuses and JSON schema evolution | Existing codes and payload fields retained | Reconcile with concurrent client CLI architecture work; version schemas before an incompatible change |
