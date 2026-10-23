@@ -221,6 +221,11 @@ def rehearse_signed_install(
         except signed_dependency_staging.PreparationError as exc:
             raise PreparationInstallError(
                 "Publisher-signed online candidate was rejected before download") from exc
+        # The first-party project must NEVER be selected from upstream PyPI,
+        # even if a malicious/faulty publisher lock records its package name.
+        if any(wheel.name == "repocache-control" for wheel in wheels):
+            raise PreparationInstallError(
+                "First-party application must not appear in upstream dependency lock")
         # The candidate signature/inventory has already been checked;
         # enforce byte-for-byte original-source equivalence again before I/O.
         try:
