@@ -11,12 +11,15 @@ Do not use it to publish a release.
 
 ## Install from a trusted, reviewed checkout
 
-With Python 3.12+ and the standard Python packaging toolchain installed:
+With Python 3.12+, `venv` support and the standard Python packaging toolchain installed, use an isolated unprivileged virtual environment. Avoid `pip --user` because Debian 13 and other distributions may enforce PEP 668 externally managed Python:
 
 ```console
-python3 -m pip install --user -e ./workstation
-repocache-release --help
+python3 -m venv ~/.local/share/repocache-release/venv
+~/.local/share/repocache-release/venv/bin/python -m pip install -e ./workstation
+~/.local/share/repocache-release/venv/bin/repocache-release --help
 ```
+
+An eventual workstation installer should make the virtual environment, `gh` prerequisite and launcher setup idempotent. That installer is **not yet implemented**; the commands above are a development-only installation example.
 
 The development source root must have `origin` set to the official
 `teixemf/repocache` repository. Execute from the checked-out source
