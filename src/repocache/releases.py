@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+
 REPOSITORY = "teixemf/repocache"
 API_ORIGIN = "https://api.github.com"
 TOKEN_FILE = Path("/etc/repocache/github-token")
@@ -147,6 +148,25 @@ def _release(record: Any) -> Optional[Dict[str, Any]]:
     assets = record.get("assets")
     if not isinstance(assets, list) or len(assets) > 100:
         return None
+    # v0.6+ MAY publish a distinct seven-asset *online* release; retain
+    # the original signed wheelhouse layout at any version for compatibility.
+    # GitHub metadata identifies possible assets but never authenticates them.
+    if version >= (0, 6, 0):
+        # Keep discovery self-contained in historical schema-1 bundles:
+        # v0.4.0/v0.5.0 archives do not contain release_inventory.py.
+        archive = "repocache-" + tag + ".tar.gz"
+        names = {"archive": archive, "checksum": archive + ".sha256",
+                 "dependency_lock": archive + ".dependency-lock.json",
+                 "sbom": archive + ".sbom.json"}
+        names.update({
+            "inventory": names["archive"] + ".assets.json",
+            "manifest": names["archive"] + ".manifest.json",
+            "signature": names["archive"] + ".manifest.json.sig",
+        })
+        online_markers = {names["inventory"], names["dependency_lock"], names["sbom"]}
+        if any(isinstance(asset, dict) and asset.get("name") in online_markers
+               for asset in assets):
+            return _online_release(record, tag, url, assets, names)
     archive_name = "repocache-" + tag + ".tar.gz"
     checksum_name = archive_name + ".sha256"
     archives = [a for a in assets if isinstance(a, dict) and a.get("name") == archive_name]
@@ -175,6 +195,35 @@ def _release(record: Any) -> Optional[Dict[str, Any]]:
             "compatibility_reason": "No validated compatibility manifest is available",
             "eligible": False}
 
+
+
+def _online_release(record: Dict[str, Any], tag: str, url: str,
+                    assets: list[Dict[str, Any]], names: Dict[str, str]
+                    ) -> Optional[Dict[str, Any]]:
+    """Strict seven-asset inventory from untrusted public metadata only."""
+    if record.get("immutable") is not True:
+        return None
+    if (len(assets) != len(names) or any(not isinstance(a, dict) for a in assets)
+            or {a.get("name") for a in assets} != set(names.values())):
+        return None
+    selected = {}
+    for role, expected in names.items():
+        matches = [a for a in assets if a["name"] == expected]
+        if len(matches) != 1:
+            return None
+        selected[role] = _asset(matches[0], expected)
+        if selected[role] is None:
+            return None
+    if len({a["id"] for a in selected.values()}) != 7:
+        return None
+    return {"version": tag[1:], "tag": tag, "url": url,
+            "assets": selected,
+            "dependency_profile_hint": "online-hash-locked-wheels",
+            "compatibility": "unknown",
+            "compatibility_reason": (
+                "Untrusted asset metadata only; online profile is not "
+                "installable until publisher signature and updater gates pass"),
+            "eligible": False}
 
 def discover(token_file: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Return at most 500 stable, complete releases in descending SemVer order."""
