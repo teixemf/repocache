@@ -27,6 +27,7 @@ def rootless_staging(tmp_path, monkeypatch):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(updater, "ROOT", root)
     monkeypatch.setattr(updater, "CURRENT", root / "current")
+    monkeypatch.setattr(updater, "MANIFEST", root / "installed.json")
     monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.0.0"})
     monkeypatch.setattr(online_generation, "_current_host_target", lambda: "debian13-py313")
     observations = []
@@ -114,7 +115,8 @@ def rootless_staging(tmp_path, monkeypatch):
             return "Usage: repocache [OPTIONS] COMMAND [ARGS]...\nupdate"
         if "-c" in argv:
             assert "RepoCacheApp" in argv[-1]
-            assert "textual.app" in argv[-1]
+            assert "run_test" in argv[-1]
+            assert "TabbedContent" in argv[-1]
             return ""
         if "check" in argv:
             return ""
@@ -149,13 +151,14 @@ def test_signed_stage_uses_exclusive_rootless_transaction_and_never_activates(
         "status": "application-and-dependencies-verified-only", "version": "0.6.0",
         "target": "debian13-py313", "dependency_count": 1,
         "cli_smoke": "passed", "tui_import_smoke": "passed",
+        "tui_headless_smoke": "passed", "activation_guard": "unchanged",
         "activated": False,
     }
     assert events == ["lock-acquire", "recover", "signed-lock-verified",
                       "owned-wheel-verified", "download", "run-venv",
                       "run-install-deps", "owned-wheel-verified", "run-install-app",
                       "run-check", "run-list", "run-cli-version", "run-cli-help",
-                      "run-tui-import", "lock-release"]
+                      "run-cli-help", "run-tui-import", "lock-release"]
     assert not active["yes"]
     assert not (root / "current").exists()
     assert not (root / "installed.json").exists()
