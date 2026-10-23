@@ -35,6 +35,8 @@ def _private_directory(path: Path) -> None:
 
 def _managed_parent() -> Path:
     """Create only an owner-private child of the existing trusted managed root."""
+    if os.geteuid() == 0:
+        raise PreparationInstallError("Online dependency preparation must never run as root")
     root = updater.ROOT
     _private_directory(root)
     parent = root / "online-preparations"
@@ -44,6 +46,42 @@ def _managed_parent() -> Path:
         parent.mkdir(mode=0o700)
     _private_directory(parent)
     return parent
+
+
+def _host_target(os_release: str, python_version: tuple[int, int]) -> str:
+    """Bind a signed lock target to a real supported OS + native interpreter."""
+    values: dict[str, str] = {}
+    for line in os_release.splitlines():
+        row = line.strip()
+        if not row or row.startswith("#") or "=" not in row:
+            continue
+        name, value = row.split("=", 1)
+        if name not in {"ID", "VERSION_ID"}:
+            continue
+        if name in values:
+            raise PreparationInstallError("Duplicate local OS-release identity")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[name] = value
+    version = values.get("VERSION_ID", "")
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", version):
+        raise PreparationInstallError("Invalid native OS version")
+    target = {
+        ("debian", "13", (3, 13)): "debian13-py313",
+        ("almalinux", "10", (3, 12)): "almalinux10-py312",
+    }.get((values.get("ID", ""), version.split(".")[0], tuple(python_version)))
+    if target is None:
+        raise PreparationInstallError("Unsupported native OS or Python interpreter")
+    return target
+
+
+def _current_host_target() -> str:
+    try:
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PreparationInstallError("Unreadable native platform identity") from exc
+    return _host_target(os_release, sys.version_info[:2])
 
 
 def _install_commands(interpreter: Path, lock: Path) -> tuple[list[str], ...]:
@@ -102,6 +140,8 @@ def rehearse_signed_install(
         updater.recover_transaction()
         prior = updater._installed()
         updater._check_active_layout(prior)
+        if target != _current_host_target():
+            raise PreparationInstallError("Signed wheels do not match the native OS/Python")
         if updater._version_tuple(version) <= updater._version_tuple(
                 str(prior.get("version", "0.0.0"))):
             raise PreparationInstallError(
@@ -110,7 +150,6 @@ def rehearse_signed_install(
         # creating the private working directory or making a network request.
         wheels = signed_dependency_staging.verified_candidate_wheels(
             archive, manifest, signature, version, inventory, assets, target)
-        previous_umask = os.umask(0o077)
         try:
             parent = _managed_parent()
             with tempfile.TemporaryDirectory(prefix=".online-v6-", dir=parent) as work:
@@ -147,5 +186,3 @@ def rehearse_signed_install(
                 updater.UpdateError, OSError) as exc:
             raise PreparationInstallError(
                 "Verified online environment rehearsal failed without activation") from exc
-        finally:
-            os.umask(previous_umask)
