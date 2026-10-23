@@ -490,3 +490,38 @@ def test_headless_smoke_invocation_has_no_shell_and_requires_installed_cli(
     assert cmds[2][-2:] == ["update", "--help"]
     assert cmds[3][:3] == [str(interpreter), "-I", "-c"]
     assert "run_test" in cmds[3][-1]
+
+
+
+def test_missing_namespace_executor_refuses_before_upstream_network(
+        rootless_staging, monkeypatch):
+    root, events, _ = rootless_staging
+    def unavailable():
+        raise candidate_sandbox.SandboxError("Namespace unavailable")
+    monkeypatch.setattr(candidate_sandbox, "require_executor", unavailable)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="isolation is unavailable"):
+        _rehearse()
+    assert "download" not in events
+    assert "run-venv" not in events
+    assert "run-install-deps" not in events
+    assert not (root / "online-preparations").exists()
+    assert events[-1] == "lock-release"
+
+
+def test_candidate_subprocesses_never_fall_back_to_updater_run_on_sandbox_failure(
+        rootless_staging, monkeypatch):
+    root, events, _ = rootless_staging
+    def isolation_error(argv, *, workspace, cwd=None, timeout=90):
+        assert "download" in events
+        events.append("sandbox-rejected")
+        raise candidate_sandbox.SandboxError("Unprivileged namespace denied")
+    monkeypatch.setattr(candidate_sandbox, "run_isolated", isolation_error)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="rehearsal failed"):
+        _rehearse()
+    assert "sandbox-rejected" in events
+    assert "run-install-deps" not in events
+    assert "run-install-app" not in events
+    assert not list((root / "online-preparations").iterdir())
+    assert events[-1] == "lock-release"
