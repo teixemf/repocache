@@ -11,6 +11,8 @@
 
 > **Reading this document:** **FROZEN DESIGN** means the maintainer explicitly chose this user-facing behavior. **PLANNED INTERFACE** means the command belongs in the target architecture but is not an assertion of implementation or of an approved release target. **INTEGRATION DEPENDENCY** means a detailed contract must be reconciled with another workstream before implementation can be accepted. No command is considered available without inspection and tests of the exact installed version.
 
+**Implementation guard:** [CLI conformance and migration plan](CLI_CONFORMANCE.md) documents the required automated command-tree inventory, parser regression tests, CI gate and future CLI change checklist (tracking issue #107). This implementation guard does not imply that planned commands are shipped.
+
 ## 1. Architecture decision record
 
 The CLI-design discussion established the following binding decisions. They are consolidated here without reopening the previously approved alternatives.
