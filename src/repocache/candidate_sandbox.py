@@ -143,12 +143,23 @@ def _checked_command(workspace: Path, argv: list[str]) -> None:
         if argv[1:4] == ["-I", "-m", "pip"]:
             if len(argv) <= 4 or argv[4] not in _ALLOWED_PIP_OPS:
                 raise SandboxError("Unapproved pip operation in sandbox")
-            if argv[4] == "install" and any(
-                    x not in argv for x in ("--no-index", "--no-deps",
-                                           "--only-binary=:all:", "--require-hashes")):
-                raise SandboxError("Wheel installation is not offline/hash-locked")
+            if argv[4] == "install":
+                # Exact argument vector: additional pip flags may change
+                # install target, permissions, resolver or index behavior.
+                required = ["--no-index", "--no-deps", "--only-binary=:all:",
+                            "--require-hashes", "--disable-pip-version-check",
+                            "--no-cache-dir", "--no-input", "-r"]
+                allowed = {
+                    str(workspace / "download/requirements.lock"),
+                    str(workspace / "owned-app/application.lock"),
+                }
+                if argv[5:-1] != required or argv[-1] not in allowed:
+                    raise SandboxError("Noncanonical offline wheel installation")
+            elif argv[4:] not in (["check"], ["list", "--format=json"]):
+                raise SandboxError("Unapproved pip inspection command")
         elif argv[1:3] == ["-I", "-c"]:
-            if len(argv) != 4 or "run_test" not in argv[3]:
+            from repocache.online_generation import TUI_HEADLESS_SMOKE
+            if len(argv) != 4 or argv[3] != TUI_HEADLESS_SMOKE:
                 raise SandboxError("Unapproved Python smoke script")
         else:
             raise SandboxError("Unexpected Python command in candidate sandbox")
