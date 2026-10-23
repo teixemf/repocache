@@ -25,6 +25,13 @@ Release assets must be independently authenticated with offline Ed25519 signatur
 
 **Production architecture:** NGINX is the independently installed and configured repository-cache data plane; REPOCACHE v0.4.0 adds the CLI/TUI management and diagnostics frontend. It must not replace or interfere with existing NGINX, TLS or package-manager configuration. See the [existing-NGINX production deployment contract and staging checks](docs/PRODUCTION_EXISTING_NGINX.md). NGINX installation, TLS/cache provisioning and automated client-source rewrites are separate later milestones. CLI operations remain non-interactive; use `repocache` for interactive management. Approved client commands include `repocache-client check`, `repocache-client repos list`, `repocache-client repos submit`, and `repocache-client repos sync` (sync apply remains disabled pending its safety review).
 
+
+## CLI architecture (design baseline)
+
+The [CLI Architecture and Command Contract v1.0](docs/architecture/CLI_ARCHITECTURE.md) is the proposed canonical design reference for the server (`repocache`), client (`repocache-client`) and workstation-only Release Operator (`repocache-release`). It defines command grammar, aliases, planned command trees, privilege boundaries, repository requests, derived routes/catalog, noninteractive output, deprecation policy and acceptance scenarios.
+
+**Design is not availability:** the command trees include planned features; only commands verified in the installed version are supported. The exact shared numeric exit-code mapping and versioned JSON schemas remain integration dependencies, to be reconciled with the client CLI work. Changes to this contract should be reviewed in a dedicated GitHub PR, with compatibility and security impact assessed.
+
 ## Development
 
 Use a supported system, with the system Python supplied by Debian 13 (3.13) or AlmaLinux 10 (3.12). This repository's CI uses isolated test environments.
