@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import tomllib
 from pathlib import Path
 
 from typer.main import get_command
@@ -60,6 +61,15 @@ def test_entire_registered_command_surface_has_an_explicit_reviewed_inventory():
     assert _client_paths() == set(inventory["client"])
     assert len(inventory["server"]) == len(set(inventory["server"]))
     assert len(inventory["client"]) == len(set(inventory["client"]))
+
+
+
+def test_new_console_entrypoints_cannot_bypass_interface_inventory():
+    # A future workstation operator must be registered and tested rather than
+    # silently published without applying the architecture contract.
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert metadata["project"]["scripts"] == {"repocache": "repocache.cli:app"}
+    assert CLIENT.is_file()
 
 
 def test_canonical_server_repos_aliases_and_json_equivalence(monkeypatch):
