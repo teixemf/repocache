@@ -148,8 +148,12 @@ def rehearse_signed_install(
                 "Online staging cannot repair or downgrade an existing generation")
         # Verify Ed25519 trust, the archive/policy/SBOM and locked URLs before
         # creating the private working directory or making a network request.
-        wheels = signed_dependency_staging.verified_candidate_wheels(
-            archive, manifest, signature, version, inventory, assets, target)
+        try:
+            wheels = signed_dependency_staging.verified_candidate_wheels(
+                archive, manifest, signature, version, inventory, assets, target)
+        except signed_dependency_staging.PreparationError as exc:
+            raise PreparationInstallError(
+                "Publisher-signed online candidate was rejected before download") from exc
         try:
             parent = _managed_parent()
             with tempfile.TemporaryDirectory(prefix=".online-v6-", dir=parent) as work:
