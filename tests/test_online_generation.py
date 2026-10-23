@@ -248,3 +248,42 @@ def test_wrong_signed_target_is_refused_before_candidate_read_or_network(
     assert "signed-lock-verified" not in events
     assert "download" not in events
     assert not (root / "online-preparations").exists()
+
+
+def test_failed_online_stage_preserves_preexisting_signed_legacy_generation(
+        rootless_staging, monkeypatch, tmp_path):
+    root, events, _ = rootless_staging
+    releases = root / "releases"
+    releases.mkdir(mode=0o700)
+    digest = "a" * 64
+    old = releases / ("0.5.0-" + digest[:12] + "-trusted")
+    (old / "bin").mkdir(parents=True, mode=0o700)
+    executable = old / "bin" / "repocache"
+    executable.write_text("# verified original application\n")
+    executable.chmod(0o700)
+    current = root / "current"
+    current.symlink_to(old)
+    manifest = root / "installed.json"
+    original_manifest = b'{"version":"0.5.0","signed":true}\n'
+    manifest.write_bytes(original_manifest)
+    nginx = tmp_path / "nginx.conf"
+    nginx.write_text("# existing operator configuration\n")
+    monkeypatch.setattr(
+        updater, "_installed",
+        lambda: {"version": "0.5.0", "source_digest": digest})
+
+    original_run = updater._run
+    def fail_pip(argv, **kwargs):
+        if "install" in argv:
+            raise updater.UpdateError("Offline pip failed")
+        return original_run(argv, **kwargs)
+    monkeypatch.setattr(updater, "_run", fail_pip)
+
+    with pytest.raises(online_generation.PreparationInstallError):
+        _rehearse()
+    assert current.is_symlink() and current.readlink() == old
+    assert executable.read_text() == "# verified original application\n"
+    assert manifest.read_bytes() == original_manifest
+    assert nginx.read_text() == "# existing operator configuration\n"
+    assert not list((root / "online-preparations").iterdir())
+    assert events[-1] == "lock-release"
