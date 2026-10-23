@@ -19,11 +19,31 @@
 - Enables root-, object- and action-level `--json` and `--server` in the standalone client; provides `repo(s) list/ls` aliases and object-only help. The four approved client commands retain their existing behavior and exit codes.
 - No package source write, NGINX change, client submission transport, download, updater signing, new privileged helper or production activation is introduced.
 
+## Stage B — diagnostic command namespace convergence
+
+This scoped follow-up (#107) introduces the canonical **read-only** diagnostic
+forms `repocache system status`, `repocache system check [--deep]` and
+`repocache metrics show [--period PERIOD] [--repo NAME]`. Each forwards
+to the same existing diagnostic implementation and accepts the established
+global or action-level `--json` behavior. No extra network access is
+introduced; the optional deep upstream probes remain opt-in.
+
+The old root-level `status` and `health` remain available, and bare
+`metrics [--period PERIOD] [--repo NAME]` retains its prior behavior via
+an explicit compatibility callback. This **intentional transitional exception**
+to object-only-help is documented and regression-tested until the deprecated
+spellings can be retired under the project's release policy.
+
+This stage does not add or remove any NGINX, APT/DNF, signed update or server
+repository mutation capability. The exact common numeric exit-code registry
+and versioned JSON envelopes are a separate integration dependency; payloads
+and existing error statuses remain unchanged.
+
 ## Known transitional differences and dependent issues
 
 | Area | Current source | Next gated work |
 | --- | --- | --- |
-| Server flat `metrics`, `status`, `health` | Existing legacy entry points retained | Define object/action replacements only with semantic and test coverage; avoid breaking TUI |
+| Server legacy `metrics`, `status`, `health` | Preserved alongside the new `metrics show`, `system status`, `system check` read-only commands (pending PR merge) | Test equivalent data/exit behavior and maintain the existing TUI; remove no old command before an approved deprecation/migration |
 | `catalog publish` | Existing legacy manual export remains | #28/#95 must implement automatic read-only discovery before safely retiring the mutator; do not silently change authorization |
 | Repository add/update/remove/enable/disable | Planned in v1.0, **not implemented by this change** | #18/#28/#95/#96 lifecycle, privilege boundaries, migrations |
 | `repocache update --version` | Existing signed updater contract retained | Align with `update install VERSION` only with authenticated updater compatibility and rollback acceptance (#82–#85) |
