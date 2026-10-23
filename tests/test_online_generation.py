@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from repocache import online_deps, online_generation, signed_dependency_staging, updater
+from repocache import application_wheel, online_deps, online_generation, signed_dependency_staging, updater
 
 
 WHEEL = online_deps.Wheel(
@@ -31,6 +31,7 @@ def rootless_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(online_generation, "_current_host_target", lambda: "debian13-py313")
     observations = []
     active = {"yes": False}
+    monkeypatch.setattr(application_wheel, "verify", lambda *a: observations.append("owned-wheel-verified"))
 
     @contextlib.contextmanager
     def transaction():
@@ -67,9 +68,23 @@ def rootless_staging(tmp_path, monkeypatch):
 
     def run(argv, **kwargs):
         assert active["yes"]
-        observations.append("run-" + ("venv" if "venv" in argv else
-                                     "install" if "install" in argv else
-                                     "check" if "check" in argv else "list"))
+        if "venv" in argv:
+            action = "venv"
+        elif "install" in argv:
+            action = "install-app" if kwargs.get("cwd", Path("/")).name == "owned-app" else "install-deps"
+        elif "check" in argv:
+            action = "check"
+        elif "--format=json" in argv:
+            action = "list"
+        elif "--version" in argv:
+            action = "cli-version"
+        elif "--help" in argv:
+            action = "cli-help"
+        elif "-c" in argv:
+            action = "tui-import"
+        else:
+            pytest.fail("Unexpected command in online venv rehearsal")
+        observations.append("run-" + action)
         if "venv" in argv:
             new_venv = Path(argv[-1])
             (new_venv / "bin").mkdir(parents=True, mode=0o700)
@@ -84,11 +99,27 @@ def rootless_staging(tmp_path, monkeypatch):
                              "--require-hashes", "--no-cache-dir", "--no-input"):
                 assert required in argv
             assert "--extra-index-url" not in argv
-            assert kwargs["cwd"].name == "download"
+            assert kwargs["cwd"].name in {"download", "owned-app"}
+            if kwargs["cwd"].name == "owned-app":
+                console = Path(argv[0]).parent / "repocache"
+                console.write_text("# synthetic staged REPOCACHE executable\n")
+                console.chmod(0o700)
+                assert "--require-hashes" in argv
+                assert (kwargs["cwd"] / "application.lock").is_file()
+                assert (kwargs["cwd"] / application_wheel.filename("0.6.0")).is_file()
+            return ""
+        if "--version" in argv:
+            return "REPOCACHE Control Center 0.6.0"
+        if "--help" in argv:
+            return "Usage: repocache [OPTIONS] COMMAND [ARGS]...\nupdate"
+        if "-c" in argv:
+            assert "RepoCacheApp" in argv[-1]
+            assert "textual.app" in argv[-1]
             return ""
         if "check" in argv:
             return ""
         return json.dumps([
+            {"name": "repocache-control", "version": "0.6.0"},
             {"name": "rich", "version": "15.0.0"},
             {"name": "pip", "version": "25.0"},
         ])
@@ -104,7 +135,8 @@ def rootless_staging(tmp_path, monkeypatch):
 def _rehearse():
     return online_generation.rehearse_signed_install(
         b"fake-source", b"signed-manifest", b"fake-signature",
-        "0.6.0", b"asset-inventory", {"archive": b"fake-source"},
+        "0.6.0", b"asset-inventory",
+        {"archive": b"fake-source", "application_wheel": b"synthetic-owner-wheel"},
         "debian13-py313", cafile=Path("/etc/ssl/certs/ca-certificates.crt"),
     )
 
@@ -114,20 +146,26 @@ def test_signed_stage_uses_exclusive_rootless_transaction_and_never_activates(
     root, events, active = rootless_staging
     result = _rehearse()
     assert result == {
-        "status": "dependencies-verified-only", "version": "0.6.0",
-        "target": "debian13-py313", "dependency_count": 1, "activated": False,
+        "status": "application-and-dependencies-verified-only", "version": "0.6.0",
+        "target": "debian13-py313", "dependency_count": 1,
+        "cli_smoke": "passed", "tui_import_smoke": "passed",
+        "activated": False,
     }
     assert events == ["lock-acquire", "recover", "signed-lock-verified",
-                      "download", "run-venv", "run-install", "run-check",
-                      "run-list", "lock-release"]
+                      "owned-wheel-verified", "download", "run-venv",
+                      "run-install-deps", "owned-wheel-verified", "run-install-app",
+                      "run-check", "run-list", "run-cli-version", "run-cli-help",
+                      "run-tui-import", "lock-release"]
     assert not active["yes"]
     assert not (root / "current").exists()
     assert not (root / "installed.json").exists()
     assert not list((root / "online-preparations").iterdir())
 
 
-@pytest.mark.parametrize("phase", ["signature", "download", "venv", "install",
-                                    "check", "list"])
+@pytest.mark.parametrize("phase", ["signature", "owned-wheel", "download",
+                                    "venv", "install-deps", "install-app",
+                                    "check", "list", "cli-version", "cli-help",
+                                    "tui-import"])
 def test_every_failure_cleans_disposable_venv_and_keeps_active_generation(
         rootless_staging, monkeypatch, phase):
     root, events, _ = rootless_staging
@@ -137,6 +175,10 @@ def test_every_failure_cleans_disposable_venv_and_keeps_active_generation(
         def bad(*args, **kwargs):
             raise signed_dependency_staging.PreparationError("Unverified")
         monkeypatch.setattr(signed_dependency_staging, "verified_candidate_wheels", bad)
+    elif phase == "owned-wheel":
+        def bad_wheel(*args, **kwargs):
+            raise application_wheel.ApplicationWheelError("Unverified first-party source")
+        monkeypatch.setattr(application_wheel, "verify", bad_wheel)
     elif phase == "download":
         def bad(*args, **kwargs):
             raise signed_dependency_staging.PreparationError("Unreachable")
@@ -144,8 +186,20 @@ def test_every_failure_cleans_disposable_venv_and_keeps_active_generation(
     else:
         original = updater._run
         def fail(argv, **kwargs):
-            if phase in argv or (phase == "list" and "--format=json" in argv):
-                raise updater.UpdateError("Synthetic rejected pip/venv invocation")
+            marker = (
+                phase == "venv" and "venv" in argv
+                or phase == "install-deps" and "install" in argv
+                and kwargs.get("cwd", Path("/")).name == "download"
+                or phase == "install-app" and "install" in argv
+                and kwargs.get("cwd", Path("/")).name == "owned-app"
+                or phase == "check" and "check" in argv
+                or phase == "list" and "--format=json" in argv
+                or phase == "cli-version" and "--version" in argv
+                or phase == "cli-help" and "--help" in argv
+                or phase == "tui-import" and "-c" in argv
+            )
+            if marker:
+                raise updater.UpdateError("Synthetic rejected pip/venv or CLI/TUI operation")
             return original(argv, **kwargs)
         monkeypatch.setattr(updater, "_run", fail)
     with pytest.raises(online_generation.PreparationInstallError):
@@ -287,3 +341,77 @@ def test_failed_online_stage_preserves_preexisting_signed_legacy_generation(
     assert nginx.read_text() == "# existing operator configuration\n"
     assert not list((root / "online-preparations").iterdir())
     assert events[-1] == "lock-release"
+
+
+@pytest.mark.parametrize("defect", ["wrong-version", "missing-app",
+                                     "unexpected-package", "duplicate-package"])
+def test_bad_installed_application_or_extraneous_package_preserves_prior_release(
+        rootless_staging, monkeypatch, defect):
+    root, events, _ = rootless_staging
+    original = updater._run
+
+    def bad(argv, **kwargs):
+        if "--format=json" in argv:
+            names = [{"name": "rich", "version": "15.0.0"},
+                     {"name": "pip", "version": "25.0"},
+                     {"name": "repocache-control", "version": "0.6.0"}]
+            if defect == "wrong-version":
+                names[-1]["version"] = "0.5.0"
+            elif defect == "missing-app":
+                names.pop()
+            elif defect == "unexpected-package":
+                names.append({"name": "malicious", "version": "1.0"})
+            elif defect == "duplicate-package":
+                names.append({"name": "REPOCACHE_CONTROL", "version": "0.6.0"})
+            return json.dumps(names)
+        return original(argv, **kwargs)
+    monkeypatch.setattr(updater, "_run", bad)
+    with pytest.raises(online_generation.PreparationInstallError):
+        _rehearse()
+    assert events[-1] == "lock-release"
+    assert not (root / "current").exists()
+    assert not list((root / "online-preparations").iterdir())
+
+
+@pytest.mark.parametrize("smoke,output", [
+    ("--version", "REPOCACHE Control Center 0.5.0"),
+    ("--help", "Unexpected console output"),
+])
+def test_invalid_cli_smoke_refuses_activation(rootless_staging, monkeypatch,
+                                             smoke, output):
+    root, events, _ = rootless_staging
+    original = updater._run
+
+    def bad(argv, **kwargs):
+        if smoke in argv:
+            return output
+        return original(argv, **kwargs)
+    monkeypatch.setattr(updater, "_run", bad)
+    with pytest.raises(online_generation.PreparationInstallError):
+        _rehearse()
+    assert events[-1] == "lock-release"
+    assert not (root / "current").exists()
+    assert not list((root / "online-preparations").iterdir())
+
+
+def test_publisher_locked_upstream_package_must_not_impersonate_repocache(
+        rootless_staging, monkeypatch):
+    root, events, _ = rootless_staging
+    impersonator = online_deps.Wheel(
+        "repocache-control", "0.6.0",
+        "repocache_control-0.6.0-py3-none-any.whl", "a" * 64,
+        "https://files.pythonhosted.org/packages/ab/cdef/"
+        "repocache_control-0.6.0-py3-none-any.whl",
+    )
+    def malicious_verified(*args, **kwargs):
+        events.append("malicious-signed-lock")
+        return (WHEEL, impersonator)
+    monkeypatch.setattr(signed_dependency_staging, "verified_candidate_wheels",
+                        malicious_verified)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="upstream dependency lock"):
+        _rehearse()
+    assert "download" not in events
+    assert "run-venv" not in events
+    assert events[-1] == "lock-release"
+    assert not (root / "online-preparations").exists()
