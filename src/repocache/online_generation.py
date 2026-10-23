@@ -6,6 +6,7 @@ remain #84/#85 work. Never treat a prepared venv as trusted executable state.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from repocache import online_deps, signed_dependency_staging, updater
+from repocache import application_wheel, online_deps, signed_dependency_staging, updater
 
 
 class PreparationInstallError(RuntimeError):
@@ -97,7 +98,8 @@ def _install_commands(interpreter: Path, lock: Path) -> tuple[list[str], ...]:
     return (install, base + ["check"], base + ["list", "--format=json"])
 
 
-def _check_installed(packages: str, expected: tuple[online_deps.Wheel, ...]) -> None:
+def _check_installed(packages: str, expected: tuple[online_deps.Wheel, ...],
+                     application_version: str | None = None) -> None:
     """Verify every approved package/version after pip, ignoring bootstrap pip."""
     try:
         data = json.loads(packages)
@@ -115,6 +117,10 @@ def _check_installed(packages: str, expected: tuple[online_deps.Wheel, ...]) -> 
             raise PreparationInstallError("Duplicate staged package metadata")
         found[name] = entry["version"]
     approved = {wheel.name: wheel.version for wheel in expected}
+    if application_version is not None:
+        if "repocache-control" in approved:
+            raise PreparationInstallError("First-party identity must not appear in upstream lock")
+        approved["repocache-control"] = application_version
     for name, version in approved.items():
         if found.get(name) != version:
             raise PreparationInstallError("Staged package versions do not match signed lock")
@@ -124,12 +130,73 @@ def _check_installed(packages: str, expected: tuple[online_deps.Wheel, ...]) -> 
         raise PreparationInstallError("Unapproved package was installed in staged venv")
 
 
+def _stage_owned_application(directory: Path, archive: bytes, version: str,
+                             assets: Mapping[str, bytes]) -> Path:
+    """Only stage canonical source-equivalent bytes from the verified candidate."""
+    source = assets.get("application_wheel")
+    try:
+        application_wheel.verify(source, archive, version)
+    except application_wheel.ApplicationWheelError as exc:
+        raise PreparationInstallError("Publisher-owned application wheel rejected") from exc
+    if not isinstance(source, bytes):
+        raise PreparationInstallError("Missing authenticated application wheel")
+    if directory.is_symlink() or directory.exists():
+        raise PreparationInstallError("Unexpected first-party wheel staging path")
+    directory.mkdir(mode=0o700)
+    path = directory / application_wheel.filename(version)
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
+                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as owned:
+            owned.write(source)
+            owned.flush()
+            os.fsync(owned.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    digest = hashlib.sha256(source).hexdigest()
+    requirements = directory / "application.lock"
+    fd = os.open(requirements, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
+                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as stream:
+        stream.write("./" + path.name + " --hash=sha256:" + digest + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return requirements
+
+
+def _application_install_command(interpreter: Path, requirement: Path) -> list[str]:
+    if (requirement.name != "application.lock" or requirement.is_symlink()
+            or not requirement.is_file()):
+        raise PreparationInstallError("Authenticated application install lock missing")
+    return [str(interpreter), "-I", "-m", "pip", "--isolated", "install",
+            "--no-index", "--no-deps", "--only-binary=:all:",
+            "--require-hashes", "--disable-pip-version-check",
+            "--no-cache-dir", "--no-input", "-r", str(requirement)]
+
+
+def _smoke_commands(interpreter: Path) -> tuple[list[str], ...]:
+    """Read-only CLI and import-time TUI smoke; not an interactive run_test."""
+    console = interpreter.parent / "repocache"
+    if console.is_symlink() or not console.is_file():
+        raise PreparationInstallError("First-party CLI console entrypoint missing")
+    # Do not invoke network-dependent update commands or a terminal UI here.
+    tui_import = (
+        "from textual.app import App; "
+        "from repocache.tui import RepoCacheApp; "
+        "assert issubclass(RepoCacheApp, App); "
+        "assert len(RepoCacheApp.BINDINGS) > 0"
+    )
+    return ([str(console), "--version"], [str(console), "--help"],
+            [str(interpreter), "-I", "-c", tui_import])
+
+
 def rehearse_signed_install(
     archive: bytes, manifest: bytes, signature: bytes, version: str,
     inventory: bytes, assets: Mapping[str, bytes], target: str,
     *, cafile: Path,
 ) -> dict[str, Any]:
-    """Install dependencies in a throwaway managed venv, NEVER activate it.
+    """Install signed third-party and first-party wheels, NEVER activate.
 
     This method holds the existing root-owned exclusive update lock for the
     entire read/verify/download/pip/cleanup operation. Success only means a
@@ -154,6 +221,12 @@ def rehearse_signed_install(
         except signed_dependency_staging.PreparationError as exc:
             raise PreparationInstallError(
                 "Publisher-signed online candidate was rejected before download") from exc
+        # The candidate signature/inventory has already been checked;
+        # enforce byte-for-byte original-source equivalence again before I/O.
+        try:
+            application_wheel.verify(assets.get("application_wheel"), archive, version)
+        except application_wheel.ApplicationWheelError as exc:
+            raise PreparationInstallError("Signed first-party wheel is invalid") from exc
         try:
             parent = _managed_parent()
             with tempfile.TemporaryDirectory(prefix=".online-v6-", dir=parent) as work:
@@ -174,16 +247,29 @@ def rehearse_signed_install(
                     raise PreparationInstallError("Native isolated Python venv was not created")
                 install, check, package_list = _install_commands(interpreter, lock)
                 updater._run(install, cwd=lock.parent, timeout=300)
+                app_lock = _stage_owned_application(
+                    workdir / "owned-app", archive, version, assets)
+                updater._run(_application_install_command(interpreter, app_lock),
+                             cwd=app_lock.parent, timeout=180)
                 updater._run(check, timeout=90)
                 installed_json = updater._run(package_list, timeout=90)
-                _check_installed(installed_json, wheels)
+                _check_installed(installed_json, wheels, application_version=version)
+                cli_version, cli_help, tui_import = _smoke_commands(interpreter)
+                version_output = updater._run(cli_version, timeout=30)
+                if version_output.strip() != f"REPOCACHE Control Center {version}":
+                    raise PreparationInstallError("Staged CLI reports unexpected version")
+                help_output = updater._run(cli_help, timeout=30)
+                if "Usage:" not in help_output or "update" not in help_output:
+                    raise PreparationInstallError("Staged CLI help is invalid")
+                updater._run(tui_import, timeout=30)
                 # TemporaryDirectory destroys the entire (potentially
                 # executable) staged environment on success as well as error.
                 # It is intentionally NEVER named as an active generation.
                 return {
-                    "status": "dependencies-verified-only",
+                    "status": "application-and-dependencies-verified-only",
                     "version": version, "target": target,
                     "dependency_count": len(wheels),
+                    "cli_smoke": "passed", "tui_import_smoke": "passed",
                     "activated": False,
                 }
         except (online_deps.DependencyError, signed_dependency_staging.PreparationError,
