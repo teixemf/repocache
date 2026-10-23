@@ -102,11 +102,12 @@ def test_pinned_workflow_identity_rejects_unreviewed_or_ambiguous(monkeypatch):
     def remote(status="ahead", runs=1):
         def fake(endpoint):
             if "/git/ref/tags/" in endpoint:
-                return {"ref": "refs/tags/v0.5.0"}
+                return {"ref": "refs/tags/v0.5.0",
+                        "object": {"type": "commit", "sha": "a" * 40}}
             if "/commits/" in endpoint:
                 return {"sha": "a" * 40}
             if "/compare/" in endpoint:
-                return {"status": status}
+                return {"status": status, "base_commit": {"sha": "a" * 40}}
             if "/jobs?" in endpoint:
                 return {"total_count": 5, "jobs": [
                     {"name": str(n), "status": "completed", "conclusion": "success"}
@@ -389,11 +390,12 @@ def test_candidate_lock_rejects_symlink_to_foreign_file(monkeypatch, tmp_path):
 def test_build_run_must_prove_all_jobs_completed(monkeypatch):
     def remote(endpoint):
         if "/git/ref/tags/" in endpoint:
-            return {"ref": "refs/tags/v0.5.0"}
+            return {"ref": "refs/tags/v0.5.0",
+                        "object": {"type": "commit", "sha": "a" * 40}}
         if "/commits/" in endpoint:
             return {"sha": "a" * 40}
         if "/compare/" in endpoint:
-            return {"status": "ahead"}
+            return {"status": "ahead", "base_commit": {"sha": "a" * 40}}
         if "/runs?" in endpoint:
             return {"total_count": 1, "workflow_runs": [
                 {"head_sha": "a" * 40, "head_branch": "v0.5.0",
@@ -650,3 +652,23 @@ def test_unsigned_candidate_requires_github_artifact_sha256(monkeypatch, tmp_pat
     with pytest.raises(release.OperatorError) as caught:
         release.download_unsigned(50, assets, "v0.5.0")
     assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_existing_matching_draft_can_be_recovered_without_reupload(monkeypatch):
+    from repocache_release import publication
+    record = {"schema": 1, "version": "v0.5.0", "phase": "signed",
+              "commit": "a" * 40, "run_id": 4, "attempt": 1,
+              "assets": {item: "b" * 64 for item in release.files_for("v0.5.0", True)}}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(publication, "reviewed_gate", lambda *_: object())
+    monkeypatch.setattr(publication, "token", lambda *_: "test-token")
+    monkeypatch.setattr(publication, "local_proof", lambda *args: None)
+    monkeypatch.setattr(publication, "release_metadata", lambda *_:
+                        {"id": 42, "draft": True})
+    monkeypatch.setattr(publication, "remote_exact", lambda *_: (42, {}))
+    monkeypatch.setattr(release, "command", lambda *args, **kw: 1 / 0)
+    recorded = []
+    monkeypatch.setattr(release, "save_state", lambda _, data: recorded.append(data))
+    out = release.stage("v0.5.0")
+    assert out["changed"] is False and out["release_id"] == 42
+    assert recorded[0]["phase"] == "staged"

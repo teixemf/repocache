@@ -194,6 +194,8 @@ def stage(c, version: str):
                 "acceptance": "NOT VERIFIED"}
     existing = release_metadata(c, version, bearer)
     if existing is not None:
+        if existing.get("draft") is not True:
+            refuse(c, "DRAFT_CONFLICT", "Release already published; replacement is forbidden")
         # Safe interrupted-create replay: accept an existing Draft only
         # after *full* remote ID/size/SHA and owner-signature revalidation.
         release_id, _ = remote_exact(c, gate, version, record, bearer)
