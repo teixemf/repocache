@@ -27,6 +27,23 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Provision narrowly scoped Ubuntu AppArmor userns profile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The GitHub runner uses an Ubuntu kernel even for distro containers.
+          # Never disable kernel.apparmor_restrict_unprivileged_userns globally.
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            apparmor-profiles apparmor-utils
+          profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          test -f "$profile"
+          sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+          fi
+          sudo aa-status
       - name: Probe patched OS package, user namespaces, and forbidden host access
         shell: bash
         run: bash scripts/ci_candidate_sandbox_container.sh '${{ matrix.distro }}'
