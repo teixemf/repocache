@@ -88,3 +88,13 @@ def test_installer_requires_preflight_before_managed_file_writes():
     assert script.index(BEGIN) < script.index(END)
     assert script.index(END) < script.index('install -d -m 0755 "$TARGET_DIR"')
     assert '[[ -n "$SERVER" ]]' in script
+    # Regressions here can silently break an otherwise valid root installer.
+    for assignment in (
+        'SOURCE="$HERE/repocache_client.py"',
+        'TARGET_DIR="/opt/repocache-client"',
+        'CONFIG_DIR="/etc/repocache-client"',
+        'LAUNCHER="/usr/local/bin/repocache-client"',
+        'PYTHON="/usr/bin/python3"',
+    ):
+        assert script.count(assignment) == 1
+        assert script.index(assignment) < script.index('install -d -m 0755 "$TARGET_DIR"')
