@@ -192,8 +192,15 @@ def stage(c, version: str):
         return {"version": version, "phase": "staged",
                 "release_id": release_id, "changed": False,
                 "acceptance": "NOT VERIFIED"}
-    if release_metadata(c, version, bearer) is not None:
-        refuse(c, "DRAFT_CONFLICT", "Release already exists; refuse replacement or overwrite")
+    existing = release_metadata(c, version, bearer)
+    if existing is not None:
+        # Safe interrupted-create replay: accept an existing Draft only
+        # after *full* remote ID/size/SHA and owner-signature revalidation.
+        release_id, _ = remote_exact(c, gate, version, record, bearer)
+        updated = dict(record, phase="staged", release_id=release_id)
+        c.save_state(version, updated)
+        return {"version": version, "phase": "staged", "release_id": release_id,
+                "changed": False, "acceptance": "NOT VERIFIED"}
     folder = c.candidate_dir(version) / "assets"
     names = c.files_for(version, signed=True)
     arguments = ["gh", "release", "create", version,

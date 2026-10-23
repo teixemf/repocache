@@ -62,7 +62,10 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
     if not argv or argv[0] not in ("git", "gh", "/usr/bin/openssl"):
         raise OperatorError("INVALID_COMMAND", "Unapproved external executable")
     try:
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
+                   GH_PROMPT_DISABLED="1", GCM_INTERACTIVE="Never")
         result = subprocess.run(argv, cwd=cwd, capture_output=True,
+                                stdin=subprocess.DEVNULL, env=env,
                                 timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OperatorError("TOOL_UNAVAILABLE", "Required local tool unavailable") from exc
@@ -256,10 +259,13 @@ def approved_build(version: str) -> tuple[str, int, int]:
         raise OperatorError("UNREVIEWED_RELEASE", "Release tag identity mismatch")
     resolved = gh_json(f"repos/{REPO}/commits/{tag}")
     commit = resolved.get("sha")
-    if not isinstance(commit, str) or not HEX40.fullmatch(commit):
-        raise OperatorError("UNREVIEWED_RELEASE", "Invalid release commit")
+    if (not isinstance(commit, str) or not HEX40.fullmatch(commit)
+            or ref.get("object", {}).get("type") != "commit"
+            or ref.get("object", {}).get("sha") != commit):
+        raise OperatorError("UNREVIEWED_RELEASE", "Tag ref does not identify the reviewed commit")
     comparison = gh_json(f"repos/{REPO}/compare/{commit}...main")
-    if comparison.get("status") not in ("ahead", "identical"):
+    if (comparison.get("status") not in ("ahead", "identical")
+            or comparison.get("base_commit", {}).get("sha") != commit):
         raise OperatorError("UNREVIEWED_RELEASE", "Release is not contained in reviewed main")
     runs = gh_json(f"repos/{REPO}/actions/workflows/release.yml/runs?event=workflow_dispatch&per_page=100")
     entries = runs.get("workflow_runs")
