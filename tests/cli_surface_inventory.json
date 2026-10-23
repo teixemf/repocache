@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "docs/architecture/CLI_ARCHITECTURE.md",
   "status": "transitional-current-parser-inventory",
-  "note": "Every registered root/object/action path must be reviewed; planned names are not assertions of implementation. Transitional root commands remain until a separately approved migration.",
+  "note": "Reviewed transitional inventory. Canonical 'update install VERSION' requires an explicit release while legacy bare 'update' remains temporarily operational; no new command automatically authorizes unsigned or unverified update behavior.",
   "server": [
     "cache",
     "cache stats",
@@ -42,6 +42,7 @@
     "system status",
     "update",
     "update check",
+    "update install",
     "update list"
   ],
   "client": [
