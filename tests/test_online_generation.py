@@ -418,3 +418,58 @@ def test_publisher_locked_upstream_package_must_not_impersonate_repocache(
     assert "run-venv" not in events
     assert events[-1] == "lock-release"
     assert not (root / "online-preparations").exists()
+
+
+def test_preactivation_guard_detects_managed_manifest_mutation(
+        rootless_staging, monkeypatch):
+    """Detect an accidental modified active manifest before declaring PASS.
+
+    This is NOT a sandbox: already-running code under the same UID could
+    corrupt the manifest, so production activation needs real isolation.
+    """
+    root, events, _ = rootless_staging
+    original = updater._run
+
+    def tamper(argv, **kwargs):
+        value = original(argv, **kwargs)
+        if "-c" in argv:
+            (root / "installed.json").write_text("unexpected runtime mutation\n")
+        return value
+
+    monkeypatch.setattr(updater, "_run", tamper)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="Active generation changed"):
+        _rehearse()
+    assert events[-1] == "lock-release"
+    assert not (root / "current").exists()
+    assert not list((root / "online-preparations").iterdir())
+
+
+def test_preactivation_guard_rejects_symlinked_manifest(tmp_path, monkeypatch):
+    from repocache import online_generation
+    private = tmp_path / "installed.json"
+    private.write_text("{}")
+    link = tmp_path / "manifest-symlink.json"
+    link.symlink_to(private)
+    monkeypatch.setattr(updater, "CURRENT", tmp_path / "missing-current")
+    monkeypatch.setattr(updater, "MANIFEST", link)
+    with pytest.raises(online_generation.PreparationInstallError, match="symlink"):
+        online_generation._active_marker()
+
+
+def test_headless_smoke_invocation_has_no_shell_and_requires_installed_cli(
+        tmp_path):
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    interpreter = venv / "bin" / "python"
+    interpreter.write_text("# synthetic interpreter\n")
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="entrypoint missing"):
+        online_generation._smoke_commands(interpreter)
+    console = venv / "bin" / "repocache"
+    console.write_text("# synthetic CLI entrypoint\n")
+    cmds = online_generation._smoke_commands(interpreter)
+    assert len(cmds) == 4
+    assert cmds[2][-2:] == ["update", "--help"]
+    assert cmds[3][:3] == [str(interpreter), "-I", "-c"]
+    assert "run_test" in cmds[3][-1]
