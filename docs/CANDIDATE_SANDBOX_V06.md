@@ -32,3 +32,21 @@ No OS packages or root-owned launchers are modified by this draft. No Bubblewrap
 Sandboxed code is still untrusted; user namespaces increase kernel attack surface. The current symlink/manifest hash canary remains a secondary accidental-mutation detection check, NOT the isolation boundary. Existing staged environments are disposed of and report activated=false.
 
 **Status: proposal with unit evidence only, not a security audit, not mergeable and not deployable.**
+
+## Executed GitHub Actions userspace probe — 2026-10-23
+
+The new [Native candidate sandbox probes](https://github.com/teixemf/repocache/actions/workflows/candidate-sandbox-native.yml) matrix runs Docker Debian 13/Python 3.13 and AlmaLinux 10/Python 3.12 userspaces on the **Ubuntu GitHub-hosted runner kernel**. APT/DNF installs the official patched Bubblewrap. The scripts create a non-root repocache UID and a private managed directory, verify OS package versions and non-setuid permissions, then attempt to run production Bubblewrap arguments and restricted-filesystem/network/PID escape probes in a new user namespace.
+
+### Exact-head observed results
+
+- **PASS (real userspace preflight):** Debian 13 installed bubblewrap 0.12.0-1~deb13u1, root-owned/mode 755; AlmaLinux 10 installed bubblewrap 0.10.0-5.el10_2, root-owned/mode 755. Native OS/Python and patched package checks passed with the dedicated nonroot UID.
+- **FAIL (kernel namespace startup):** [Debian probe run #40030945633](https://github.com/teixemf/repocache/actions/runs/40030945633) failed with "bwrap: Can't mount proc on /proc: Operation not permitted". The AlmaLinux probe in that same run failed with "bwrap: Can't mount proc on /newroot/proc: Operation not permitted".
+- An earlier iteration of both probes failed at "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted". On the disposable GitHub Actions Ubuntu VM only, loading the packaged narrow bwrap-userns-restrict AppArmor profile without disabling host-wide user namespace security, plus NET_ADMIN only in the disposable Docker test-container network namespace, progressed to the above independent /proc mount restriction.
+- **NOT VERIFIED:** Because neither candidate process started, attempted writes to live managed paths, reads of private state, host PID isolation and network denial did NOT execute to completion. The new jobs are deliberately **FAILED**, not skipped or falsely reported as successful. Native Debian/Alma Linux kernel, systemd, SELinux and hostile-wheel execution remain unverified.
+- **PASS (separate exact-head legacy CI):** [Tests #40030945658](https://github.com/teixemf/repocache/actions/runs/40030945658) 4/4, with 676 pytest plus 105 mandatory security tests passed per Python 3.12 and 3.13; [offline #40030945671](https://github.com/teixemf/repocache/actions/runs/40030945671) 3/3; [rootless legacy upgrade #40030945634](https://github.com/teixemf/repocache/actions/runs/40030945634) 2/2. **Nine legacy checks PASS, two new sandbox integration contexts FAIL.**
+
+### Mandatory next environment
+
+Provision reproducible isolated *full VMs* (or dedicated self-hosted GitHub Actions runners) with actual Debian 13 and AlmaLinux 10 kernels, patched native Bubblewrap, unprivileged user namespaces and native SELinux where applicable. Re-run the negative probes and real signed candidate CLI/TUI/venv only after successful namespace setup. Preserve explicit FAIL when missing, not an unsandboxed fallback. No unrestricted Docker privileged container, host-wide AppArmor disabling, host /proc bind or shared network can count as production isolation evidence. Require separate independent security review and full transactional activation/rollback acceptance before merge.
+
+**This workflow proves an operating-system userspace prerequisite and a runner-specific kernel limitation, NOT a working v0.6 sandbox.**
