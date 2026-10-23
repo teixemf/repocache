@@ -31,7 +31,7 @@ def workspace(tmp_path, monkeypatch):
 
 
 def _pip(work: Path):
-    return [str(work / "venv/bin/python"), "-I", "-m", "pip", "install",
+    return [str(work / "venv/bin/python"), "-I", "-m", "pip", "--isolated", "install",
             "--no-index", "--no-deps", "--only-binary=:all:",
             "--require-hashes", "--disable-pip-version-check",
             "--no-cache-dir", "--no-input", "-r",
@@ -85,8 +85,8 @@ def test_approved_python_metadata_and_headless_smoke_commands(workspace):
     _, work = workspace
     python = str(work / "venv/bin/python")
     for argv in (
-        [python, "-I", "-m", "pip", "check"],
-        [python, "-I", "-m", "pip", "list", "--format=json"],
+        [python, "-I", "-m", "pip", "--isolated", "check"],
+        [python, "-I", "-m", "pip", "--isolated", "list", "--format=json"],
         [python, "-I", "-c", __import__(
             "repocache.online_generation", fromlist=["TUI_HEADLESS_SMOKE"]).TUI_HEADLESS_SMOKE],
         [str(work / "venv/bin/repocache"), "--version"],
