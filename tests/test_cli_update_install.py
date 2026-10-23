@@ -207,7 +207,7 @@ def test_actual_signed_verifier_refuses_untrusted_offline_release_at_cli_boundar
     checksum = tmp_path / (archive.name + ".sha256")
     checksum.write_text(
         hashlib.sha256(archive.read_bytes()).hexdigest() +
-        "  " + archive.name + "\\n", encoding="ascii")
+        "  " + archive.name + "\n", encoding="ascii")
     manifest = tmp_path / (archive.name + ".manifest.json")
     manifest.write_bytes(b"{}")  # Unsupported schema; not an owner manifest.
     signature = tmp_path / (manifest.name + ".sig")
