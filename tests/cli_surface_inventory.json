@@ -54,7 +54,15 @@
     "repos sync"
   ],
   "release_operator": {
-    "status": "planned-not-installed",
-    "issue": 88
+    "status": "partial-workstation-only",
+    "issue": 88,
+    "paths": [
+      "environment",
+      "environment check",
+      "candidate",
+      "candidate prepare",
+      "candidate sign",
+      "candidate status"
+    ]
   }
 }
