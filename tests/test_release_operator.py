@@ -36,7 +36,8 @@ def test_registered_release_commands_match_reviewed_architecture_inventory():
     inv = json.loads((ROOT / "tests/cli_surface_inventory.json").read_text())
     assert inv["release_operator"]["status"] == "partial-workstation-only"
     assert paths() == set(inv["release_operator"]["paths"])
-    assert "candidate stage" not in paths() and "candidate publish" not in paths()
+    assert {"candidate stage", "candidate publish"} <= paths()
+    assert "candidate key" not in paths()
     # Do not accidentally add this maintainer-only tool to production server.
     assert "repocache-release" not in (ROOT / "pyproject.toml").read_text()
     assert (ROOT / "workstation/pyproject.toml").is_file()
@@ -53,7 +54,7 @@ def test_help_without_network_key_or_mutation(monkeypatch, capsys, args):
 
 
 def test_json_global_option_before_object_and_after_action_is_identical(monkeypatch, capsys):
-    monkeypatch.setattr(release, "status", lambda version: {
+    monkeypatch.setattr(release, "status", lambda version, acceptance_run_id=None: {
         "version": version, "acceptance": "NOT VERIFIED",
         "ready_to_publish": False})
     for args in (

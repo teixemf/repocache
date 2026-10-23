@@ -62,7 +62,9 @@
       "candidate",
       "candidate prepare",
       "candidate sign",
-      "candidate status"
+      "candidate stage",
+      "candidate status",
+      "candidate publish"
     ]
   }
 }

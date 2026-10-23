@@ -71,13 +71,46 @@ and bytes. Until the external signed-candidate acceptance engine is
 merged and run, it always reports `"acceptance": "NOT VERIFIED"` and
 `"ready_to_publish": false`. This is deliberate.
 
-**Not yet exposed**: `candidate stage` and `candidate publish`.
-They require the authentic signed Draft candidate gate in #76/#78 and
-the separate owner authorization of an immutable publication. Do not
-create placeholder subcommands that can accidentally issue writes.
-The approved **target syntax** is documented in
-[PR #108](https://github.com/teixemf/repocache/pull/108), which has
-not been merged into main.
+**Gated commands (implemented but fail closed until #76/#78 is merged and
+an actual signed candidate passes):**
+
+```console
+repocache-release candidate stage v0.5.0
+repocache-release candidate status v0.5.0 --acceptance-run-id 123456789 --json
+repocache-release candidate publish v0.5.0 --acceptance-run-id 123456789 --approve-sha256 EXACT_CANDIDATE_FINGERPRINT
+```
+
+The local operator will refuse to load a `draft_release_gate.py` that is not
+present, unchanged and tracked on **exact protected main**, so the current draft
+[#77](https://github.com/teixemf/repocache/pull/77) cannot authorize staging
+or publication yet. `stage` is a separately requested **remote write**: it
+uploads all eight owner-signed files once into a Draft Release, never publishes,
+then reads back the complete remote inventory and stores its ID. It refuses
+existing versions unless it is resuming a previously recorded exact-matching
+Draft. A crash after upload but before state commit may require an operator
+inspection; the command never overwrites or auto-retries missing assets.
+
+`status --acceptance-run-id` consults the **real signed-candidate acceptance
+artifact and required 4/4 CI jobs** through the merged #76 verifier and checks
+that its assets and draft ID still match the local signature. It reports
+`NOT VERIFIED` without a verified run and never infers acceptance from a
+synthetic test. An authentic CI result is necessary, not sufficient, for
+publication.
+
+`publish` must be invoked **separately** with the exact reviewed SHA-256
+fingerprint displayed by `candidate status` and the accepted CI run ID.
+Immediately before the only publish write, the operator revalidates:
+the local signed bytes, the owner's account, the Draft release ID and asset
+hashes, the exact successful owner-run native Debian 13 / AlmaLinux 10
+acceptance evidence and the reviewed release policy. After publication it
+requires `immutable: true` and the unchanged IDs/sizes/hashes on the real
+GitHub Release. If postpublication verification fails, report
+`POST_PUBLISH_UNVERIFIED` and **do not claim rollback was possible**.
+
+The commands' presence is **not** approval to publish. The merge, tag,
+signature, stage and publication each require the owner's own authorization
+at the relevant time. This implementation PR does not perform any of them.
+
 
 ## Scriptability and security
 
