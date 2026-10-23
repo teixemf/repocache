@@ -8,6 +8,7 @@ import os
 import stat
 import sys
 import zipfile
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -343,3 +344,13 @@ def test_local_sign_dispatch_preserves_fd_only_secret_and_no_publication(monkeyp
     assert len(saved[0]["assets"]) == 8
     assert "correct-secret" not in json.dumps(saved[0])
     assert set(saved[0]["assets"]).issuperset(original)
+
+
+def test_workstation_package_entrypoint_is_isolated_from_server_distribution():
+    metadata = tomllib.loads((ROOT / "workstation/pyproject.toml").read_text())
+    assert metadata["project"]["name"] == "repocache-release-operator"
+    assert metadata["project"]["scripts"] == {
+        "repocache-release": "repocache_release.cli:main"}
+    assert metadata["project"]["dependencies"] == []
+    server = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert "repocache-release" not in server["project"]["scripts"]
