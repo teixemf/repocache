@@ -299,3 +299,47 @@ def test_modified_signer_worktree_refused_before_reading_passphrase(monkeypatch,
     monkeypatch.setattr(release, "read_passphrase", lambda _: 1 / 0)
     with pytest.raises(release.OperatorError, match="unreviewed"):
         release.sign(version, 3)
+
+
+def test_local_sign_dispatch_preserves_fd_only_secret_and_no_publication(monkeypatch, tmp_path):
+    version = "v0.5.0"
+    release_dir = tmp_path / "candidate"
+    scripts = release_dir / "checkout" / "scripts"
+    assets = release_dir / "assets"
+    scripts.mkdir(parents=True)
+    assets.mkdir(mode=0o700)
+    for name in release.files_for(version):
+        (assets / name).write_bytes(("approved " + name).encode())
+    original = {p.name: release.digest(p) for p in assets.iterdir()}
+    signer = scripts / "offline_sign_release.py"
+    signer.write_text(
+        "from pathlib import Path\n"
+        "def sign_candidate(bundle, private, *, commit, run_id, attempt, password):\n"
+        "    assert password == b'correct-secret' and run_id == '21' and attempt == '2'\n"
+        "    for suffix in ('.manifest.json', '.manifest.json.sig', '.provenance.json', '.provenance.json.sig'):\n"
+        "        bundle.with_name(bundle.name + suffix).write_bytes(b'signed fixture')\n"
+    )
+    keydir = tmp_path / "repocache-signing"
+    keydir.mkdir()
+    private = keydir / "repocache-release-private.pem"
+    private.write_bytes(b"encrypted test fixture")
+    private.chmod(0o600)
+    monkeypatch.setattr(release.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(release, "candidate_dir", lambda _: release_dir)
+    record = {"schema": 1, "version": version, "commit": "a" * 40,
+              "run_id": 21, "attempt": 2, "phase": "prepared",
+              "assets": original}
+    monkeypatch.setattr(release, "read_state", lambda _: record)
+    monkeypatch.setattr(release, "verify_state", lambda *args: original)
+    monkeypatch.setattr(release, "read_passphrase", lambda fd:
+                        b"correct-secret" if fd == 3 else 1 / 0)
+    monkeypatch.setattr(release, "command", lambda args, **kw:
+                        (("a" * 40 + "\n").encode() if "rev-parse" in args else b""))
+    saved = []
+    monkeypatch.setattr(release, "save_state", lambda _, data: saved.append(data))
+    assert release.sign(version, 3)["phase"] == "signed"
+    assert len(saved) == 1
+    assert saved[0]["phase"] == "signed"
+    assert len(saved[0]["assets"]) == 8
+    assert "correct-secret" not in json.dumps(saved[0])
+    assert set(saved[0]["assets"]).issuperset(original)
