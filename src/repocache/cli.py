@@ -189,6 +189,10 @@ def find_repo(ctx: typer.Context, name: str) -> Dict[str, str]:
     repos = discover_repos(result["stdout"])
     matches = [item for item in repos if item["name"] == name or item["path"] == name]
     if not matches:
+        # Discovery failure or partial results are not proof of absence.
+        if not result["ok"] or result.get("partial"):
+            _cli_error(ctx, "REPOSITORY_LOOKUP_UNAVAILABLE",
+                       "Repository discovery is unavailable or incomplete.")
         _cli_error(ctx, "REPOSITORY_NOT_FOUND", f"Repository '{name}' not found.")
     return matches[0]
 
