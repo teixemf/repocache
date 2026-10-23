@@ -38,6 +38,8 @@ def require_executor() -> None:
             meta = path.lstat()
         except OSError as exc:
             raise SandboxError("Required OS sandbox executor is unavailable") from exc
+        if path == BWRAP and meta.st_mode & (stat.S_ISUID | stat.S_ISGID):
+            raise SandboxError("Setuid/setgid sandbox helpers are forbidden")
         if (meta.st_uid != 0 or meta.st_mode & 0o022
                 or (stat.S_ISDIR(meta.st_mode) if path != BWRAP
                     else not stat.S_ISREG(meta.st_mode))):
