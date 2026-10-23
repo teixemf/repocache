@@ -16,6 +16,8 @@ EXPECTED = {
     "actions/checkout": ("93cb6efe18208431cddfb8368fd83d5badbf9bfd", "v5.0.1"),
     "actions/setup-python": ("e797f83bcb11b83ae66e0230d6156d7c80228e7c", "v6.0.0"),
     "actions/upload-artifact": ("b7c566a772e6b6bfb58ed0dc250532a479d7789f", "v6.0.0"),
+    # The pending signed draft acceptance PR (#77) adds this action.
+    "actions/download-artifact": ("37930b1c2abaa49bbe596cd826c3c89aef350131", "v7.0.0"),
 }
 USE = re.compile(r"^\s*-\s+uses:\s+([^\s#]+)", re.MULTILINE)
 PINNED = re.compile(
@@ -53,7 +55,8 @@ def test_checkout_does_not_persist_credentials(workflow: Path) -> None:
 
 def test_official_actions_present_and_legacy_refs_absent() -> None:
     combined = "\n".join(p.read_text(encoding="utf-8") for p in workflow_files())
-    for action, (sha, version) in EXPECTED.items():
+    for action in ("actions/checkout", "actions/setup-python", "actions/upload-artifact"):
+        sha, version = EXPECTED[action]
         assert f"{action}@{sha} # {version}" in combined
     for legacy in (
         "11bd71901bbe5b1630ceea73d27597364c9af683",
