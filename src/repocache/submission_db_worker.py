@@ -235,10 +235,18 @@ class WorkerConnection:
     def backup_file(self, destination: Path) -> None:
         """Stream a consistent SQLite snapshot to a ROOT-PRIVATE staging inode."""
         path = Path(destination)
-        fd = os.open(path, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
+        # A path can be substituted between the caller's mkstemp and this
+        # reopen. Refuse FIFOs without blocking before the inode is checked.
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK |
+                         getattr(os, "O_NOFOLLOW", 0) |
+                         getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            raise WorkerError("unsafe_backup_staging") from exc
         try:
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
+                    st.st_mode & 0o077 or st.st_nlink != 1 or st.st_size != 0):
                 raise WorkerError("unsafe_backup_staging")
             self._send({"op": "backup"})
             total = 0
