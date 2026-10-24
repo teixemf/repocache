@@ -178,15 +178,32 @@ def read_state(version: str) -> dict[str, Any] | None:
     path = state_file(version)
     if path.is_symlink():
         raise OperatorError("UNSAFE_STATE", "State file symlink refused")
-    if not path.exists():
-        return None
-    info = path.stat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_mode & 0o077 or info.st_size > 65536):
-        raise OperatorError("UNSAFE_STATE", "State file is not private or is oversized")
+    # Validate the opened inode, not a path inspected before open: an
+    # interrupted or locally replaced record must never be followed through
+    # a symlink or a hardlink to another owner file.
     try:
-        record = json.loads(path.read_text())
-    except (ValueError, UnicodeError, OSError) as exc:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise OperatorError("UNSAFE_STATE", "State file cannot be safely opened") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1
+                or info.st_size > 65536):
+            raise OperatorError("UNSAFE_STATE", "State file is not private, unique or is oversized")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(65537)
+    except OSError as exc:
+        raise OperatorError("INVALID_STATE", "Release state record could not be read") from exc
+    finally:
+        os.close(fd)
+    if len(raw) > 65536:
+        raise OperatorError("UNSAFE_STATE", "State file exceeded the size limit")
+    try:
+        record = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError) as exc:
         raise OperatorError("INVALID_STATE", "Release state record corrupted") from exc
     if (not isinstance(record, dict) or record.get("schema") != 1
             or record.get("version") != version
