@@ -23,8 +23,8 @@ No OS packages or root-owned launchers are modified by this draft. No Bubblewrap
 
 1. **PASS (unit policy only):** missing/symlinked/insecure/setuid helper rejected before network; command-generation tests confirm rootless namespace flags, minimal read-only runtime, one writable workspace, cleared environment and no host network.
 2. **PASS (mocked transaction only):** all candidate pip and CLI/TUI subprocesses use the wrapper. Sandbox errors halt with no fallback and a temporary workspace is cleaned; no active generation is intentionally changed.
-3. **NOT VERIFIED / BLOCKER:** actual bwrap/namespace runtime on Debian 13 and AlmaLinux 10 (including CVE-fixed packages, supported kernel user namespaces and SELinux), dynamic loader/library symlinks and a real installed full application + Textual headless smoke within the namespace.
-4. **NOT VERIFIED / BLOCKER:** native attempted writes to current link/manifest, private files and outside staging, no network or host PID escape, no credential exposure; audit by an independent security reviewer. CLI output can itself leak details if untrusted code reads anything it should not.
+3. **PARTIAL PASS (GitHub Ubuntu-kernel Docker only):** patched bwrap executed real sandbox child processes under Debian 13 and AlmaLinux 10 userspaces in #40110994376. Native target kernels, userns policy on installed hosts, SELinux and a real owner-signed full application/third-party wheel/Textual rehearsal remain **NOT VERIFIED / BLOCKING**.
+4. **PARTIAL PASS (GitHub Ubuntu-kernel Docker only):** actual adversarial scripts tried forbidden writes/reads, outer loopback and PID access; all denied after synthetic root read-only fix, active state intact and staging cleaned. Native OS policy, arbitrary hostile wheel behavior, resource exhaustion, credential exposure analysis and independent review remain **NOT VERIFIED / BLOCKING**.
 5. **NOT VERIFIED / BLOCKER:** complete resource and process limits, fail-safe orphan recovery after forced termination and disk exhaustion, tested OS package provisioning for the executor. If secure rootless namespaces cannot work on a target, design a root-owned systemd transient sandbox with a separate UID; NEVER silently run unsandboxed.
 6. **NOT VERIFIED / BLOCKER:** genuine publisher-key signed online eight-asset v0.6 candidate, full approved PyPI wheel closure, actual native runtime ABI, full CLI/TUI/client integration and all #83-#85 acceptances.
 7. **NOT IMPLEMENTED / BLOCKER:** schema-2 online atomic activation, repair/downgrade policy, journal commit/rollback, SIGKILL/power-loss, external repository failover and native systemd/SELinux integration.
@@ -33,7 +33,7 @@ Sandboxed code is still untrusted; user namespaces increase kernel attack surfac
 
 **Status: prototype with CI container-kernel and unit evidence; native OS security acceptance, independent review and full signed activation remain NOT VERIFIED. Not mergeable or deployable.**
 
-## Executed GitHub Actions userspace probe — 2026-10-23
+## Historical failed GitHub Actions userspace probe — 2026-10-23 (superseded by the passing 2026-10-24 run below)
 
 The new [Native candidate sandbox probes](https://github.com/teixemf/repocache/actions/workflows/candidate-sandbox-native.yml) matrix runs Docker Debian 13/Python 3.13 and AlmaLinux 10/Python 3.12 userspaces on the **Ubuntu GitHub-hosted runner kernel**. APT/DNF installs the official patched Bubblewrap. The scripts create a non-root repocache UID and a private managed directory, verify OS package versions and non-setuid permissions, then attempt to run production Bubblewrap arguments and restricted-filesystem/network/PID escape probes in a new user namespace.
 
@@ -49,7 +49,7 @@ The new [Native candidate sandbox probes](https://github.com/teixemf/repocache/a
 
 Provision reproducible isolated *full VMs* (or dedicated self-hosted GitHub Actions runners) with actual Debian 13 and AlmaLinux 10 kernels, patched native Bubblewrap, unprivileged user namespaces and native SELinux where applicable. Re-run the negative probes and real signed candidate CLI/TUI/venv only after successful namespace setup. Preserve explicit FAIL when missing, not an unsandboxed fallback. No unrestricted Docker privileged container, host-wide AppArmor disabling, host /proc bind or shared network can count as production isolation evidence. Require separate independent security review and full transactional activation/rollback acceptance before merge.
 
-**This workflow proves an operating-system userspace prerequisite and a runner-specific kernel limitation, NOT a working v0.6 sandbox.**
+**This 2026-10-23 failed workflow was superseded by the 2026-10-24 passing Docker probe documented below. It did not establish an operating v0.6 sandbox.**
 
 
 ## 2026-10-24 — Working GitHub Actions Docker namespace probes; native gate remains separate
