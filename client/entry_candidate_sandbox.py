@@ -64,6 +64,7 @@ def _parse(raw: bytes, name: str):
             or type(record["source"]) is not str
             or not pre.SOURCE_PATH.fullmatch(record["source"])
             or record["source"].startswith("etc/apt/mirrors/")
+            or type(record["kind"]) is not str
             or record["kind"] not in {"apt-list", "apt-deb822", "dnf-repo"}
             or type(record["entry_sha256"]) is not str
             or not registry.DIGEST.fullmatch(record["entry_sha256"])
