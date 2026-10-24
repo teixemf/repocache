@@ -80,15 +80,26 @@ state, headless TUI, client HTTPS and restore rollback. **Check exact-head
 GitHub Actions results before assigning PASS**; earlier green runs are
 historical and cannot be carried to a changed commit.
 
+**PASS (disposable container real-UID smoke, not a booted native OS):**
+GitHub Actions [run #40096004150](https://github.com/teixemf/repocache/actions/runs/40096004150)
+completed both Debian 13 and AlmaLinux 10 jobs successfully on code HEAD
+`41e645383aa792d3fc2a61a5685b8cd5122431a6`. Both actual job logs
+include `PASS: real dropped UID, no root SQLite, decision journal, backup
+and hostile sidecar`. The script provisions a dedicated service UID, uses
+real `setpriv`, prevents the root Python process from opening the
+service-owned SQLite path, exercises root-only receipt authority, verifies a
+root-private backup, reconciles a forged SQLite state and protects a root
+sentinel against a service-owned malicious journal symlink. These are real
+UID transitions inside Docker on an Ubuntu-hosted runner kernel; they do
+**not** prove host SELinux/systemd or every adversarial race.
+
 **NOT VERIFIED / mandatory before Gate A merge:** full adversarial code
-review of worker IPC, timeout and crash paths; a real UID-separated worker
-execution and malicious intake-controlled DB/sidecar filesystem tests in
-disposable Debian 13/Python 3.13 and AlmaLinux 10/Python 3.12 environments;
-no root SQLite descriptor on service-controlled paths; root journal
-non-writability from intake UID; no privilege escalation via symlinks,
-hardlinks, renames, parent-path swaps or worker executable replacement;
-actual backup/reconcile/restore interruption and concurrency; exact-head
-nine required CI checks; protected branch rules/reviews.
+review of worker IPC, timeout and crash paths; process and disk quotas;
+exhaustive hardlink/rename/parent-path swap and executable replacement
+races; actual backup/reconcile/restore interruption and concurrency under
+hostile service-UID activity; source-archive and wheel provenance
+compatibility with the immutable v0.4.0 updater; exact-final-head nine
+required CI checks, protected branch rules/reviews.
 
 **NOT VERIFIED / separate production Gate B (#49):** real host
 systemd/NGINX/TLS, SELinux enforcing contexts, service account provisioning,
