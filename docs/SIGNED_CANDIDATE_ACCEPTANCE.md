@@ -71,8 +71,12 @@ all of the following on the actual candidate files:
    unreviewed installer-path contents. In particular, validate wheel
    `entry_points.txt` against the reviewed `pyproject.toml` console/GUI/plugin
    declarations: rehashed wheel metadata could otherwise redirect or add
-   executable entry points despite identical Python module bytes. This check
-   is repeated at **signing time**, not merely assumed from an earlier CI wheel build.
+   executable entry points despite identical Python module bytes. Require
+   a pure-Python wheel install scheme and a complete, unique `RECORD` inventory
+   whose paths, SHA-256 hashes and sizes exactly match the ZIP members. A
+   forged `RECORD` path can otherwise poison later uninstall/recovery even
+   when the package's Python modules are unchanged. These checks are repeated
+   at **signing time**, not merely assumed from an earlier CI wheel build.
 4. Reject all discrepancies before requesting access to the owner key.
    This check alone does not authenticate the signing identity or replace
    signed Draft Release / published-v0.4 native acceptance.
