@@ -18,9 +18,9 @@ A journalled intent records both `from_device/from_inode` and the intended desti
 | Restore intent, new source inode still installed, verified original-data temp present | **Resume the journalled rename** and record `restored` |
 | Restore intent, original-data inode already restored | Verify no unexplained pending temp and record `restored` |
 | Committed phase, source valid, no orphan temp | Report committed status, no write |
-| Unknown temp, symlink, changed inode/content/xattrs or missing rollback temp | **Refuse**; do not delete/overwrite unknown state |
+| Unknown temp, symlink/FIFO, changed inode/content/xattrs or missing rollback temp | **Refuse**; do not delete/overwrite unknown state |
 
-These states are tested with actual child-process `SIGKILL`, including termination **before rollback replacement**, which was a known unhandled state in the preceding experiment.
+These states are tested with actual child-process `SIGKILL`, including termination **before rollback replacement**, which was a known unhandled state in the preceding experiment. Unexpected FIFO paths are opened non-blockingly and rejected; a timeout-bounded subprocess test guards against deadlock.
 
 ## Safety scope and limitations
 
