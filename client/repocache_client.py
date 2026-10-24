@@ -287,21 +287,44 @@ def _output(data: dict, json_mode: bool) -> None:
         print(data["note"])
 
 
-def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
+def _common_options(parser: argparse.ArgumentParser, *, nested: bool = False) -> None:
+    """Allow globals at every command depth without erasing parent values."""
+    defaults = {"default": argparse.SUPPRESS} if nested else {}
+    parser.add_argument("--server", **defaults)
+    parser.add_argument("--json", action="store_true", **defaults)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Register the approved client command grammar in one auditable place."""
     parser = argparse.ArgumentParser(prog="repocache-client")
-    parser.add_argument("--server")
-    parser.add_argument("--json", action="store_true")
+    _common_options(parser)
     cmds = parser.add_subparsers(dest="command", required=True)
-    cmds.add_parser("check")
-    repos_cmd = cmds.add_parser("repos")
-    actions = repos_cmd.add_subparsers(dest="action", required=True)
-    actions.add_parser("list")
+    check = cmds.add_parser("check")
+    _common_options(check, nested=True)
+    repos_cmd = cmds.add_parser("repos", aliases=["repo"])
+    _common_options(repos_cmd, nested=True)
+    actions = repos_cmd.add_subparsers(dest="action")
+    listing = actions.add_parser("list", aliases=["ls"])
+    _common_options(listing, nested=True)
     submit = actions.add_parser("submit")
+    _common_options(submit, nested=True)
     submit.add_argument("--output", type=Path)
     submit.add_argument("--token-file", type=Path)
     sync = actions.add_parser("sync")
+    _common_options(sync, nested=True)
     sync.add_argument("--apply", action="store_true")
+    return parser
+
+
+def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in {"repos", "repo"} and args.action is None:
+        # Do not consult the network or local package manager for object help.
+        repos_action = next(action for action in parser._actions
+                            if isinstance(action, argparse._SubParsersAction))
+        repos_action.choices["repos"].print_help()
+        return 0
     try:
         cfg = root / CONFIG_FILE.relative_to("/")
         configured = ""
@@ -343,7 +366,7 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
                      "repositories": repos, "compatibility_summary": _compatibility_summary(repos),
                      "exit_code": code}, args.json)
             return code
-        if args.action == "list":
+        if args.action in {"list", "ls"}:
             _output({"os": distro, "server": server, "repositories": repos}, args.json)
             return 0
         if args.action == "submit":
