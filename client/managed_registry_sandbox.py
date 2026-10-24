@@ -42,7 +42,10 @@ class RegistryBusy(RegistryRefused):
 
 
 @contextlib.contextmanager
-def _registry_fd(root: Path, *, create: bool):
+def _registry_fd(root: Path, *, create: bool,
+                 subdir: str = "managed-candidates-lab"):
+    if subdir not in {"managed-candidates-lab", "entry-candidates-lab"}:
+        raise RegistryRefused("Unrecognized private registry namespace")
     root = Path(root)
     if not root.is_absolute() or root == Path("/") or ".." in root.parts:
         raise RegistryRefused("Registry is restricted to private test roots")
@@ -59,7 +62,7 @@ def _registry_fd(root: Path, *, create: bool):
             ("var", False),
             ("lib", False),
             ("repocache-client", True),
-            ("managed-candidates-lab", True),
+            (subdir, True),
         ):
             if create:
                 try:
