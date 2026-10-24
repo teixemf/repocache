@@ -44,7 +44,8 @@ class RegistryBusy(RegistryRefused):
 @contextlib.contextmanager
 def _registry_fd(root: Path, *, create: bool,
                  subdir: str = "managed-candidates-lab"):
-    if subdir not in {"managed-candidates-lab", "entry-candidates-lab"}:
+    if subdir not in {"managed-candidates-lab", "entry-candidates-lab",
+                       "entry-approvals-lab"}:
         raise RegistryRefused("Unrecognized private registry namespace")
     root = Path(root)
     if not root.is_absolute() or root == Path("/") or ".." in root.parts:
