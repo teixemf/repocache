@@ -134,6 +134,13 @@ class WorkerConnection:
             )
         except OSError as exc:
             raise WorkerError("worker_spawn_failed") from exc
+        # Keep stdin nonblocking: a stalled or hostile worker must not trap
+        # the privileged parent inside a buffered pipe write indefinitely.
+        if self.process.stdin is None:
+            self.process.kill()
+            self.process.wait()
+            raise WorkerError("worker_pipe_missing")
+        os.set_blocking(self.process.stdin.fileno(), False)
         self._buffer = bytearray()
         self._closed = False
         try:
@@ -172,15 +179,34 @@ class WorkerConnection:
         return response
 
     def _send(self, request: dict) -> None:
+        """Write a bounded request without blocking on an unresponsive child."""
         try:
             raw = json.dumps(request, sort_keys=True, separators=(",", ":"),
                              ensure_ascii=True).encode("ascii") + b"\n"
-            if len(raw) > MAX_MESSAGE or self.process.stdin is None:
-                raise WorkerError("oversized_worker_request")
-            self.process.stdin.write(raw)
-            self.process.stdin.flush()
-        except (OSError, BrokenPipeError, ValueError) as exc:
-            raise WorkerError("worker_send_failed") from exc
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise WorkerError("invalid_worker_request") from exc
+        if len(raw) > MAX_MESSAGE or self.process.stdin is None:
+            raise WorkerError("oversized_worker_request")
+        fd = self.process.stdin.fileno()
+        view = memoryview(raw)
+        deadline = time.monotonic() + TIMEOUT
+        while view:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkerError("worker_send_timeout")
+            try:
+                if not select.select([], [fd], [], remaining)[1]:
+                    raise WorkerError("worker_send_timeout")
+                count = os.write(fd, view)
+                if count <= 0:
+                    raise WorkerError("worker_send_failed")
+                view = view[count:]
+            except BlockingIOError:
+                # The pipe can fill between select and write. Retry only
+                # until the same fixed deadline, never extend it.
+                continue
+            except OSError as exc:
+                raise WorkerError("worker_send_failed") from exc
 
     def _request(self, request: dict) -> dict:
         self._send(request)
