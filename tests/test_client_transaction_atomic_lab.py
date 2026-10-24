@@ -124,6 +124,18 @@ def test_post_install_external_edit_prevents_rollback(sandbox):
     assert source.read_bytes() == b"external edit\n"
 
 
+def test_external_chmod_after_apply_blocks_rollback_and_recovery(sandbox):
+    ident = prepared(sandbox)
+    lab.apply_sandbox(sandbox, ident)
+    source = sandbox / SOURCE
+    source.chmod(0o600)
+    with pytest.raises(stage.StageError, match="metadata drift|External source drift"):
+        lab.rollback_sandbox(sandbox, ident)
+    with pytest.raises(stage.StageError, match="metadata drift"):
+        lab.recover_sandbox(sandbox, ident)
+    assert source.read_bytes() == AFTER
+
+
 def test_xattr_source_fails_closed_without_dropping_metadata(sandbox):
     ident = prepared(sandbox)
     source = sandbox / SOURCE
