@@ -34,11 +34,11 @@ def _parser() -> _Parser:
     parser.add_argument("--json", action="store_true", dest="global_json",
                         help="Print one finite JSON response")
     actions = parser.add_subparsers(dest="action", required=True)
-    status = actions.add_parser("status", parser_class=_Parser,
+    status = actions.add_parser("status",
                                 help="Show the capabilities of this read-only prototype")
     status.add_argument("--json", action="store_true", dest="local_json")
     inspect = actions.add_parser(
-        "inspect-source", parser_class=_Parser,
+        "inspect-source",
         help="Inspect an allowlisted source filesystem inode, not repository trust",
     )
     inspect.add_argument("--source", required=True, metavar="RELATIVE_PATH",
