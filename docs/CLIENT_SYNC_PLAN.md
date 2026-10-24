@@ -26,7 +26,7 @@ The response also contains `dry_run: true`, `planned_changes: 0` and `plan_summa
 | `skipped` | Disabled locally or absent from approved server catalog; leave unchanged. |
 | `blocked` | Known unsafe/ambiguous source (credentials or URL parameters, weak signature/TLS policy, invalid URL, or cache-only source without verified fallback). |
 | `review` | Existing mixed cache/upstream route or DNF `mirrorlist`/`metalink` indirection. Merely having mirror URLs does not demonstrate native fallback. |
-| `candidate` | Direct source appears in active catalog. Eligible for further checks **only**, never for mutation. |
+| `candidate` | Every direct source URL is recognized by the active catalog and the repository format is recognized. Eligible for further checks **only**, never for mutation. A partly matched set is blocked. |
 
 Only sanitized URLs are emitted; private source URLs or DNF credentials must not be logged. Other credentials can be stored out of band (e.g., APT auth.conf, DNF shared configuration), so the absence of an explicit credential marker **does not prove** that a source is public. The current parser is advisory, not a trusted full-fidelity source writer.
 
