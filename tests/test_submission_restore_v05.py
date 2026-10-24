@@ -121,3 +121,53 @@ def test_real_root_requirement_fails_for_nonroot(monkeypatch):
     monkeypatch.setattr(recovery.os, "geteuid", lambda: 1001)
     with pytest.raises(SubmissionError, match="operator_required"):
         recovery._require_root()
+
+
+def test_restore_never_stages_or_locks_in_intake_writable_directory(
+    restored_state, monkeypatch
+):
+    dbfile, backup, first, second = restored_state
+    observed = {"locks": [], "verified": [], "replacements": []}
+    original_verify = recovery._verify_sqlite
+    original_replace = recovery.os.replace
+
+    def lock(directory):
+        observed["locks"].append(directory)
+        return nullcontext()
+
+    def verify(path):
+        observed["verified"].append(path)
+        assert path.parent == backup.parent
+        assert path.parent != dbfile.parent
+        return original_verify(path)
+
+    def replace(source, destination):
+        observed["replacements"].append((Path(source), Path(destination)))
+        assert Path(source).parent == backup.parent
+        assert Path(destination) == dbfile
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(recovery, "_exclusive_restore_lock", lock)
+    monkeypatch.setattr(recovery, "_verify_sqlite", verify)
+    monkeypatch.setattr(recovery.os, "replace", replace)
+    recovery.restore_offline(dbfile, backup, approved=True,
+                             service_stopped=lambda: True)
+    assert observed["locks"] == [backup.parent]
+    assert len(observed["verified"]) == 1
+    assert len(observed["replacements"]) == 1
+    assert _ids(dbfile) == {first}
+
+
+def test_cross_device_restore_fails_closed_and_keeps_old_queue(
+    restored_state, monkeypatch
+):
+    import errno
+    dbfile, backup, first, second = restored_state
+    def fail_cross_device(*_args, **_kwargs):
+        raise OSError(errno.EXDEV, "different filesystems")
+    monkeypatch.setattr(recovery.os, "replace", fail_cross_device)
+    with pytest.raises(SubmissionError, match="restore_unavailable"):
+        recovery.restore_offline(dbfile, backup, approved=True,
+                                 service_stopped=lambda: True)
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob(".repocache-restore-*"))
