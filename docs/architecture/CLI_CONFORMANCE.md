@@ -81,9 +81,16 @@ claimed as complete by this stage. The CLI never prints credentials and
 must not prompt or elevate privileges.
 
 The mandatory CLI conformance CI gate includes
-`tests/test_cli_update_install.py` on Python 3.12 and 3.13. These are
-mocked adapter tests, **not** evidence that a genuine signed candidate can be
-installed/rolled back on a native Debian 13 or AlmaLinux 10 host.
+`tests/test_cli_update_install.py` on Python 3.12 and 3.13. Tests cover
+mocked parser/adaptor behavior, real rejection of unsigned/incomplete offline
+inputs through `upgrade.upgrade()` and `signatures.verify()`, and a positive
+real OpenSSL/Ed25519 verification of a CI-only ephemeral signed source archive
+with policy extraction. The positive fixture deliberately substitutes a
+declared Debian 13 test-host identity and stubs dependency wheel extraction and
+the final installer so it **cannot mutate the host**. It is therefore **not**
+evidence that a genuine owner-signed release can be installed, activated,
+repaired or rolled back on native Debian 13 / AlmaLinux 10, nor that a public
+release has been signed with the owner-held private key.
 Coordinate the dependency-profile and release-acceptance gates with #82–#85;
 do not merge incompatible updater-branch changes without semantic review.
 
