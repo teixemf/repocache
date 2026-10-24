@@ -2,7 +2,7 @@
 
 **Tracking:** [issue #24](https://github.com/teixemf/repocache/issues/24).  
 **Integration parent:** [PR #144](https://github.com/teixemf/repocache/pull/144), stacked on [#142](https://github.com/teixemf/repocache/pull/142) / #141 / #140 / #138.  
-**Source experiments:** [#134](https://github.com/teixemf/repocache/pull/134), [#135](https://github.com/teixemf/repocache/pull/135), [#137](https://github.com/teixemf/repocache/pull/137).  
+**Source provenance:** [#134](https://github.com/teixemf/repocache/pull/134) is already merged to `main` (its cloned ACL/xattr laboratory files must not be duplicated or reverted). [#135](https://github.com/teixemf/repocache/pull/135) and [#137](https://github.com/teixemf/repocache/pull/137) remain separate experimental PRs; their incremental protected-snapshot and recovery logic is reconciled here.  
 **Already merged:** #131 protected transaction staging, #132 sandbox atomic writer, #133 dirfd preflight; this integration aligns the preflight with merged `main` and incorporates the metadata and recovery experiments into a single **sandbox-only** transaction engine.
 
 ## Changes, boundaries and trust
