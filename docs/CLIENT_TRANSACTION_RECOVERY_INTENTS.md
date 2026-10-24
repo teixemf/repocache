@@ -2,7 +2,7 @@
 
 **Issue:** [#24](https://github.com/teixemf/repocache/issues/24).  
 **Implementation status:** read/write operations apply **only to explicitly marked private /tmp laboratory fixtures**.  
-**Dependencies:** #131 (protected original snapshots), #132 (atomic sandbox) and #133 (read-only preflight) are merged; #134 (Linux metadata checks) and #135 (protected original ACL/xattr snapshots) remain open. This PR is stacked on #135 and **does not modify the installed REPOCACHE CLI**.
+**Dependencies:** #131 (protected original snapshots), #132 (atomic sandbox) and #133 (read-only preflight) are merged; #134 (Linux metadata checks) and #135 (protected original ACL/xattr snapshots) are also merged. This PR is now based directly on main and **does not modify the installed REPOCACHE CLI**.
 
 ## Additional recovery invariants
 
