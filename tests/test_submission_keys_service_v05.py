@@ -127,3 +127,28 @@ def test_deployment_examples_are_not_install_hooks():
     assert "127.0.0.1:8765" in nginx
     assert "client_max_body_size" in nginx
     assert "repocache-intake.service" not in installer
+
+
+def test_keyring_replacement_between_lstat_and_open_is_refused(
+    keys, monkeypatch
+):
+    from repocache import intake
+    keyring, handoff = keys
+    submission_keys.issue_key(keyring, handoff / "client.json", "good", approved=True)
+    alternate = keyring.parent / "alternate.json"
+    alternate.write_bytes(keyring.read_bytes())
+    alternate.chmod(0o600)
+    original_open = intake.os.open
+    replaced = []
+
+    def swap_keyring(path, flags, *args, **kwargs):
+        if Path(path) == keyring and not replaced:
+            replaced.append(True)
+            keyring.unlink()
+            alternate.rename(keyring)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(intake.os, "open", swap_keyring)
+    with pytest.raises(SubmissionError, match="invalid_credentials"):
+        load_keyring(keyring)
+    assert replaced
