@@ -52,6 +52,7 @@ def test_malformed_version_refused_before_updater_invocation(
     assert result.exit_code == 2, result.output
     response = json.loads(result.stdout)
     assert response == {
+        "schema_version": 1,
         "ok": False,
         "error": {"code": "INVALID_VERSION",
                   "message": "Expected a stable X.Y.Z version."},
@@ -227,7 +228,7 @@ def test_actual_signed_verifier_refuses_untrusted_offline_release_at_cli_boundar
     assert payload["ok"] is False
     assert payload["performed"] is False
     assert payload["status"] == "error"
-    assert "signed release manifest schema" in payload["error"]
+    assert "signed release manifest schema" in payload["error"]["message"]
     assert not result.stderr
     assert {p.name: p.read_bytes()
             for p in (archive, checksum, manifest, signature, wheels)} == original
@@ -257,7 +258,7 @@ def test_actual_backend_rejects_partial_local_bundle_before_any_network_or_insta
     assert result.exit_code == 2, result.output
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
-    assert "Both --bundle and --checksum" in payload["error"]
+    assert "Both --bundle and --checksum" in payload["error"]["message"]
     assert list(tmp_path.iterdir()) == []
 
 
@@ -451,7 +452,7 @@ def test_signed_schema_two_profile_is_refused_by_exact_cli_before_install(
     assert response["status"] == "error"
     assert response["performed"] is False
     assert response["retryable"] is False
-    assert "not supported by this updater" in response["error"]
+    assert "not supported by this updater" in response["error"]["message"]
     assert not result.stderr
 
 

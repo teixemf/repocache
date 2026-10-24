@@ -189,7 +189,7 @@ def test_system_status_is_read_only_equivalent_to_original_status(monkeypatch):
                  ["system", "status", "--json"]):
         outcome = runner.invoke(cli.app, argv)
         assert outcome.exit_code == 0, (argv, outcome.output)
-        assert json.loads(outcome.stdout) == report
+        assert json.loads(outcome.stdout) == {"schema_version": 1, **report}
     assert calls == ["snapshot"] * 3
 
 
@@ -202,7 +202,7 @@ def test_system_check_preserves_health_failure_and_deep_probe_opt_in(monkeypatch
                  ["--json", "system", "check", "--deep"]):
         outcome = runner.invoke(cli.app, argv)
         assert outcome.exit_code == 1, (argv, outcome.output)
-        assert json.loads(outcome.stdout) == {"ok": False, "checks": []}
+        assert json.loads(outcome.stdout) == {"schema_version": 1, "ok": False, "checks": [], "error": {"code": "OPERATION_FAILED", "message": "Operation reported a required failure."}}
     assert calls == [False, False, True]
 
 

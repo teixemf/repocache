@@ -4,6 +4,36 @@
 **Tracking issue:** [#107](https://github.com/teixemf/repocache/issues/107)  
 **Status:** Partial implementation under review; not a released public CLI contract.
 
+## Versioned errors and exit statuses
+
+The [CLI error/exit contract v1](CLI_ERROR_CONTRACT_V1.md) defines the
+machine-readable `schema_version=1`, `ok` and stable `error.code/message`
+fields for all three executables, while retaining existing numeric exit
+semantics, including client `check=1/3` and signed updater `busy=75`.
+This is additive for successful JSON results, but intentionally changes
+legacy *string* JSON errors into a versioned structured object. Explicitly
+review script consumers before the first CLI v1 stable release.
+
+`tests/test_cli_error_contract.py` is a required CI gate. It proves parser
+failures are JSON with no host mutation when `--json` is requested; it does
+not validate future planned objects, native release activation or all
+third-party consumers. The server's authenticated `update install VERSION`
+extension in draft PR #114 must be reconciled to this contract before merge,
+including its existing synthetic signed-release tests.
+
+## Stage C signed update adapter after C8 merge
+
+The exact-version signed update entry point `repocache update install VERSION`
+reuses `updater.apply` and the authenticated upgrade chain. Under the merged
+[JSON/exit contract v1](CLI_ERROR_CONTRACT_V1.md), signed upgrade failures are
+versioned objects with `error.code` and `error.message`; existing
+`status`, `performed`, `retryable`, busy exit 75 and error exit 2
+remain compatible. Invalid or missing version arguments fail before update
+dispatch. Legacy `repocache update` is a transitional mutating exception.
+
+Parser and ephemeral signing tests are **not** evidence for native real
+Debian 13/AlmaLinux 10 owner-signed install, repair or rollback (C7).
+
 ## Source of truth and test gates
 
 - The approved **design** lives in `docs/architecture/CLI_ARCHITECTURE.md`.
@@ -39,74 +69,19 @@ repository mutation capability. The exact common numeric exit-code registry
 and versioned JSON envelopes are a separate integration dependency; payloads
 and existing error statuses remain unchanged.
 
-## Stage C — exact-version signed update adapter
-
-The canonical noninteractive entry point is now proposed as:
-
-```console
-repocache update install 0.5.0
-repocache update install 0.5.0 --json
-repocache --json update install 0.5.0
-repocache update install 0.5.0 --bundle ./repocache-v0.5.0.tar.gz \
-  --checksum ./repocache-v0.5.0.sha256 \
-  --manifest ./manifest.json --signature ./manifest.sig \
-  --wheelhouse ./wheels.tar.gz
-```
-
-**Important:** The new CLI accepts only an explicit, canonical stable `X.Y.Z`
-version, with no `v` prefix, pre-release suffix, leading-zero components,
-or unbounded numeric string. Missing/invalid version arguments are rejected
-*before* calling the updater; the underlying updater remains responsible
-for authenticating the publisher signature, metadata, signed wheelhouse,
-platform/upgrade compatibility, exclusive lock, recovery, staging and
-rollback. A local path option is **not** a bypass of these checks.
-
-The CLI adapter calls the **same** `updater.apply(...)` function used by
-the older `repocache update` entry point. For the transition, both
-`repocache update` and `repocache update --version X.Y.Z` retain their
-current mutating behavior, including their ability to select a version
-implicitly when one is omitted. This is a deliberate temporary compatibility
-exception to the v1 object-only-help rule, **not** a recommended pattern for
-new commands. After an approved deprecation/migration with two stable
-release notices once the CLI is stabilized, this exception can be retired.
-`repocache update list` and `repocache update check` remain read-only.
-
-Process exit statuses and the legacy updater's JSON fields are unchanged,
-including busy status 75. The new adapter adds a symbolic
-`INVALID_VERSION` JSON failure for malformed *provided* versions. Typer's
-missing-positional-argument parse failure remains a text usage diagnostic;
-fully structured JSON for parser failures and an agreed cross-executable
-numeric exit-code registry are separate future contract work, not falsely
-claimed as complete by this stage. The CLI never prints credentials and
-must not prompt or elevate privileges.
-
-The mandatory CLI conformance CI gate includes
-`tests/test_cli_update_install.py` on Python 3.12 and 3.13. Tests cover
-mocked parser/adaptor behavior, real rejection of unsigned/incomplete offline
-inputs through `upgrade.upgrade()` and `signatures.verify()`, and a positive
-real OpenSSL/Ed25519 verification of a CI-only ephemeral signed source archive
-with policy extraction. The positive fixture deliberately substitutes a
-declared Debian 13 test-host identity and stubs dependency wheel extraction and
-the final installer so it **cannot mutate the host**. It is therefore **not**
-evidence that a genuine owner-signed release can be installed, activated,
-repaired or rolled back on native Debian 13 / AlmaLinux 10, nor that a public
-release has been signed with the owner-held private key.
-Coordinate the dependency-profile and release-acceptance gates with #82–#85;
-do not merge incompatible updater-branch changes without semantic review.
-
 ## Known transitional differences and dependent issues
 
 | Area | Current source | Next gated work |
 | --- | --- | --- |
-| Server legacy `metrics`, `status`, `health` | Preserved alongside the new `metrics show`, `system status`, `system check` read-only commands (merged PR #110) | Test equivalent data/exit behavior and maintain the existing TUI; remove no old command before an approved deprecation/migration |
+| Server legacy `metrics`, `status`, `health` | Preserved alongside the new `metrics show`, `system status`, `system check` read-only commands (pending PR merge) | Test equivalent data/exit behavior and maintain the existing TUI; remove no old command before an approved deprecation/migration |
 | `catalog publish` | Existing legacy manual export remains | #28/#95 must implement automatic read-only discovery before safely retiring the mutator; do not silently change authorization |
 | Repository add/update/remove/enable/disable | Planned in v1.0, **not implemented by this change** | #18/#28/#95/#96 lifecycle, privilege boundaries, migrations |
-| `repocache update --version` and bare `update` | Legacy compatibility entry points retained while `update install VERSION` adds explicit target validation (Stage C, pending PR) | Coordinate deprecation and full native signed-upgrade/rollback acceptance with #82–#85; no silent default-target behavior in the new verb |
+| `repocache update --version` | Existing signed updater contract retained | Align with `update install VERSION` only with authenticated updater compatibility and rollback acceptance (#82–#85) |
 | Client `sync --apply` | Still refused for safety in current released/merged source | #24: authenticated discovery, backups, verified rollback/fallback on both supported OSs |
 | Client `submit --send` | Not exposed in current `main` | Draft PR #46 and #22/#17/#49 security gates; no listener activation by CLI normalization |
 | Numeric exit statuses and JSON schema evolution | Existing codes and payload fields retained | Reconcile with concurrent client CLI architecture work; version schemas before an incompatible change |
-| Workstation Release Operator | Partial workstation-only executable integrated via #111/#124; `candidate stage` and `candidate publish` remain intentionally unavailable pending release gates | Continue #88 native signing and separately gated publication acceptance; preserve isolated dependencies and inventory |
-| Branch conflicts | Draft PRs #42/#52 may edit server CLI; PR #115 edits client | Rebase or consciously reconcile before integration, never blindly copy obsolete parser code |
+| Workstation Release Operator | No installed executable in `main` | #88: implement `environment check` / `candidate ...` and add to the inventory with signed owner approval safeguards |
+| Branch conflicts | Draft PRs #42/#52 edit server CLI; PR #46 edits client | Rebase or consciously reconcile before integration, never blindly copy obsolete parser code |
 
 ## Checklist for any future CLI PR
 

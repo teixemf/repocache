@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "docs/architecture/CLI_ARCHITECTURE.md",
   "status": "transitional-current-parser-inventory",
-  "note": "Reviewed transitional inventory, including partial workstation-only Release Operator. Canonical update install VERSION requires explicit signed target; legacy bare update remains temporarily compatible.",
+  "note": "Every registered root/object/action path must be reviewed; planned names are not assertions of implementation. Transitional root commands remain until a separately approved migration.",
   "server": [
     "cache",
     "cache stats",

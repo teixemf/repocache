@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import typer
+from typer.core import TyperGroup
+
+# Typer 0.26+ embeds Click; earlier supported Typer releases use Click directly.
+try:
+    from typer._click.exceptions import UsageError as _UsageError
+except ImportError:
+    from click.exceptions import UsageError as _UsageError
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
@@ -21,7 +29,39 @@ from repocache.core import (
     metrics as metrics_report, nginx_config, service_status, snapshot, _tail_bytes,
 )
 
-app = typer.Typer(help="REPOCACHE Control Center | NGINX proxy CLI/TUI management",
+class _StructuredErrorGroup(TyperGroup):
+    """Emit one JSON error for parser failures without dispatching a command.
+
+    The legacy text parser remains unchanged. Typer versions can use Click
+    directly or Typer's vendored Click; only usage exceptions are intercepted.
+    """
+
+    def main(self, args=None, prog_name=None, complete_var=None,
+             standalone_mode=True, **extra):
+        arguments = list(sys.argv[1:] if args is None else args)
+        if "--json" not in arguments:
+            return super().main(args=args, prog_name=prog_name,
+                                complete_var=complete_var,
+                                standalone_mode=standalone_mode, **extra)
+        try:
+            result = super().main(args=arguments, prog_name=prog_name,
+                                  complete_var=complete_var,
+                                  standalone_mode=False, **extra)
+        except _UsageError as exc:
+            emit_json({"schema_version": 1, "ok": False, "error": {
+                "code": "INVALID_ARGUMENT", "message": exc.format_message()}})
+            if standalone_mode:
+                raise SystemExit(2) from None
+            raise typer.Exit(2) from None
+        if isinstance(result, int) and result:
+            if standalone_mode:
+                raise SystemExit(result)
+            raise typer.Exit(result)
+        return result
+
+
+app = typer.Typer(cls=_StructuredErrorGroup,
+                  help="REPOCACHE Control Center | NGINX proxy CLI/TUI management",
                   add_completion=True, rich_markup_mode="rich", invoke_without_command=True)
 repos_app = typer.Typer(help="Inspect and test repositories", no_args_is_help=True)
 cache_app = typer.Typer(help="Inspect cache and storage", no_args_is_help=True)
@@ -57,16 +97,17 @@ def _json_enabled(ctx: typer.Context, local: bool = False) -> bool:
 def _require_text_output(ctx: typer.Context) -> None:
     """Fail before side effects for a command without a finite JSON contract."""
     if _json_enabled(ctx):
-        emit_json({"ok": False, "error": {
+        emit_json({"schema_version": 1, "ok": False, "error": {
             "code": "UNSUPPORTED_OUTPUT_MODE",
             "message": "This command does not support --json."}})
         raise typer.Exit(2)
 
 
 def _cli_error(ctx: typer.Context, code: str, message: str,
-               status: int = 1, local_json: bool = False) -> None:
-    if _json_enabled(ctx, local_json):
-        emit_json({"ok": False, "error": {"code": code, "message": message}})
+               status: int = 1) -> None:
+    if _json_enabled(ctx):
+        emit_json({"schema_version": 1, "ok": False,
+                   "error": {"code": code, "message": message}})
     else:
         typer.echo(f"ERROR [{code}]: {message}", err=True)
     raise typer.Exit(status)
@@ -77,7 +118,21 @@ def settings() -> Settings:
 
 
 def emit_json(data: Dict[str, Any]) -> None:
-    print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+    """Add v1 fields without discarding the operation's established fields."""
+    result = {"schema_version": 1, **data}
+    result.setdefault("ok", not bool(result.get("error")))
+    if result["ok"] is False:
+        error = result.get("error")
+        if not isinstance(error, dict):
+            code = {"busy": "BUSY", "offline": "OFFLINE",
+                    "authentication-required": "AUTHENTICATION_REQUIRED"}.get(
+                        result.get("status"), "OPERATION_FAILED")
+            result["error"] = {
+                "code": code,
+                "message": str(error) if error is not None
+                else "Operation reported a required failure.",
+            }
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
 def human_bytes(value: Any) -> str:
