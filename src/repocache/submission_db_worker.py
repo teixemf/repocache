@@ -280,7 +280,7 @@ def _worker_main(path: Path) -> int:
         return 3
     _check_directory(path.parent, account.pw_uid)
     _check_queue(path, account.pw_uid)
-    os.umask(0o077)
+    previous_umask = os.umask(0o077)
     try:
         connection = sqlite3.connect(path, timeout=3, isolation_level=None)
         _check_queue(path, account.pw_uid)
@@ -356,6 +356,7 @@ def _worker_main(path: Path) -> int:
     finally:
         if "connection" in locals():
             connection.close()
+        os.umask(previous_umask)
 
 
 if __name__ == "__main__":
