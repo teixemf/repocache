@@ -156,3 +156,54 @@ def test_api_redirect_response_fails_closed(monkeypatch):
     monkeypatch.setattr(mod, "build_opener", lambda klass: FakeOpener())
     with pytest.raises(mod.MilestonePolicyError, match="HTTP 302"):
         mod.api_request("https://api.github.com/repos/teixemf/repocache/issues/24", "fake-token")
+
+
+def test_api_403_reports_only_safe_github_diagnostics(monkeypatch):
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            assert timeout == 15
+            raise HTTPError(
+                request.full_url,
+                403,
+                "Resource not accessible by integration",
+                {
+                    "X-GitHub-Request-Id": "1234:ABCD:0F",
+                    "X-Accepted-GitHub-Permissions": "issues=write; pull_requests=write",
+                    "X-Untrusted-Header": "ghs-secret-must-not-appear",
+                },
+                BytesIO(b'{"message":"ghs-secret-must-not-appear"}'),
+            )
+
+    monkeypatch.setattr(mod, "build_opener", lambda klass: FakeOpener())
+    with pytest.raises(mod.MilestonePolicyError) as info:
+        mod.api_request(
+            "https://api.github.com/repos/teixemf/repocache/issues/159",
+            "fake-token",
+            "PATCH",
+            {"milestone": 2},
+        )
+    message = str(info.value)
+    assert "HTTP 403 on PATCH" in message
+    assert "request_id=1234:ABCD:0F" in message
+    assert "accepted_permissions=issues=write; pull_requests=write" in message
+    assert "ghs-secret" not in message
+    assert "fake-token" not in message
+
+
+def test_api_diagnostics_reject_control_characters_and_untrusted_header_values():
+    from urllib.error import HTTPError
+
+    error = HTTPError(
+        "https://api.github.com/repos/teixemf/repocache/issues/159",
+        403,
+        "Forbidden",
+        {
+            "X-GitHub-Request-Id": "1234:ABCD\nTOKEN=secret",
+            "X-Accepted-GitHub-Permissions": "issues=write\rsecret=write",
+        },
+        None,
+    )
+    assert mod.safe_http_diagnostics(error) == ""
