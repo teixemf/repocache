@@ -57,7 +57,7 @@ version assertions.
 | Online source-only release #84 and installer #83 / PRs #99–#104 | **v0.7.0** issue milestones (NOT v0.6.0) | Stacked DRAFT series; DO NOT route to `integration/v0.6.0` by historical version assumptions. Resolve roadmap/milestone discrepancy with maintainer first; trust, signing, activation and review still NOT VERIFIED |
 | CLI/TUI regression #85 / PR #106; sandbox #112 / PR #113; signed candidate preflight #84 / PR #151 | **v0.7.0** issue milestones (NOT v0.6.0) | Stacked DRAFT security chain; do not change milestone or target branch without an explicit roadmap decision and verified dependent acceptance |
 | Real PyPI compatibility PR #143 (related #83/#85) | Already in `main` | **PR merged**, parent issues #83/#85 are OPEN at **v0.7.0**; upstream-wheel CI evidence is not full installer/release acceptance |
-| PR milestone policy #145 / PR #147 and live gate #148 / PR #163 | Shared repo governance | **Completed and merged where applicable**; keep the current trusted-default-branch privilege model; milestone check remains advisory until a separately approved ruleset change |
+| PR milestone policy #145 / PR #147 and live gate #148 / PR #163 | Shared repo governance | **Completed and merged where applicable**; preserve the trusted-default-branch permission model. **Current GitHub ruleset #25791816 requires** `Require milestone or unambiguous primary issue` for `main` only (observed 2026-10-24); it does not protect the two integration branches. Do not change this live policy silently |
 
 This table is a **routing shortlist**, not an authorization or a complete
 inventory of open PRs. GitHub currently assigns #83/#84/#85/#112 to v0.7.0,
