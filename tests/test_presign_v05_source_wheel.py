@@ -179,3 +179,39 @@ def test_offline_owner_signer_refuses_unreviewed_wheel_before_key_access(
             commit="a" * 40, run_id="1", attempt="1", password=b"test-only",
             check_github=False,
         )
+
+
+@pytest.mark.parametrize("attack", ["untracked", "missing"])
+def test_owner_signer_requires_exact_git_tracked_module_set_before_github(
+        checked_source, monkeypatch, attack):
+    """Local bytes matching a tampered wheel are not proof of reviewed Git code."""
+    _, root, modules = checked_source
+    signer = importlib.import_module("offline_sign_release")
+    monkeypatch.setattr(signer, "ROOT", root)
+    if attack == "untracked":
+        (root / "src/repocache/unreviewed.py").write_text(
+            "def unaudited(): return True\n")
+    else:
+        (root / "src/repocache/submissions.py").unlink()
+
+    def fake_command(argv, **_kw):
+        # Fail if GitHub is contacted before locally refusing the source drift.
+        if argv[0] != "git":
+            pytest.fail("Unreviewed source must not trigger GitHub API reads")
+        if "rev-parse" in argv:
+            return b"a" * 40 + b"\n"
+        if "status" in argv:
+            return b""
+        if "ls-files" in argv:
+            return b"\x00".join(
+                p.replace("repocache/", "src/repocache/", 1).encode()
+                for p in sorted(modules)
+            ) + b"\x00"
+        pytest.fail("Unexpected Git subcommand")
+
+    monkeypatch.setattr(signer, "_read_only_command", fake_command)
+    with pytest.raises(signer.OfflineSigningError,
+                       match="differ from the reviewed Git commit"):
+        signer.validate_candidate_identity(
+            root / "repocache-v0.5.0.tar.gz", "a" * 40, "1", "1"
+        )
