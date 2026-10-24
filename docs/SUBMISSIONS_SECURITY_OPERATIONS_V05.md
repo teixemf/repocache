@@ -41,6 +41,16 @@ Target access model (operator must validate on Debian 13 and AlmaLinux 10):
 | Backup/rollback snapshot | root:root | 0600 | Prevent unprivileged replacement or tampering |
 | Client handoff directory | root:root | 0700 | One-time out-of-band transport of a per-client secret |
 
+Offline credential issuance has an additional root trust boundary:
+`repocache-submissions-keys issue` refuses a root-owned keyring or client
+handoff directory if **any higher ancestor** is controlled or renamable by
+an unprivileged local user. The client handoff directory must be root-owned
+and private (0700); the keyring directory must be root-owned and not
+group/other-writable. A higher root-owned sticky ancestor is permitted
+only above these protected directories. These are code and synthetic-CI
+checks; actual target filesystem, service account and SELinux protection
+remain **NOT VERIFIED** before production activation (#49).
+
 The account must be fixed and non-login, and the service must run as that UID.
 The example unit has `NoNewPrivileges`, a strict read-only system tree,
 restricted address families, resource ceilings and writes only under the
