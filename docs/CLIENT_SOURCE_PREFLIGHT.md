@@ -74,9 +74,9 @@ No host package sources are changed.
    boundary, booted systemd/SELinux enforcing machines, privileged rollback,
    power-loss durability, disk-full handling and attacker-controlled
    filesystem races remain **NOT VERIFIED**.
-6. The open [#131](https://github.com/teixemf/repocache/pull/131)
-   preparation and [#132](https://github.com/teixemf/repocache/pull/132)
-   sandbox atomic-write experiment are independent, unmerged components.
+6. The merged [#131](https://github.com/teixemf/repocache/pull/131)
+   non-applying staging and [#132](https://github.com/teixemf/repocache/pull/132)
+   sandbox atomic-write experiment remain independent, isolated components.
    Neither may adopt this checker as a general write authorization.
 7. [#64](https://github.com/teixemf/repocache/issues/64) governs separate
    server-side NGINX reload privilege delegation and must not be conflated
