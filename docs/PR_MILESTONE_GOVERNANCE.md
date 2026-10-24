@@ -39,3 +39,11 @@ python -m pytest -q tests/test_pr_milestone_policy.py
 ```
 
 The standard Python test matrix includes this test file when merged. Running local tests does **not** establish live GitHub Actions event or permission behavior. A post-merge pilot PR with an issue in the same milestone, another PR with conflicting milestones and a PR with a manually assigned milestone should be checked before claiming the automation is fully operational.
+
+## Live HTTP 403 diagnostics (issue #148)
+
+The initial default-branch integration smoke ran under a GitHub Actions token which the runner reported as `Contents: read` and `Issues: write`. An automatic PR milestone PATCH still returned HTTP 403, so assignment is **NOT VERIFIED / FAIL** despite passing offline tests. See [issue #148](https://github.com/teixemf/repocache/issues/148) and [pilot #159](https://github.com/teixemf/repocache/pull/159).
+
+A denied GitHub API request now includes only syntactically validated `X-GitHub-Request-Id` and `X-Accepted-GitHub-Permissions` headers if available. It never prints the response body, token, Authorization header, or arbitrary remote response text. These diagnostics are for administrator investigation, not permission to broaden the workflow token or relax branch policy. The new script will run in `pull_request_target` only after a separately reviewed and authorized merge to the protected default branch.
+
+Keep the milestone status check **advisory** until real auto-assignment succeeds. Maintainers must explicitly decide whether to make this check required and validate enforcement independently.
