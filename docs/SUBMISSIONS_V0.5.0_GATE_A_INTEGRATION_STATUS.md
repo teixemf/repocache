@@ -72,3 +72,30 @@ Gate A criterion is PASS. Post-merge recheck protected main before closing
 activation remain independently blocking; a green synthetic suite cannot
 substitute for them. No signing, tag, release, key handling or deployment
 is part of this checkpoint.
+
+
+## 2026-10-24 security review follow-up (PR #128)
+
+This section supersedes the earlier snapshot for the specific findings below;
+it does **not** declare overall Gate A acceptance. Developer-led review is
+not an independent audit.
+
+| Finding / criterion | Status | Evidence / remaining limit |
+| --- | --- | --- |
+| Client protected credential read/open race | **PASS (code + synthetic tests)** | Recheck mode, UID, size and `(st_dev, st_ino)` using `fstat` on the opened no-follow descriptor. Two replacement-race tests refuse an alternate 0600 inode and an insecure 0644 inode. |
+| Intake protected keyring read/open race | **PASS (code + synthetic test)** | Same opened-inode checks on HMAC keyring; replacement between `lstat` and `open` is refused. |
+| Retention and forged intake-writable decision state | **PASS (code + synthetic tests)** | Retention acquires the root journal lock, checks every purge candidate against its authenticated root receipt and uses the receipt timestamp, never SQLite `changed`, to authorize expiry. A forged `REJECTED` row without a root receipt aborts the entire transaction; a backdated SQLite row with a recent root receipt is retained. PENDING rows remain outside purge selection. |
+| Existing authentication, bounded JSON, nonce replay, TLS/redirect, TUI and recovery tests | **PASS on prior exact head only** | Existing test modules exercise these cases. They must pass again on the final documentation HEAD; CI success alone is not an independent security audit. |
+| Native root/intake UID isolation, actual TLS/NGINX/systemd/SELinux and operational backup custody | **NOT VERIFIED** | Separate Gate B #49; endpoint remains disabled. No production or real host changes. |
+| Availability of unreviewed proposals after full compromise of the intake UID/SQLite | **RESIDUAL RISK / NOT VERIFIED** | The service-writable database can lose or hide pending records; the protected root journal prevents forged administrator decisions but is not a durable intake-side submission ledger. Do not present absence of visible pending rows as proof that no submissions ever existed. |
+| PR #128 exact-final-head checks, full security review and ruleset/reviews | **NOT VERIFIED until final head** | The original 9 required GitHub Actions contexts must be SUCCESS on the final head and strict up-to-date base; check review threads and merge policy immediately before any ready/merge. |
+
+The pre-documentation code HEAD for this follow-up is
+`69a1a5b17256f88495e063c54be3d01e6eb59f92`. Its CI was still
+running when this section was prepared; do **not** reuse an earlier
+commit's 9/9 result as proof for this or the new documentation commit.
+
+No release signer key, tag, signing, Draft, publication, production
+activation, or branch-protection bypass is authorized by this checkpoint.
+Original parent #15/#16/#17/#22/#23/#57 and child #127 remain OPEN until
+their respective full criteria have evidence.
