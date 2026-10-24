@@ -115,6 +115,40 @@ def test_receipt_name_index_rejects_missing_or_extra_chain_member(setup):
         journal.read(ident, known_names=correct | {f"{ident}.0009.json"})
 
 
+def test_root_approval_rejects_metadata_changed_since_tui_snapshot(setup):
+    queue, ident, _ = setup
+    first = queue.pending()[0]
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET items=? WHERE id=?", (
+            json.dumps([{
+                "type": "apt-list",
+                "url": "https://replacement.example.org/private/",
+                "insecure_http": False,
+            }]), ident,
+        ))
+    # A mutable SQLite record changed without changing its version. An
+    # administrator's earlier approval must not apply to unseen metadata.
+    with pytest.raises(SubmissionError, match="stale_decision"):
+        queue.decide(
+            ident, "review", expected_version=first["version"],
+            expected_digest=first["metadata_digest"],
+        )
+    assert queue.audit(ident) == []
+
+
+@pytest.mark.parametrize("payload", (
+    '[{"type":"apt-list","url":"https://bad.example.org/\\\\path","insecure_http":false}]',
+    '[{"type":"apt-list","url":"https://good.example.org/","insecure_http":"false"}]',
+    '[{"type":"apt-list","url":"https://good.example.org/","insecure_http":false,"unsafe":true}]',
+))
+def test_untrusted_sqlite_repository_cannot_reach_administrator_tui(setup, payload):
+    queue, ident, _ = setup
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET items=? WHERE id=?", (payload, ident))
+    with pytest.raises(SubmissionError, match="invalid_stored_proposal"):
+        queue.pending()
+
+
 def test_restored_old_state_cannot_erase_valid_receipt(setup):
     queue, ident, _ = setup
     queue.decide(ident, "reject", expected_version=0)
