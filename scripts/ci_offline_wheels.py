@@ -50,6 +50,12 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         raise RuntimeError("Missing reviewed first-party Python source")
     with zipfile.ZipFile(application_wheel) as application:
         members = application.infolist()
+        # The signed wheelhouse caps compressed bytes, but ZIP permits tiny
+        # compressed members to expand to enormous payloads. Refuse before
+        # ZipFile.read() can allocate untrusted decompressed module data.
+        if (len(members) > 2000 or
+                sum(item.file_size for item in members) > 50_000_000):
+            raise RuntimeError("First-party wheel exceeds unpacked resource limits")
         names = [item.filename for item in members]
         # A duplicate ZIP member can make the reviewer read different bytes
         # than a wheel installer: refuse ambiguity before checking contents.
@@ -90,6 +96,10 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         if additional_payload:
             raise RuntimeError("First-party wheel contains unreviewed package payload")
         for name, expected in expected_modules.items():
+            # Check the ZIP central-directory length before decompressing:
+            # a forged module can be rehashed in the outer signed wheelhouse.
+            if application.getinfo(name).file_size != len(expected):
+                raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
             if application.read(name) != expected:
                 raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
 
