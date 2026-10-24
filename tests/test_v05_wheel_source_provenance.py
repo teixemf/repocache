@@ -106,3 +106,19 @@ def test_first_party_wheel_symlinked_python_module_is_rejected(source, tmp_path)
         archive.writestr(member, "repocache/__init__.py")
     with pytest.raises(RuntimeError, match="symlinked module"):
         builder.verify_first_party_modules(source, output)
+
+
+@pytest.mark.parametrize("unreviewed_member", (
+    "repocache/extension.so",
+    "repocache/compiled.pyc",
+    "repocache/loader.pth",
+    "repocache/config.bin",
+))
+def test_non_python_package_payload_is_not_audit_bypass(
+    source, tmp_path, unreviewed_member
+):
+    modules = {f"repocache/{p.name}": p.read_bytes()
+               for p in (source / "src/repocache").glob("*.py")}
+    modules[unreviewed_member] = b"unreviewed payload"
+    with pytest.raises(RuntimeError, match="unreviewed package payload"):
+        builder.verify_first_party_modules(source, wheel(tmp_path, modules))
