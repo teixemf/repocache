@@ -17,8 +17,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from repocache import (online_deps, online_generation, release_inventory,
-                       signed_dependency_staging, signatures)
+from repocache import (candidate_sandbox, online_deps, online_generation,
+                       release_inventory, signed_dependency_staging, signatures,
+                       updater)
 
 _MAX_BYTES = {
     "archive": release_inventory.MAX_ARCHIVE,
@@ -150,7 +151,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (CandidateInputError, release_inventory.InventoryError,
             signed_dependency_staging.PreparationError, signatures.SignatureError,
-            online_generation.PreparationInstallError, OSError, ValueError) as exc:
+            online_generation.PreparationInstallError, online_deps.DependencyError,
+            candidate_sandbox.SandboxError, updater.UpdateError,
+            OSError, ValueError) as exc:
         # Avoid printing asset content, URLs, credentials or paths from errors.
         print("Candidate refused: " + type(exc).__name__, file=sys.stderr)
         return 1
