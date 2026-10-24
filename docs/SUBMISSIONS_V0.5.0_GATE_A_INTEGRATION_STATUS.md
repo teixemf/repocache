@@ -148,3 +148,15 @@ new commit jobs are completed and reviewed.
 **NOT VERIFIED**: full security Gate A #17, real owner-signed v0.4-to-v0.5
 release migration #76 and production activation #49.
 These remain distinct blockers. No signing, tag, release or listener enabled.
+
+
+## 2026-10-24 root backup path-ancestry hardening (#127)
+
+| Criterion | Status | Evidence / remaining boundary |
+| --- | --- | --- |
+| Privileged SQLite backup destination path | **PASS (code inspection and negative regression added; execution NOT VERIFIED)** | `SubmissionQueue.backup` now refuses relative destinations and non-root-owned, non-sticky writable or symlinked ancestors before creating the root-owned staging inode. A private final directory beneath a simulated user-owned ancestor is rejected without creating files; the existing positive backup test simulates a complete root-controlled ancestor chain. |
+| Exact final PR HEAD Python 3.12/3.13, offline wheelchain, disposable Debian13/Alma10 | **NOT VERIFIED** | Re-run and inspect all nine mandatory contexts on the resulting exact HEAD; prior green runs are not transferable. |
+| Complete Gate A #17/#57 review and merge policy | **NOT VERIFIED** | The backup path check addresses only one root filesystem trust boundary. Concurrent rename, native host privilege/SELinux, complete security review, approval and review-thread rules remain separately gated. |
+| Genuine signed candidate #76 and production Gate B #49 | **NOT VERIFIED** | No private signing material, tag, release, publication, endpoint or production configuration changed. |
+
+This is a scoped code hardening checkpoint, **not** final Gate A approval.
