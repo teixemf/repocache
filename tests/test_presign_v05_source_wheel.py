@@ -80,18 +80,18 @@ def file_zip(modules: dict[str, bytes], *, duplicate=False,
                    "Metadata-Version: 2.3\nName: repocache-control\n"
                    "Version: 0.5.0\n\n")
         entry_points = {
-            "entrypoint-modified": b"[console_scripts]\\nrepocache = repocache.submissions:intake\\n",
-            "entrypoint-extra": b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"
-                                b"unsafe = repocache.submissions:intake\\n",
-            "entrypoint-foreign-group": b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"
-                                        b"[other_group]\\nunsafe = repocache.cli:cli\\n",
-            "entrypoint-duplicate": b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"
-                                    b"repocache = repocache.submissions:intake\\n",
+            "entrypoint-modified": b"[console_scripts]\nrepocache = repocache.submissions:intake\n",
+            "entrypoint-extra": b"[console_scripts]\nrepocache = repocache.cli:cli\n"
+                                b"unsafe = repocache.submissions:intake\n",
+            "entrypoint-foreign-group": b"[console_scripts]\nrepocache = repocache.cli:cli\n"
+                                        b"[other_group]\nunsafe = repocache.cli:cli\n",
+            "entrypoint-duplicate": b"[console_scripts]\nrepocache = repocache.cli:cli\n"
+                                    b"repocache = repocache.submissions:intake\n",
         }
         if entrypoint_attack != "entrypoint-missing":
             z.writestr("repocache_control-0.5.0.dist-info/entry_points.txt",
                        entry_points.get(entrypoint_attack,
-                                        b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"))
+                                        b"[console_scripts]\nrepocache = repocache.cli:cli\n"))
         if alien_metadata:
             z.writestr("repocache_control-9.9.9.dist-info/entry_points.txt",
                        b"[console_scripts]\nunsafe=repocache.cli:app\n")
