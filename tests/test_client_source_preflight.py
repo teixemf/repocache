@@ -206,3 +206,70 @@ def test_native_root_requires_root_authorization(monkeypatch):
     monkeypatch.setattr(pre.os, "geteuid", lambda: 1001)
     with pytest.raises(pre.PreflightError, match="Root authorization"):
         pre.inspect_source(LIST, root=Path("/"))
+
+
+def test_source_path_deleted_before_first_stat_fails_closed(root, monkeypatch):
+    original_stat = pre.os.stat
+    removed = False
+
+    def stat_after_unlink(path, *args, **kwargs):
+        nonlocal removed
+        if (path == Path(LIST).name and kwargs.get("dir_fd") is not None
+                and kwargs.get("follow_symlinks") is False and not removed):
+            removed = True
+            (root / LIST).unlink()
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(pre.os, "stat", stat_after_unlink)
+    with pytest.raises(pre.PreflightError, match="pathname changed"):
+        pre.inspect_source(LIST, root=root)
+    assert removed
+
+
+def test_source_path_deleted_after_read_fails_closed(root, monkeypatch):
+    original_read = pre.os.read
+    removed = False
+
+    def read_and_unlink(fd, size):
+        nonlocal removed
+        data = original_read(fd, size)
+        if size == 65536 and not removed:
+            removed = True
+            (root / LIST).unlink()
+        return data
+
+    monkeypatch.setattr(pre.os, "read", read_and_unlink)
+    with pytest.raises(pre.PreflightError, match="drift"):
+        pre.inspect_source(LIST, root=root)
+    assert removed
+
+
+def test_source_read_io_error_is_stable_refusal(root, monkeypatch):
+    original_read = pre.os.read
+
+    def fail_source_read(fd, size):
+        if size == 65536:
+            raise OSError("simulated I/O failure")
+        return original_read(fd, size)
+
+    monkeypatch.setattr(pre.os, "read", fail_source_read)
+    with pytest.raises(pre.PreflightError, match="read failed"):
+        pre.inspect_source(LIST, root=root)
+
+
+def test_marker_path_removed_during_check_fails_closed(root, monkeypatch):
+    original_stat = pre.os.stat
+    removed = False
+
+    def marker_stat_after_unlink(path, *args, **kwargs):
+        nonlocal removed
+        if (path == pre.MARKER and kwargs.get("dir_fd") is not None
+                and kwargs.get("follow_symlinks") is False and not removed):
+            removed = True
+            (root / pre.MARKER).unlink()
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(pre.os, "stat", marker_stat_after_unlink)
+    with pytest.raises(pre.PreflightError, match="marker pathname changed"):
+        pre.inspect_source(LIST, root=root)
+    assert removed
