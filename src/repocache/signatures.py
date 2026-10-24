@@ -50,11 +50,20 @@ def _parse(raw: bytes) -> dict[str, Any]:
         raise SignatureError("Invalid signed release manifest") from exc
     if not isinstance(document, dict):
         raise SignatureError("Invalid signed release manifest object")
+    # Schema 1 is the immutable v0.4.0/v0.5.0 offline-wheelhouse envelope.
+    # Schema 2 is reserved for future dependency-profile negotiation. Parsing
+    # and authenticating it MUST NOT by itself authorize online installation.
     fields = {"schema", "key_id", "repository", "channel", "version",
               "commit", "archive", "archive_sha256", "policy_sha256",
               "wheelhouse_sha256", "issued_at", "expires_at"}
-    if set(document) != fields or type(document["schema"]) is not int or document["schema"] != 1:
+    schema = document.get("schema")
+    if type(schema) is not int or schema not in (1, 2):
         raise SignatureError("Unsupported signed release manifest schema")
+    if schema == 2:
+        fields |= {"dependency_profile", "dependency_lock_sha256",
+                   "asset_inventory_sha256"}
+    if set(document) != fields:
+        raise SignatureError("Unsupported signed release manifest fields")
     if (not isinstance(document["key_id"], str)
             or KEY_ID.fullmatch(document["key_id"]) is None
             or document["repository"] != "teixemf/repocache"
@@ -71,6 +80,25 @@ def _parse(raw: bytes) -> dict[str, Any]:
     wheel = document["wheelhouse_sha256"]
     if wheel is not None and (not isinstance(wheel, str) or HEX64.fullmatch(wheel) is None):
         raise SignatureError("Invalid signed dependency digest")
+    if schema == 2:
+        # Immutable v0.4.0 can bootstrap only a schema-1 signed v0.5.0.
+        # A v0.5.0 schema-2 envelope would strand installed clients.
+        if tuple(map(int, document["version"].split("."))) < (0, 6, 0):
+            raise SignatureError("Future dependency profile requires v0.6.0 or later")
+        profile = document["dependency_profile"]
+        lock = document["dependency_lock_sha256"]
+        inventory = document["asset_inventory_sha256"]
+        if not isinstance(inventory, str) or HEX64.fullmatch(inventory) is None:
+            raise SignatureError("Invalid signed release asset inventory digest")
+        if profile == "legacy-offline-wheelhouse":
+            if wheel is None or lock is not None:
+                raise SignatureError("Invalid signed legacy dependency profile")
+        elif profile == "online-hash-locked-wheels":
+            if (wheel is not None or not isinstance(lock, str)
+                    or HEX64.fullmatch(lock) is None):
+                raise SignatureError("Invalid signed online dependency profile")
+        else:
+            raise SignatureError("Unsupported signed dependency profile")
     if (type(document["issued_at"]) is not int or type(document["expires_at"]) is not int
             or document["issued_at"] < 0 or
             document["expires_at"] <= document["issued_at"]):

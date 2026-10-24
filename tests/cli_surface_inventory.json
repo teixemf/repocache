@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "docs/architecture/CLI_ARCHITECTURE.md",
   "status": "transitional-current-parser-inventory",
-  "note": "Reviewed transitional inventory. Canonical 'update install VERSION' requires an explicit release while legacy bare 'update' remains temporarily operational; no new command automatically authorizes unsigned or unverified update behavior.",
+  "note": "Reviewed transitional inventory, including partial workstation-only Release Operator. Canonical update install VERSION requires explicit signed target; legacy bare update remains temporarily compatible.",
   "server": [
     "cache",
     "cache stats",
@@ -59,7 +59,17 @@
     "repos sync"
   ],
   "release_operator": {
-    "status": "planned-not-installed",
-    "issue": 88
+    "status": "partial-workstation-only",
+    "issue": 88,
+    "paths": [
+      "environment",
+      "environment check",
+      "candidate",
+      "candidate prepare",
+      "candidate sign",
+      "candidate stage",
+      "candidate status",
+      "candidate publish"
+    ]
   }
 }

@@ -5,6 +5,7 @@ The CLI never invents metrics; missing data is reported as unavailable.
 from __future__ import annotations
 
 import glob
+import gzip
 import json
 import queue
 import threading
@@ -12,6 +13,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import ssl
 import subprocess
 import time
@@ -288,17 +290,108 @@ def _number(raw: Any) -> Optional[float]:
 
 def _tail_bytes(path: Path, max_bytes: int = 8_000_000) -> Tuple[List[str], bool]:
     """Read at most max_bytes, discarding an initial incomplete line."""
-    with path.open("rb") as stream:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError("Metrics source is not a regular file")
         stream.seek(0, os.SEEK_END)
         size = stream.tell()
         offset = max(0, size - max_bytes)
         stream.seek(offset)
-        payload = stream.read()
+        payload = stream.read(max_bytes)
     if offset:
         newline = payload.find(b"\n")
         payload = payload[newline + 1:] if newline >= 0 else b""
     return payload.decode("utf-8", errors="replace").splitlines(), offset > 0
 
+
+def _metrics_repo_prefix(value: str) -> Optional[str]:
+    """Canonicalize a read-only repository filter to an exact route prefix."""
+    if not isinstance(value, str) or len(value) > 256:
+        return None
+    parts = value.strip("/").split("/")
+    if any(not part or part in (".", "..") or
+           not re.fullmatch(r"[A-Za-z0-9._~+-]+", part) for part in parts):
+        return None
+    return "/" + "/".join(parts) + "/"
+
+
+def _metrics_request_path(record: Dict[str, Any]) -> Optional[str]:
+    """Use only an absolute URI path, never a query string, to match a route."""
+    raw = _first(record, "uri", "request_uri", "path")
+    if not isinstance(raw, str) or len(raw) > 8192 or not raw.startswith("/"):
+        return None
+    path = raw.split("?", 1)[0]
+    if (not path or "\\" in path or "#" in path or "//" in path
+            or any(part in (".", "..") for part in path.split("/"))
+            or re.search(r"%(?:2f|5c|2e)", path, flags=re.I)):
+        return None
+    return path
+
+
+def _metrics_history_lines(path: Path) -> Tuple[List[str], bool, int, bool]:
+    """Read active and bounded plain/gzip numeric log rotations without symlinks.
+
+    This does not claim to cover all historical traffic or recover copytruncate
+    races; missing rotation generations and over-limit archives are explicit.
+    """
+    rotations: List[Tuple[int, Path, bool]] = []
+    incomplete = False
+    try:
+        for candidate in path.parent.iterdir():
+            prefix = path.name + "."
+            if not candidate.name.startswith(prefix):
+                continue
+            suffix = candidate.name[len(prefix):]
+            compressed = suffix.endswith(".gz")
+            number = suffix[:-3] if compressed else suffix
+            if re.fullmatch(r"[1-9][0-9]{0,2}", number):
+                rotations.append((int(number), candidate, compressed))
+    except OSError:
+        incomplete = True
+    rotations.sort(key=lambda x: (x[0], x[2]))
+    if len(rotations) > 16:
+        incomplete = True
+    selected = rotations[:16]
+    indices = [number for number, _, _ in selected]
+    if indices and indices != list(range(1, len(selected) + 1)):
+        incomplete = True
+    lines: List[str] = []
+    truncated = False
+    read_count = 0
+    for _, item, compressed in reversed(selected):
+        try:
+            if item.is_symlink() or not item.is_file():
+                incomplete = True
+                continue
+            if compressed:
+                descriptor = os.open(item, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(descriptor, "rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > 4_000_000:
+                        raise OSError("Compressed rotation is unsafe or too large")
+                    with gzip.GzipFile(fileobj=stream) as archive:
+                        payload = archive.read(4_000_001)
+                clipped = len(payload) > 4_000_000
+                if clipped:
+                    payload = payload[:4_000_000]
+                    payload = payload.rsplit(b"\n", 1)[0] + b"\n" if b"\n" in payload else b""
+                sample = payload.decode("utf-8", errors="replace").splitlines()
+            else:
+                sample, clipped = _tail_bytes(item, max_bytes=4_000_000)
+            read_count += 1
+            lines.extend(sample)
+            truncated |= clipped
+        except (OSError, EOFError):
+            incomplete = True
+    try:
+        sample, clipped = _tail_bytes(path)
+        read_count += 1
+        lines.extend(sample)
+        truncated |= clipped
+    except OSError:
+        incomplete = True
+    return lines, truncated, read_count, incomplete
 
 def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
             now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -309,17 +402,24 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
     now = now.astimezone(timezone.utc)
     cutoff = now - timedelta(hours=hours)
     base = {"hours": hours, "repo": repo, "source": str(settings.metrics_log),
-            "available": False, "requests": 0, "hit": 0, "miss": 0,
+            "available": False, "requests": 0, "hit": 0, "miss": 0, "bypass": 0,
             "cache_observed": 0, "hit_rate": None, "errors_5xx": 0,
             "bytes_sent": None, "bytes_observed": 0, "statuses_observed": 0,
             "avg_request_ms": None, "series": [], "series_unit": "day" if hours > 24 else "hour",
             "first_seen": None, "last_seen": None, "truncated": False,
-            "ignored_records": 0, "detail": ""}
-    if not settings.metrics_log.is_file():
-        base["detail"] = "Metrics log is missing or inaccessible"
+            "ignored_records": 0, "coverage": "unavailable", "history_files_read": 0,
+            "rotation_incomplete": False, "detail": ""}
+    prefix = _metrics_repo_prefix(repo) if repo is not None else None
+    if repo is not None and prefix is None:
+        base["detail"] = "Invalid repository route filter"
+        return base
+    if settings.metrics_log.is_symlink() or not settings.metrics_log.is_file():
+        base["detail"] = "Metrics log is missing, symlinked or inaccessible"
         return base
     try:
-        lines, truncated = _tail_bytes(settings.metrics_log)
+        lines, truncated, file_count, rotation_incomplete = _metrics_history_lines(settings.metrics_log)
+        base["history_files_read"] = file_count
+        base["rotation_incomplete"] = rotation_incomplete
     except OSError as error:
         base["detail"] = "Cannot read log: " + str(error)
         return base
@@ -342,13 +442,19 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
         if stamp is None:
             base["ignored_records"] += 1
             continue
-        if stamp < cutoff or stamp > now + timedelta(minutes=5):
+        if stamp < cutoff or stamp > now:
             continue
-        if repo:
-            uri = str(_first(record, "request_uri", "uri", "path", "request") or "")
-            needle = "/" + repo.strip("/").replace(":", "/") + "/"
-            if needle not in uri:
-                continue
+        if prefix is not None:
+            # A deployment-generated route label avoids retaining request paths.
+            # Legacy logs can use strict path-prefix matching as a fallback.
+            label = record.get("repocache_repository")
+            if label is not None:
+                if label != prefix:
+                    continue
+            else:
+                path = _metrics_request_path(record)
+                if path is None or not path.startswith(prefix):
+                    continue
         times.append(stamp)
         base["requests"] += 1
         hour = stamp.replace(minute=0, second=0, microsecond=0).isoformat()
@@ -383,6 +489,7 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
         base["errors_5xx"] = base["errors_5xx"] if base["statuses_observed"] else None
         base["hit"] = statuses["HIT"]
         base["miss"] = statuses["MISS"]
+        base["bypass"] = statuses["BYPASS"]
         if base["cache_observed"]:
             base["hit_rate"] = round(100 * base["hit"] / base["cache_observed"], 1)
         if durations:
@@ -402,9 +509,23 @@ def metrics(settings: Settings, hours: int = 24, repo: Optional[str] = None,
                                "requests": hourly[(start_hour + timedelta(hours=i)).isoformat()]}
                               for i in range(count)]
             base["series_unit"] = "hour"
-        base["detail"] = "Sampled the last 8 MB of log data; the full time range may not be covered"
+        base["coverage"] = ("truncated" if truncated else
+                            "partial" if (base["ignored_records"] or rotation_incomplete) else "sampled")
+        base["detail"] = ("Sampled current and at most 16 plain/gzip numbered "
+                          "rotations (bounded bytes per source); earlier history may be missing")
+        if rotation_incomplete:
+            base["detail"] += "; rotation gaps or unreadable archives were not fully read"
+        if base["ignored_records"]:
+            base["detail"] += "; malformed records were ignored"
     else:
+        base["coverage"] = ("truncated" if truncated else
+                            "invalid" if base["ignored_records"] else
+                            "partial" if rotation_incomplete else "no_observations")
         base["detail"] = "No valid timestamped requests in the selected time range"
+        if truncated:
+            base["detail"] += "; the log sample was truncated"
+        elif base["ignored_records"]:
+            base["detail"] += "; malformed records were ignored"
     return base
 
 

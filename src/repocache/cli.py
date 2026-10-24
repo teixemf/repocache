@@ -286,7 +286,8 @@ def show_metrics(ctx: typer.Context, period: str = typer.Option("24h", "--period
         return
     table = Table(title=f"◈ Metrics · {period} (log sample)", border_style="cyan", show_header=False)
     for label, value in [("Requests", str(data["requests"])), ("Cache HIT", str(data["hit"])),
-                         ("Cache MISS", str(data["miss"])),
+                         ("Cache MISS", str(data["miss"])), ("Cache BYPASS", str(data.get("bypass", 0))),
+                         ("Sample quality", data.get("coverage", "unknown")),
                          ("HIT rate", f"{data['hit_rate']}%" if data["hit_rate"] is not None else "N/A"),
                          ("HTTP 5xx", str(data["errors_5xx"]) if data["errors_5xx"] is not None else "N/A"),
                          ("Bytes served (when recorded)", human_bytes(data["bytes_sent"])),

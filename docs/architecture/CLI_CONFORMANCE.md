@@ -105,8 +105,8 @@ do not merge incompatible updater-branch changes without semantic review.
 | Client `sync --apply` | Still refused for safety in current released/merged source | #24: authenticated discovery, backups, verified rollback/fallback on both supported OSs |
 | Client `submit --send` | Not exposed in current `main` | Draft PR #46 and #22/#17/#49 security gates; no listener activation by CLI normalization |
 | Numeric exit statuses and JSON schema evolution | Existing codes and payload fields retained | Reconcile with concurrent client CLI architecture work; version schemas before an incompatible change |
-| Workstation Release Operator | No installed executable in `main` | #88: implement `environment check` / `candidate ...` and add to the inventory with signed owner approval safeguards |
-| Branch conflicts | Draft PRs #42/#52 edit server CLI; PR #46 edits client | Rebase or consciously reconcile before integration, never blindly copy obsolete parser code |
+| Workstation Release Operator | Partial workstation-only executable integrated via #111/#124; `candidate stage` and `candidate publish` remain intentionally unavailable pending release gates | Continue #88 native signing and separately gated publication acceptance; preserve isolated dependencies and inventory |
+| Branch conflicts | Draft PRs #42/#52 may edit server CLI; PR #115 edits client | Rebase or consciously reconcile before integration, never blindly copy obsolete parser code |
 
 ## Checklist for any future CLI PR
 
