@@ -279,3 +279,27 @@ def test_restore_refuses_service_owned_directory_below_sticky_parent(
         )
         with pytest.raises(SubmissionError, match="unsafe_restore_ancestor"):
             recovery._trusted_private_dir(private, service_owned=True)
+
+
+def test_restore_refuses_service_planted_fifo_without_blocking(
+    restored_state, monkeypatch
+):
+    dbfile, backup, first, second = restored_state
+    dbfile.unlink()
+    os.mkfifo(dbfile, 0o600)
+    # A FIFO opened without O_NONBLOCK would hang the privileged restore.
+    real_open = recovery.os.open
+    opened_fifo = []
+
+    def verify_nonblocking(path, flags, *args, **kwargs):
+        if Path(path) == dbfile:
+            opened_fifo.append(True)
+            assert flags & os.O_NONBLOCK
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(recovery.os, "open", verify_nonblocking)
+    with pytest.raises(SubmissionError, match="unsafe_current_store"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert opened_fifo and dbfile.is_fifo()
