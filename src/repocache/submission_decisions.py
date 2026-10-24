@@ -109,8 +109,12 @@ class DecisionJournal:
         except OSError as exc:
             raise DecisionError("decision_store_unavailable") from exc
 
-    def read(self, ident: str) -> list[dict]:
-        """Read and validate all historical receipts; requires journal lock."""
+    def read(self, ident: str, *, known_names: set[str] | None = None) -> list[dict]:
+        """Validate a receipt chain under the journal lock.
+
+        A caller checking many proposals can pass one already enumerated name
+        set for this ID, avoiding O(proposals * directory entries) scans.
+        """
         if not isinstance(ident, str) or not _HEX_ID.fullmatch(ident):
             raise DecisionError("invalid_decision_id", 400)
         chain = []
@@ -162,11 +166,16 @@ class DecisionJournal:
                 raise DecisionError("decision_journal_corrupt") from exc
         # Refuse an overlong chain or hidden later receipts; never ignore a
         # corrupt/noncontiguous sequence and silently trust an older version.
-        for item in self.directory.iterdir():
-            name = item.name
-            if name.startswith(ident + ".") and name.endswith(".json"):
-                if name not in {f"{ident}.{i:04d}.json" for i in range(1, len(chain) + 1)}:
-                    raise DecisionError("decision_journal_gap")
+        expected_names = {f"{ident}.{i:04d}.json" for i in range(1, len(chain) + 1)}
+        if known_names is None:
+            relevant_names = {
+                entry.name for entry in self.directory.iterdir()
+                if entry.name.startswith(ident + ".") and entry.name.endswith(".json")
+            }
+        else:
+            relevant_names = known_names
+        if relevant_names != expected_names:
+            raise DecisionError("decision_journal_gap")
         return chain
 
     def append(self, ident: str, action: str, metadata_digest: str,
