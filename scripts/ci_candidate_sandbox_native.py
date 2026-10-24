@@ -141,6 +141,45 @@ print('SANDBOX_ESCAPE_PROBES_PASS')
             listener.close()
             outer_process.terminate()
             outer_process.wait(timeout=10)
+
+        # Real-kernel orphan test: time out a candidate which deliberately
+        # launches a detached grandchild. bwrap --die-with-parent and its PID
+        # namespace must kill it even after subprocess.run kills bwrap itself.
+        # Only the disposable candidate workspace can contain the markers.
+        from repocache import updater as recovery_updater
+        import time
+        started = work / "timeout-probe-started"
+        escaped = work / "timeout-orphan-escaped"
+        child_code = (
+            "import pathlib,time;"
+            "time.sleep(4);"
+            f"pathlib.Path({str(escaped)!r}).write_text('escaped')"
+        )
+        console.write_text(
+            "#!/usr/bin/python3\\n"
+            "import pathlib,subprocess,sys,time\\n"
+            f"pathlib.Path({str(started)!r}).write_text('started')\\n"
+            f"subprocess.Popen([sys.executable, '-I', '-c', {child_code!r}], "
+            "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.DEVNULL, close_fds=True, "
+            "start_new_session=True)\\n"
+            "time.sleep(30)\\n", encoding="utf-8")
+        console.chmod(0o700)
+        try:
+            candidate_sandbox.run_isolated(
+                [str(console), "--version"], workspace=work, timeout=2)
+        except recovery_updater.UpdateError as exc:
+            check("timed out" in str(exc).lower(),
+                  "candidate overrun triggers the hard subprocess deadline")
+        else:
+            raise AssertionError("Long-running candidate unexpectedly finished")
+        check(started.is_file() and started.read_text() == "started",
+              "timeout probe actually launched inside its sandbox")
+        time.sleep(5)
+        check(not escaped.exists(),
+              "detached grandchild cannot outlive terminated bwrap sandbox")
+        check(marker.read_bytes() == original,
+              "time-limited candidate never changed active release state")
     finally:
         shutil.rmtree(work)
     check(marker.read_bytes() == original, "last known good state preserved")
