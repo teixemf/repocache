@@ -276,7 +276,8 @@ def _payload(distro: dict, repos: list[dict], server: str) -> dict:
 
 def _output(data: dict, json_mode: bool) -> None:
     if json_mode:
-        print(json.dumps(data, indent=2))
+        document = {"schema_version": 1, "ok": True, **data}
+        print(json.dumps(document, indent=2))
         return
     for item in data.get("checks", []):
         print(("OK" if item["ok"] else "WARN") + " " + item["name"] + ": " + item["detail"])
@@ -385,9 +386,18 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
                            "required": False, "detail": "Configured fallback check"})
             bad = any(r["enabled"] and r["compatibility"] == "invalid" for r in repos)
             code = 1 if not all(c["ok"] for c in checks if c.get("required", True)) else 3 if bad else 0
-            _output({"ok": code == 0, "os": distro, "server": server, "checks": checks,
-                     "repositories": repos, "compatibility_summary": _compatibility_summary(repos),
-                     "exit_code": code}, args.json)
+            result = {"ok": code == 0, "os": distro, "server": server,
+                      "checks": checks, "repositories": repos,
+                      "compatibility_summary": _compatibility_summary(repos),
+                      "exit_code": code}
+            if code:
+                result["error"] = {
+                    "code": "REPOSITORY_INVALID" if code == 3
+                    else "REQUIRED_CHECK_FAILED",
+                    "message": ("An enabled repository is invalid." if code == 3
+                                else "A required connectivity check failed."),
+                }
+            _output(result, args.json)
             return code
         if args.action in {"list", "ls"}:
             _output({"os": distro, "server": server, "repositories": repos}, args.json)
