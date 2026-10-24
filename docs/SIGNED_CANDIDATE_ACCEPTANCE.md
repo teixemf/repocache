@@ -76,6 +76,10 @@ all of the following on the actual candidate files:
 
 The trusted checkout and complete source commit must be independently
 authenticated by the existing protected release-operator identity checks.
+The owner signer additionally refuses first-party Python modules that are
+missing from the checked-out Git index or present as untracked/ignored local
+files. Matching a local changed wheel to an unreviewed working-tree file is
+not sufficient evidence of reviewed provenance.
 Do not sign from an altered/unreviewed checkout. The final owner-signed
 candidate must still be exercised through
 `signed-candidate-acceptance.yml` on Debian 13 and AlmaLinux 10 with
