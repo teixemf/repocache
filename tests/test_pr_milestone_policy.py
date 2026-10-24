@@ -156,3 +156,28 @@ def test_api_redirect_response_fails_closed(monkeypatch):
     monkeypatch.setattr(mod, "build_opener", lambda klass: FakeOpener())
     with pytest.raises(mod.MilestonePolicyError, match="HTTP 302"):
         mod.api_request("https://api.github.com/repos/teixemf/repocache/issues/24", "fake-token")
+
+
+def test_workflow_token_permission_scope_for_live_pr_updates():
+    """#148: PR targets require pull-requests:write, not issues:write."""
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/pr-milestone.yml"
+    ).read_text(encoding="utf-8")
+    permissions_block = workflow.split("\npermissions:\n", 1)[1].split("\nconcurrency:\n", 1)[0]
+    declared = {
+        line.strip() for line in permissions_block.splitlines()
+        if line.startswith("  ") and not line.lstrip().startswith("#")
+    }
+    assert declared == {"contents: read", "issues: read", "pull-requests: write"}
+    assert "issues: write" not in permissions_block
+
+
+def test_workflow_uses_trusted_default_branch_and_no_pr_head_code():
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/pr-milestone.yml"
+    ).read_text(encoding="utf-8")
+    assert "pull_request_target:" in workflow
+    assert "ref: ${{ github.event.repository.default_branch }}" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "github.event.pull_request.head" not in workflow
+    assert "github.head_ref" not in workflow
