@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+from types import SimpleNamespace
 import sqlite3
 from pathlib import Path
 
@@ -160,6 +162,42 @@ def test_root_owned_directory_is_mandatory_without_fixture_override(tmp_path, mo
     with pytest.raises(DecisionError, match="unsafe_decision_directory"):
         with DecisionJournal(root_dir).locked():
             pass
+
+
+@pytest.mark.parametrize(("attacker_uid", "ancestor_mode", "must_refuse"), (
+    (12345, 0o700, True),
+    (0, 0o777, True),
+    (0, 0o1777, False),
+))
+def test_decision_journal_refuses_unsafe_indirect_ancestors(
+    tmp_path, monkeypatch, attacker_uid, ancestor_mode, must_refuse
+):
+    """A root-only journal is unsafe if its parent can be renamed upstream."""
+    outer = tmp_path / "untrusted-ancestor"
+    parent = outer / "protected-parent"
+    journal = parent / "root-journal"
+    journal.mkdir(parents=True, mode=0o700)
+    parent.chmod(0o700)
+    journal.chmod(0o700)
+    original = Path.lstat
+
+    def fake_lstat(self, *args, **kwargs):
+        # Synthetic root-ownership: CI deliberately never needs root access.
+        observed = original(self, *args, **kwargs)
+        if self == outer:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | ancestor_mode,
+                                   st_uid=attacker_uid)
+        if self in {journal, parent, tmp_path}:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
+        return observed
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", fake_lstat)
+        if must_refuse:
+            with pytest.raises(DecisionError, match="unsafe_decision_directory"):
+                decisions._trusted_dir(journal)
+        else:
+            decisions._trusted_dir(journal)
 
 
 def test_nonroot_cannot_access_root_decision_journal(setup, monkeypatch):
