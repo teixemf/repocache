@@ -302,6 +302,8 @@ def _sync_plan(repos: list[dict], catalog: dict) -> dict:
             status, reason = "blocked", "credentials-or-parameterized-url"
         elif repo.get("weak_integrity"):
             status, reason = "blocked", "weak-package-or-transport-verification"
+        elif repo.get("type") not in ("apt-list", "apt-deb822", "dnf"):
+            status, reason = "blocked", "unsupported-repository-format"
         elif _classify_repository(repo, catalog) == "invalid":
             status, reason = "blocked", "invalid-or-unsupported-source"
         elif repo.get("indirect_mirror"):
@@ -312,6 +314,8 @@ def _sync_plan(repos: list[dict], catalog: dict) -> dict:
             status, reason = "review", "existing-cache-fallback-not-verified"
         elif not supported:
             status, reason = "skipped", "not-in-active-catalog"
+        elif _classify_repository(repo, catalog) != "supported":
+            status, reason = "blocked", "unapproved-additional-upstreams"
         else:
             status, reason = "candidate", "native-fallback-and-trust-not-verified"
         counts[status] = counts.get(status, 0) + 1
