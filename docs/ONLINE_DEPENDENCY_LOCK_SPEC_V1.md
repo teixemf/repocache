@@ -36,7 +36,7 @@ acceptance, and #83/#85 own installer and CLI/TUI regressions.
 ## Version and migration rules
 
 - **Published v0.4.0** has a publisher-signed manifest schema 1, compatibility policy schema 1 and offline wheelhouse. Its updater cannot parse a different compatibility schema or a source-only release.
-- The first **v0.5.0 bootstrap** MUST retain **policy schema 1**, with an explicit permitted upgrade from v0.4.0 and the genuine signed wheelhouse. Its updated runtime can subsequently recognize a future profile. Do not introduce a policy-schema 2 v0.5.0 artifact (#82, PR #90).
+- The first **v0.5.0 bootstrap** MUST retain **policy schema 1**, with an explicit permitted upgrade from v0.4.0 and the genuine signed wheelhouse. Its updated runtime can subsequently recognize a future profile. Do not introduce a policy-schema 2 v0.5.0 artifact (#82; consolidated draft PR #98).
 - **v0.6.0+ proposed online profile:** introduce a new signed release-manifest schema containing an additional \`dependency_lock_sha256\` and explicit \`online-hash-locked-wheels\` profile. This must be cryptographically verified with the independently provisioned Ed25519 publisher key BEFORE the installer parses the external lock or makes any network requests.
 - The production installer must **never** accept an arbitrary user-supplied digest as a substitute for an authenticated signed manifest. The digest is a caller precondition to the v1 lock parsing primitive; only the trusted updater may supply it after signature verification (#84).
 - No rewrite, substitution or re-signing of historic v0.4.0 assets. Genuine v0.4.0 → signed v0.5.0 → signed online v0.6.0 upgrade proof is mandatory, not a synthetic fixture.
@@ -104,12 +104,13 @@ The following structure uses fictitious digests and wheel URLs. It is **illustra
 
 ## Dependencies and open gates
 
-- [#82 / PR #90](https://github.com/teixemf/repocache/pull/90) prepares the legacy-only profile schema parser. It **does not** enable this v1 online lock.
+- [#82 / consolidated PR #98](https://github.com/teixemf/repocache/pull/98) prepares the legacy-only profile schema parser. It **does not** enable this v1 online lock.
 - [#83](https://github.com/teixemf/repocache/issues/83) owns strict lock parsing, immutable URL/byte verification, least-privilege download/staging and online installation. Tests must cover hostile JSON and URLs, poisoned environment variables, malicious wheel files, file integrity and network interruption.
 - [#84](https://github.com/teixemf/repocache/issues/84) owns authenticated on-disk release layout, real owner-signed manifest schema, artifact count, public asset inventory, first-party owned-wheel packaging, migration and final candidate acceptance.
 - [#85](https://github.com/teixemf/repocache/issues/85) owns exact-version CLI/TUI and native OS regression acceptance; [#53](https://github.com/teixemf/repocache/issues/53) owns future independently trusted installed-byte attestation.
 - [#81 / PR #87](https://github.com/teixemf/repocache/pull/87) owns the actual GitHub Dependabot configuration, dependency graph, advisory behavior and alerts. YAML existence alone does not prove those work.
-- [#76/#78 / PR #77](https://github.com/teixemf/repocache/pull/77) remain the authoritative genuine owner-signed v0.5.0 **legacy profile** release acceptance, with no signing key in CI.
+- [#76](https://github.com/teixemf/repocache/issues/76) remains OPEN for genuine owner-signed v0.5.0 **legacy profile** candidate acceptance. Its infrastructure child [#78](https://github.com/teixemf/repocache/issues/78) is complete and [PR #77](https://github.com/teixemf/repocache/pull/77) was merged; neither substitutes for the real signed candidate, and no signing key belongs in CI.
+- [#74](https://github.com/teixemf/repocache/issues/74) remains OPEN for the actual nonpublishing Node24 `release.yml` artifact rehearsal and final sign-off after merged infrastructure [PR #116](https://github.com/teixemf/repocache/pull/116).
 - [#18/#25](https://github.com/teixemf/repocache/issues/25) own independently privileged native APT/DNF system prerequisites and NGINX services. No overlap with rootless Python application wheel installation.
 - **Review before merge:** approve and test full signed schema and transport policy, both real platform lock inventories, actual Dependabot ingestion, own release asset inventory, native signed-candidate install/upgrade/repair/rollback and existing security gates. Until then: **NOT VERIFIED**, no merge.
 

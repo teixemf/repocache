@@ -9,9 +9,9 @@
 v0.4.0 updater rejects schema 2 and requires signed wheelhouse bytes. Shipping
 schema 2 for v0.5.0 would strand currently installed clients regardless of the
 publisher's signature. After v0.5.0 is correctly bootstrapped, its updater
-may recognize a new, authenticated profile for **v0.6.0 or later**; current
-draft [PR #90](https://github.com/teixemf/repocache/pull/90) explicitly
-refuses unimplemented online profiles. Real owner-signed native candidate
+may recognize a new, authenticated profile for **v0.6.0 or later**; consolidated
+draft [PR #98](https://github.com/teixemf/repocache/pull/98) still
+refuses unimplemented online-profile installation. Real owner-signed native candidate
 evidence remains a distinct requirement (#76/#78).
 
 The declarative security contract is further detailed in
@@ -69,7 +69,7 @@ REPOCACHE v0.4.0 ships an immutable, owner-Ed25519-signed source release and its
 4. **Isolated runtime.** Acquire approved wheels in a private bounded download staging directory as a dedicated non-root service user; check signed lock and all sha256 bytes before an offline `pip install --no-index --only-binary=:all: --no-deps --require-hashes` into a fresh versioned virtual environment. The program-owned application wheel is itself signed/hash-pinned and installed without dependency resolution, build isolation or third-party build execution at runtime. `pip check`, CLI/JSON smoke and Textual/headless smoke precede atomic activation. Root only performs audited bootstrap/native-package operations.
 5. **Fail closed.** Missing dependencies, expired CA trust, HTTP/index/CDN redirects outside reviewed policy, missing wheels for target tags, malicious `PIP_*` env, altered hashes, insufficient space, incompatible versions and network outages must not change the active generation/NGINX/APT/DNF/TLS. Avoid arbitrary proxy environment inheritance and credential leakage. A separately acquired, verified exact offline wheel set supplied by the operator is a possible optional mode, **not** a REPOCACHE-uploaded wheelhouse.
 6. **Continuity.** A **schema-1 signed, legacy-compatible** transition runtime (target v0.5.0, [#82](https://github.com/teixemf/repocache/issues/82)) is needed because unchanged public v0.4.0 cannot bootstrap an unfamiliar wheelhouse-free manifest. v0.4.0 and any v0.5.0 legacy profile may continue to ship unchanged audited offline wheels. Target v0.6.0 introduces the wheelhouse-free online profile only after genuine signed-candidate migration/install/repair/rollback evidence ([#83–#85](https://github.com/teixemf/repocache/issues/83)).
-7. **Maintain monitoring.** Dependabot watches recognized Python project and lock manifests, plus pinned GitHub Actions ([#81](https://github.com/teixemf/repocache/issues/81), [#74](https://github.com/teixemf/repocache/issues/74)); alert/settings effectiveness needs real GitHub proof. Its update PRs are review candidates, not deployment triggers. Separate actual deployed-host inventories are the operator's responsibility.
+7. **Maintain monitoring.** Dependabot watches recognized Python project and lock manifests, plus pinned GitHub Actions ([#81](https://github.com/teixemf/repocache/issues/81), [#74](https://github.com/teixemf/repocache/issues/74)); alert/settings effectiveness needs real GitHub proof. Its update PRs are review candidates, not deployment triggers. [PR #116](https://github.com/teixemf/repocache/pull/116) completed the Node24 infrastructure migration, but parent [#74](https://github.com/teixemf/repocache/issues/74) remains OPEN for the real nonpublishing release-workflow artifact rehearsal and sign-off. Separate actual deployed-host inventories are the operator's responsibility.
 
 ## Release profiles and trust boundaries
 
@@ -165,7 +165,7 @@ A final spec MUST decide signature envelope, canonical JSON, whitelist of accept
 
 ## Migration / conflicting work
 
-- [#76](https://github.com/teixemf/repocache/issues/76), [#78](https://github.com/teixemf/repocache/issues/78), draft [PR #77](https://github.com/teixemf/repocache/pull/77): real, offline, eight-asset *v0.5.0* evidence remains required. New v0.6.0 online acceptance is separately implemented under #84; keep owner key off GitHub Actions. Do not weaken earlier gates.
+- [#76](https://github.com/teixemf/repocache/issues/76) remains OPEN; its independently testable infrastructure [#78](https://github.com/teixemf/repocache/issues/78) was completed and [PR #77](https://github.com/teixemf/repocache/pull/77) merged. Genuine owner-signed, offline, eight-asset *v0.5.0* candidate acceptance remains NOT VERIFIED. New v0.6.0 online acceptance is separately implemented under #84; keep owner key off GitHub Actions. Do not weaken earlier gates.
 - [#18](https://github.com/teixemf/repocache/issues/18), [#25](https://github.com/teixemf/repocache/issues/25), #26/#27/#31: system APT/DNF installation remains distinct from online app wheels; privileges, native verification, NGINX rollback and existing-service ownership are not weakened.
 - [#14](https://github.com/teixemf/repocache/issues/14), [#23](https://github.com/teixemf/repocache/issues/23), stacked draft [PR #52](https://github.com/teixemf/repocache/pull/52): preserve metrics/privacy and administrator authorization under Textual and CLI behavior. No UI rewrite.
 - [#10](https://github.com/teixemf/repocache/issues/10), [#53](https://github.com/teixemf/repocache/issues/53): authenticated runtime identity is not proof of compatible persistent-schema downgrade or independent installed-file attestation.
