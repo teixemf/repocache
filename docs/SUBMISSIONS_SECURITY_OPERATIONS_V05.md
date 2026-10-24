@@ -8,7 +8,7 @@ and the maintainer separately authorizes activation.
 
 ## Architecture and installation boundaries
 
-- `repocache-intake` binds **127.0.0.1:8765 only**, and only after the
+- The internal `repocache.intake_service` module binds **127.0.0.1:8765 only**, and only after the
   `--enable-local-only` argument, root-controlled enable marker and the
   dedicated unprivileged `repocache-intake` UID all validate. It never edits
   NGINX, catalog, APT or DNF sources; proposals remain PENDING.
@@ -58,8 +58,8 @@ Actions log, shell output or embedded installer.
 The explicit root-only command interface is:
 
 ```text
-repocache-submissions-keys issue --id CLIENT_ID --client-output /root/private/client.json --approve
-repocache-submissions-keys revoke --id CLIENT_ID --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_keys issue --id CLIENT_ID --client-output /root/private/client.json --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_keys revoke --id CLIENT_ID --approve
 ```
 
 The `--client-output` path must be new, private and inside an approved root-owned
@@ -84,9 +84,9 @@ The root-only tool is deliberately non-interactive and has no automatic
 periodic jobs:
 
 ```text
-repocache-submissions-admin backup --output /root/private/backup-YYYYMMDD.sqlite3 --approve
-repocache-submissions-admin maintain --retention-days 180 --approve
-repocache-submissions-admin restore --input /root/private/known-good.sqlite3 --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin backup --output /root/private/backup-YYYYMMDD.sqlite3 --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin maintain --retention-days 180 --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin restore --input /root/private/known-good.sqlite3 --approve
 ```
 
 - **Backup:** takes a SQLite-consistent online snapshot, checks integrity,
@@ -164,9 +164,9 @@ further decisions on that proposal. Investigate the store and verify the
 systemd intake service is **inactive** before explicitly reconciling:
 
 \`\`\`text
-repocache-submissions-admin journal-verify
-repocache-submissions-admin journal-backup --output-dir /root/private/decisions-2026-10-20 --approve
-repocache-submissions-admin reconcile --id <approved-proposal-id> --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin journal-verify
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin journal-backup --output-dir /root/private/decisions-2026-10-20 --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin reconcile --id <approved-proposal-id> --approve
 \`\`\`
 
 The private journal snapshot and the SQLite backup are separate recovery
@@ -175,3 +175,16 @@ automatic root journal creation, pruning, reconciliation or service startup.
 See [SUBMISSIONS_DECISION_JOURNAL_V05.md](SUBMISSIONS_DECISION_JOURNAL_V05.md)
 and Gate A #17 / Gate B #49. Real root-owned filesystem and SELinux
 enforcing validation remains **NOT VERIFIED**.
+
+## Canonical CLI reconciliation (2026-10-24)
+
+The approved public executables are exactly `repocache`, `repocache-client`,
+and the separately installed workstation-only `repocache-release`. The
+intake and root-only maintenance modules are internal implementation aids,
+not new public CLI families. The disabled service template uses the verified
+managed Python path rather than an uninstalled `repocache-intake` executable.
+Module invocations in this internal operations runbook are temporary
+maintenance mechanisms, **not** substitutes for the planned canonical
+`repocache requests` administration tree (#107/#15). Until that tree is
+fully accepted, do not advertise these internal modules as production-facing
+public user commands, and do not enable the optional service (#49).
