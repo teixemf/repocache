@@ -101,6 +101,7 @@ class RepoCacheApp(App):
         self._repo_activity: Dict[str, str] = {}
         self._metrics_filter: str | None = None
         self._proposal_versions: Dict[str, int] = {}
+        self._proposal_digests: Dict[str, str] = {}
         self._selected_proposal = ""
         self._review_confirmation: tuple[str, str] | None = None
         self._last_review: tuple[str, int] | None = None
@@ -424,6 +425,7 @@ class RepoCacheApp(App):
         self._selected_proposal = ""
         self._review_confirmation = None
         self._proposal_versions = {}
+        self._proposal_digests = {}
         label = self.query_one("#proposal-note", Static)
         if os.geteuid() != 0:
             label.update("Administrator OS identity required (root). No proposals shown.")
@@ -434,6 +436,7 @@ class RepoCacheApp(App):
         try:
             proposals = SubmissionQueue(SUBMISSION_QUEUE_PATH).pending()
             self._proposal_versions = {p["id"]: p["version"] for p in proposals}
+            self._proposal_digests = {p["id"]: p["metadata_digest"] for p in proposals}
             for proposal in proposals:
                 # Treat persisted queue rows as untrusted. A corrupt or
                 # service-UID-tampered record must fail closed, not crash TUI.
@@ -456,6 +459,7 @@ class RepoCacheApp(App):
         except (SubmissionError, OSError, ValueError, IndexError, KeyError, TypeError, sqlite3.Error):
             table.clear()
             self._proposal_versions = {}
+            self._proposal_digests = {}
             label.update("Cannot access a validated submission queue; no decisions permitted.")
 
     def _decide(self, action: str) -> None:
@@ -464,7 +468,8 @@ class RepoCacheApp(App):
             self.notify("Administrator review is unavailable.", severity="warning")
             return
         ident = self._selected_proposal
-        if not ident or ident not in self._proposal_versions:
+        if (not ident or ident not in self._proposal_versions or
+                ident not in self._proposal_digests):
             self.notify("Select a pending proposal first.", severity="warning")
             return
         if self._review_confirmation != (ident, action):
@@ -474,7 +479,9 @@ class RepoCacheApp(App):
         version = self._proposal_versions[ident]
         self._review_confirmation = None
         try:
-            SubmissionQueue(SUBMISSION_QUEUE_PATH).decide(ident, action, expected_version=version)
+            SubmissionQueue(SUBMISSION_QUEUE_PATH).decide(
+                ident, action, expected_version=version,
+                expected_digest=self._proposal_digests[ident])
         except (SubmissionError, OSError, ValueError):
             self.notify("Review could not be completed; refresh the queue.", severity="error")
             return
