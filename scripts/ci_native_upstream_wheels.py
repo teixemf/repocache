@@ -174,7 +174,7 @@ def main() -> None:
         "--require-hashes", "--no-input", "--no-cache-dir",
         "-r", str(tamper / "requirements.lock"),
     ], env=env, allow_failure=True)
-    require(rejected.returncode != 0 and "hash" in rejected.stdout.lower(),
+    require(rejected.returncode != 0 and "hash" in (rejected.stdout + rejected.stderr).lower(),
             "Corrupt wheel did not trigger an explicit pip hash failure")
     print(f"PASS: {target}: tampered wheel refused", flush=True)
 
