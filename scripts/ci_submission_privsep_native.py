@@ -127,9 +127,29 @@ def main() -> int:
             _run_as_intake(account.pw_uid, account.pw_gid,
                            "import os; p=" + repr(str(sidecar)) +
                            "; os.unlink(p) if os.path.lexists(p) else None")
+        # Exercise the real root-only staging/rollback copy and atomic
+        # handoff, still with no privileged SQLite open on the intake path.
+        from repocache.submission_recovery import restore_offline
+        rollback = restore_offline(queue_path, dest, approved=True,
+                                   service_stopped=lambda: True)
+        assert rollback.parent == backupdir and rollback.stat().st_uid == 0
+        assert queue.pending() == []
+        # A compromised intake UID can replace the DB with a FIFO. Root
+        # must refuse without blocking on a writer for the named pipe.
+        queue_path.unlink()
+        os.mkfifo(queue_path, 0o600)
+        try:
+            restore_offline(queue_path, dest, approved=True,
+                            service_stopped=lambda: True)
+        except SubmissionError as exc:
+            assert exc.code == "unsafe_current_store"
+        else:
+            raise AssertionError("root accepted service-planted FIFO")
+        finally:
+            queue_path.unlink()
     finally:
         sqlite3.connect = native_connect
-    print("PASS: real dropped UID, no root SQLite, decision journal, backup and hostile sidecar")
+    print("PASS: real dropped UID, no root SQLite, protected restore/rollback, FIFO refusal, journal, backup and hostile sidecar")
     return 0
 
 
