@@ -157,3 +157,42 @@ def test_unexpected_temp_inode_blocks_install_recovery(root):
         lab.recover_sandbox(root, ident)
     assert source.read_bytes() == BEFORE
     assert pending.exists()
+
+
+
+def test_interrupted_rollback_preserves_verified_user_xattrs(root):
+    import transaction_metadata_sandbox as metadata
+    source = root / SOURCE
+    try:
+        os.setxattr(source, "user.repocache-example", b"\x00private\xff")
+    except OSError:
+        pytest.skip("Filesystem lacks user-xattr support")
+    ident, _ = prepared(root)
+    metadata.snapshot_sandbox(root, ident)
+    attrs = {name: os.getxattr(source, name) for name in os.listxattr(source)}
+    lab.apply_sandbox(root, ident)
+    terminate_before_replace(root, ident, "rollback")
+    pending = source.parent / (".repocache-atomic-" + ident)
+    assert {name: os.getxattr(pending, name) for name in os.listxattr(pending)} == attrs
+    assert lab.recover_sandbox(root, ident)["status"] == "restored"
+    assert source.read_bytes() == BEFORE
+    assert {name: os.getxattr(source, name) for name in os.listxattr(source)} == attrs
+
+
+def test_interrupted_rollback_refuses_modified_temp_xattrs(root):
+    import transaction_metadata_sandbox as metadata
+    source = root / SOURCE
+    try:
+        os.setxattr(source, "user.repocache-example", b"original")
+    except OSError:
+        pytest.skip("Filesystem lacks user-xattr support")
+    ident, _ = prepared(root)
+    metadata.snapshot_sandbox(root, ident)
+    lab.apply_sandbox(root, ident)
+    terminate_before_replace(root, ident, "rollback")
+    pending = source.parent / (".repocache-atomic-" + ident)
+    os.setxattr(pending, "user.repocache-example", b"forged")
+    with pytest.raises(stage.StageError, match="attribute drift"):
+        lab.recover_sandbox(root, ident)
+    assert source.read_bytes() == AFTER
+    assert os.getxattr(source, "user.repocache-example") == b"original"
