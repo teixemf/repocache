@@ -121,3 +121,30 @@ This update supersedes earlier pre-remediation status for the specific root
 SQLite candidate. It does not mark all Gate A criteria PASS, authorize merge,
 or create any release/tag/signature/Draft/publication. See
 `docs/SUBMISSIONS_PRIVILEGE_SEPARATION_V05.md` for the design and limits.
+
+
+## 2026-10-24 CLI v1 submission exit-status reconciliation (#127)
+
+The previously documented **blocking numeric conflict** has been resolved in
+the proposed implementation, pending exact-head execution and review.
+The pre-v1 draft-only submission HTTP mapping returned numeric 4/5/6, which
+conflicted with the already integrated canonical
+`docs/architecture/CLI_ERROR_CONTRACT_V1.md` registry (0/1/2/3/75).
+Those remote-send errors were never released as stable public functionality.
+The canonical CLI v1 contract is authoritative here; no approved existing
+`check`/list/export/update numeric behavior is changed.
+
+An explicit `repos submit --send --token-file` refusal now returns **2**,
+with a v1 JSON object identifying `AUTHENTICATION_REQUIRED` (HTTP 401/403),
+`RATE_LIMITED` (HTTP 429), `OFFLINE` (TLS/transport errors), or
+`SUBMISSION_REJECTED` (other refused/invalid responses). Messages remain
+redacted and the operation never follows redirects or changes APT/DNF.
+Negative tests cover numeric 2 and differentiated symbolic JSON errors.
+
+**PASS (code inspection)**: no newly invented numeric statuses; `check` 1/3
+and updater 75 unaffected; explicit opt-in preserved.
+**NOT VERIFIED (exact-head CI)**: new unit and native regressions until the
+new commit jobs are completed and reviewed.
+**NOT VERIFIED**: full security Gate A #17, real owner-signed v0.4-to-v0.5
+release migration #76 and production activation #49.
+These remain distinct blockers. No signing, tag, release or listener enabled.
