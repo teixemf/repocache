@@ -6,6 +6,9 @@ on:
       - '.github/workflows/candidate-sandbox-native.yml'
       - 'scripts/ci_candidate_sandbox_container.sh'
       - 'scripts/ci_candidate_sandbox_native.py'
+      - 'scripts/ci_candidate_sandbox_wheels.py'
+      - 'deps/runtime-wheels.lock'
+      - 'src/repocache/application_wheel.py'
       - 'src/repocache/candidate_sandbox.py'
       - 'src/repocache/online_generation.py'
       - 'scripts/build_release.py'
@@ -18,7 +21,7 @@ jobs:
   patched-bubblewrap-escape-probes:
     name: Rootless namespace and escape probes (${{ matrix.distro }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +47,7 @@ jobs:
             test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
           fi
           sudo aa-status
-      - name: Probe patched OS package, user namespaces, and forbidden host access
+      - name: Probe patched OS package, forbidden host access and real hash-locked wheel execution
         shell: bash
         run: bash scripts/ci_candidate_sandbox_container.sh '${{ matrix.distro }}'
       - name: Record kernel coverage limit
