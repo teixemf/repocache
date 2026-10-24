@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import sqlite3
 import time
+from pathlib import Path
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -15,10 +20,15 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Sparkline, Static, TabbedContent, TabPane
 
 from repocache.rendering import safe_markup
+from repocache.submissions import SubmissionQueue, SubmissionError
 from repocache.cli import human_bytes
 from repocache.core import (
     Settings, _tail_bytes, disk_status, health, metrics, probe_upstream, service_status, snapshot, timestamp,
 )
+
+
+# This path is fixed in production: never honour untrusted environment overrides.
+SUBMISSION_QUEUE_PATH = Path("/var/lib/repocache/submissions/queue.sqlite3")
 
 
 class RepoCacheApp(App):
@@ -31,6 +41,10 @@ class RepoCacheApp(App):
         ("2", "tab('repos')", "Repositories"),
         ("3", "tab('metrics')", "Metrics"),
         ("4", "tab('diagnostics')", "Diagnostics"),
+        ("5", "tab('submissions')", "Submissions"),
+        ("y", "review_selected", "Review proposal"),
+        ("n", "reject_selected", "Reject proposal"),
+        ("u", "undo_review", "Undo review"),
         ("p", "period", "Period"),
         ("a", "toggle_auto", "Auto ON/OFF"),
         ("i", "refresh_interval", "Interval"),
@@ -55,6 +69,7 @@ class RepoCacheApp(App):
     #requests-graph { height: 5; margin-bottom: 1; min-width: 30; }
     #histogram { height: 8; min-width: 30; }
     #repo-table { height: 1fr; min-height: 8; background: #101e30; }
+    #proposal-table { height: 1fr; min-height: 8; background: #101e30; }
     #repo-note { min-height: 3; height: auto; }
     #repo-detail { height: 10; }
     #metric-info { height: 10; }
@@ -85,6 +100,11 @@ class RepoCacheApp(App):
         self._probe_results: Dict[str, Dict[str, str]] = {}
         self._repo_activity: Dict[str, str] = {}
         self._metrics_filter: str | None = None
+        self._proposal_versions: Dict[str, int] = {}
+        self._proposal_digests: Dict[str, str] = {}
+        self._selected_proposal = ""
+        self._review_confirmation: tuple[str, str] | None = None
+        self._last_review: tuple[str, int] | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -112,6 +132,11 @@ class RepoCacheApp(App):
                     yield Static("REQUEST VOLUME PER HOUR", id="metric-title", classes="note")
                     yield Sparkline(None, id="histogram", min_color="#215ca7", max_color="#27e6c2")
                     yield Static("Time ranges and limitations", id="metric-details", classes="panel")
+            with TabPane("✚ SUBMISSIONS", id="submissions"):
+                yield Static("No network intake is activated by this screen.", classes="note")
+                yield Static("Root-only review of pending metadata", id="proposal-note", classes="panel")
+                yield DataTable(id="proposal-table", cursor_type="row", zebra_stripes=True)
+                yield Static("Select a proposal, then press Y/Y to review or N/N to reject. U undoes the last decision. Review never publishes routes.", id="proposal-detail", classes="panel")
             with TabPane("✚ DAYGNOSTICS", id="diagnostics"):
                 yield Static("Local checks — configuration is not changed.", classes="note")
                 yield DataTable(id="health-table", cursor_type="row", zebra_stripes=True)
@@ -121,6 +146,8 @@ class RepoCacheApp(App):
     def on_mount(self) -> None:
         repo_table = self.query_one("#repo-table", DataTable)
         repo_table.add_columns("Repository", "Location", "Upstream")
+        proposal_table = self.query_one("#proposal-table", DataTable)
+        proposal_table.add_columns("Proposal ID", "OS", "Type", "Upstream host", "Transport")
         health_table = self.query_one("#health-table", DataTable)
         health_table.add_columns("Check", "Status", "Details")
         self.poll(force=True)
@@ -314,6 +341,15 @@ class RepoCacheApp(App):
         self.query_one("#repo-detail", Static).update(info)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id == "proposal-table":
+            ident = str(event.row_key.value)
+            if ident in self._proposal_versions:
+                self._selected_proposal = ident
+                self._review_confirmation = None
+                self.query_one("#proposal-detail", Static).update(
+                    "Selected proposal " + ident[:12] +
+                    ". Review = Y twice, reject = N twice. Neither action publishes a route.")
+            return
         if event.data_table.id != "repo-table":
             return
         selected = next((item for item in self._all_repos
@@ -383,6 +419,97 @@ class RepoCacheApp(App):
         mode = (f"AUTO {self.refresh_intervals[self.refresh_interval_index]}s" if self.refresh_enabled else "MANUAL")
         self.sub_title = f"{self._latest.get('service', 'N/A').upper()} · {mode} · P: period"
 
+    def _refresh_submissions(self) -> None:
+        table = self.query_one("#proposal-table", DataTable)
+        table.clear()
+        self._selected_proposal = ""
+        self._review_confirmation = None
+        self._proposal_versions = {}
+        self._proposal_digests = {}
+        label = self.query_one("#proposal-note", Static)
+        if os.geteuid() != 0:
+            label.update("Administrator OS identity required (root). No proposals shown.")
+            return
+        if not SUBMISSION_QUEUE_PATH.is_file() or SUBMISSION_QUEUE_PATH.is_symlink():
+            label.update("No trusted submission queue configured. Intake remains disabled.")
+            return
+        try:
+            proposals = SubmissionQueue(SUBMISSION_QUEUE_PATH).pending()
+            self._proposal_versions = {p["id"]: p["version"] for p in proposals}
+            self._proposal_digests = {p["id"]: p["metadata_digest"] for p in proposals}
+            for proposal in proposals:
+                # Treat persisted queue rows as untrusted. A corrupt or
+                # service-UID-tampered record must fail closed, not crash TUI.
+                records = proposal["repositories"]
+                if not isinstance(records, list) or not records or not isinstance(records[0], dict):
+                    raise SubmissionError("invalid_stored_proposal", 503)
+                first = records[0]
+                uri = first.get("url")
+                if not isinstance(uri, str) or len(uri) > 2048:
+                    raise SubmissionError("invalid_stored_proposal", 503)
+                # Show only canonical hostname, never path, query, or raw body.
+                host = urlsplit(uri).hostname or "invalid"
+                if not re.fullmatch(r"[a-zA-Z0-9.-]{1,253}", host):
+                    raise SubmissionError("invalid_stored_proposal", 503)
+                table.add_row(proposal["id"][:12], proposal["os"] + " " +
+                              proposal["version_os"], first["type"], host,
+                              "HTTP (review)" if first["insecure_http"] else "HTTPS",
+                              key=proposal["id"])
+            label.update(f"{len(proposals)} pending proposal(s). Only the first origin per proposal is shown.")
+        except (SubmissionError, OSError, ValueError, IndexError, KeyError, TypeError, sqlite3.Error):
+            table.clear()
+            self._proposal_versions = {}
+            self._proposal_digests = {}
+            label.update("Cannot access a validated submission queue; no decisions permitted.")
+
+    def _decide(self, action: str) -> None:
+        if (self.query_one(TabbedContent).active != "submissions" or
+                os.geteuid() != 0):
+            self.notify("Administrator review is unavailable.", severity="warning")
+            return
+        ident = self._selected_proposal
+        if (not ident or ident not in self._proposal_versions or
+                ident not in self._proposal_digests):
+            self.notify("Select a pending proposal first.", severity="warning")
+            return
+        if self._review_confirmation != (ident, action):
+            self._review_confirmation = (ident, action)
+            self.notify("Press the same action again to confirm. Review does not publish.", severity="warning")
+            return
+        version = self._proposal_versions[ident]
+        self._review_confirmation = None
+        try:
+            SubmissionQueue(SUBMISSION_QUEUE_PATH).decide(
+                ident, action, expected_version=version,
+                expected_digest=self._proposal_digests[ident])
+        except (SubmissionError, OSError, ValueError):
+            self.notify("Review could not be completed; refresh the queue.", severity="error")
+            return
+        self._last_review = (ident, version + 1)
+        self.notify("Decision recorded in local audit; no route was published.")
+        self._refresh_submissions()
+
+    def action_review_selected(self) -> None:
+        self._decide("review")
+
+    def action_reject_selected(self) -> None:
+        self._decide("reject")
+
+    def action_undo_review(self) -> None:
+        if (os.geteuid() != 0 or self.query_one(TabbedContent).active != "submissions"
+                or self._last_review is None):
+            self.notify("No authorized decision to undo.", severity="warning")
+            return
+        ident, version = self._last_review
+        self._last_review = None
+        try:
+            SubmissionQueue(SUBMISSION_QUEUE_PATH).decide(
+                ident, "reopen", expected_version=version)
+            self.notify("Proposal reopened; audit trail retained.")
+        except (SubmissionError, OSError, ValueError):
+            self.notify("Cannot undo this decision; review the audit.", severity="error")
+        self._refresh_submissions()
+
     def action_filter_selected_metrics(self) -> None:
         selected = self._selected()
         if selected is None:
@@ -399,6 +526,8 @@ class RepoCacheApp(App):
 
     def action_tab(self, pane: str) -> None:
         self.query_one(TabbedContent).active = pane
+        if pane == "submissions":
+            self._refresh_submissions()
 
     def action_period(self) -> None:
         self.period_index = (self.period_index + 1) % len(self.periods)
