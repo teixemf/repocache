@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """CI-only, native-OS offline dependency installation smoke for #49."""
 import argparse
+import base64
+import configparser
+import csv
 import gzip
 import hashlib
 import importlib.metadata
+from email.parser import BytesParser
 import io
 import json
 import os
@@ -14,6 +18,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -50,6 +55,12 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         raise RuntimeError("Missing reviewed first-party Python source")
     with zipfile.ZipFile(application_wheel) as application:
         members = application.infolist()
+        # The signed wheelhouse caps compressed bytes, but ZIP permits tiny
+        # compressed members to expand to enormous payloads. Refuse before
+        # ZipFile.read() can allocate untrusted decompressed module data.
+        if (len(members) > 2000 or
+                sum(item.file_size for item in members) > 50_000_000):
+            raise RuntimeError("First-party wheel exceeds unpacked resource limits")
         names = [item.filename for item in members]
         # A duplicate ZIP member can make the reviewer read different bytes
         # than a wheel installer: refuse ambiguity before checking contents.
@@ -58,7 +69,18 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         # Wheel installers also process .data/purelib, .data/platlib, .pth and
         # other top-level paths. Checking repocache/*.py alone would permit
         # extra executable code outside the reviewed package tree.
-        metadata = re.compile(r"repocache_control-[0-9]+(?:\.[0-9]+){2}\.dist-info/")
+        # This helper also validates tiny in-memory test wheels named app.whl
+        # without metadata. When distribution metadata is present, however,
+        # exactly one reviewed repocache_control versioned namespace is allowed.
+        metadata_dirs = {
+            item.filename.split("/")[0] for item in members
+            if item.filename.split("/")[0].endswith(".dist-info")
+        }
+        if (len(metadata_dirs) > 1 or any(
+                re.fullmatch(r"repocache_control-[0-9]+(?:\.[0-9]+){2}\.dist-info", name)
+                is None for name in metadata_dirs)):
+            raise RuntimeError("First-party wheel contains unreviewed install path")
+        metadata_prefix = (next(iter(metadata_dirs)) + "/") if metadata_dirs else None
         for item in members:
             name = item.filename
             parts = name.split("/")
@@ -69,9 +91,96 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
                 if name.startswith("repocache/") and name.endswith(".py"):
                     raise RuntimeError("First-party wheel contains a symlinked module")
                 raise RuntimeError("Unsafe first-party wheel ZIP member")
-            if (not item.is_dir() and not name.startswith("repocache/")
-                    and not metadata.match(name)):
+            if (not name.startswith("repocache/")
+                    and not (metadata_prefix and name.startswith(metadata_prefix))):
                 raise RuntimeError("First-party wheel contains unreviewed install path")
+        # A wheel's dist-info/entry_points.txt creates executable console
+        # wrappers at install time. Module byte identity alone cannot detect
+        # an attacker retargeting repocache or registering a new command.
+        # Compare installed entry-point semantics to the reviewed pyproject.
+        project_file = source / "pyproject.toml"
+        try:
+            project = (tomllib.loads(project_file.read_text("utf-8")).get("project", {})
+                       if project_file.exists() else {})
+            declared = {}
+            for group, field in (("console_scripts", "scripts"),
+                                 ("gui_scripts", "gui-scripts")):
+                scripts = project.get(field, {})
+                if not isinstance(scripts, dict):
+                    raise ValueError("Invalid reviewed script table")
+                if scripts:
+                    declared[group] = scripts
+            plugins = project.get("entry-points", {})
+            if not isinstance(plugins, dict):
+                raise ValueError("Invalid reviewed entry-point table")
+            for group, entries in plugins.items():
+                if group in declared or not isinstance(entries, dict):
+                    raise ValueError("Ambiguous reviewed entry-point table")
+                declared[group] = entries
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise RuntimeError("Cannot validate reviewed entry-point declarations") from exc
+        entry_path = (metadata_prefix + "entry_points.txt") if metadata_prefix else None
+        if bool(declared) != bool(entry_path and entry_path in names):
+            raise RuntimeError("First-party wheel entry points differ from reviewed source")
+        if entry_path and entry_path in names:
+            if application.getinfo(entry_path).file_size > 16_384:
+                raise RuntimeError("First-party wheel entry-point metadata exceeds limit")
+            try:
+                parser = configparser.ConfigParser(interpolation=None, strict=True)
+                parser.optionxform = str
+                parser.read_string(application.read(entry_path).decode("utf-8", "strict"))
+                actual = {group: dict(parser.items(group)) for group in parser.sections()}
+                if parser.defaults() or actual != declared:
+                    raise ValueError("Entry-point declarations do not match")
+            except (configparser.Error, UnicodeError, ValueError) as exc:
+                raise RuntimeError(
+                    "First-party wheel entry points differ from reviewed source") from exc
+        # A rehashed wheel can also poison RECORD. pip may preserve unknown
+        # RECORD rows in installed metadata; later uninstall must never trust
+        # attacker-invented paths outside the reviewed ZIP. Check the complete
+        # manifest and hashes before the owner signs any candidate.
+        if project_file.exists():
+            if metadata_prefix != (
+                    "repocache_control-" + str(project.get("version")) + ".dist-info/"):
+                raise RuntimeError("First-party wheel distribution version differs from source")
+            wheel_info = metadata_prefix + "WHEEL"
+            record_path = metadata_prefix + "RECORD"
+            if wheel_info not in names or record_path not in names:
+                raise RuntimeError("First-party wheel missing mandatory distribution metadata")
+            if (application.getinfo(wheel_info).file_size > 8192 or
+                    application.getinfo(record_path).file_size > 500_000):
+                raise RuntimeError("First-party wheel distribution metadata exceeds limit")
+            header = BytesParser().parsebytes(application.read(wheel_info))
+            if (header.get("Wheel-Version") != "1.0" or
+                    header.get("Root-Is-Purelib", "").lower() != "true"):
+                raise RuntimeError("First-party wheel install scheme differs from reviewed source")
+            try:
+                rows = list(csv.reader(
+                    application.read(record_path).decode("utf-8", "strict").splitlines(),
+                    strict=True))
+                records = {}
+                for row in rows:
+                    if (len(row) != 3 or row[0] in records or row[0] not in names
+                            or row[0].endswith("/")):
+                        raise ValueError("Unreviewed wheel RECORD entry")
+                    records[row[0]] = (row[1], row[2])
+                if set(records) != {name for name in names if not name.endswith("/")}:
+                    raise ValueError("Incomplete wheel RECORD inventory")
+                for name, (digest, length) in records.items():
+                    if name == record_path:
+                        if digest or length:
+                            raise ValueError("Self-referential wheel RECORD hash")
+                        continue
+                    item = application.getinfo(name)
+                    if not length.isdecimal() or int(length) != item.file_size:
+                        raise ValueError("Incorrect wheel RECORD size")
+                    actual = base64.urlsafe_b64encode(
+                        hashlib.sha256(application.read(name)).digest()
+                    ).rstrip(b"=").decode("ascii")
+                    if digest != "sha256=" + actual:
+                        raise ValueError("Incorrect wheel RECORD hash")
+            except (csv.Error, UnicodeError, ValueError) as exc:
+                raise RuntimeError("First-party wheel RECORD differs from ZIP contents") from exc
         packaged = {
             item.filename for item in members
             if item.filename.startswith("repocache/")
@@ -90,6 +199,10 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         if additional_payload:
             raise RuntimeError("First-party wheel contains unreviewed package payload")
         for name, expected in expected_modules.items():
+            # Check the ZIP central-directory length before decompressing:
+            # a forged module can be rehashed in the outer signed wheelhouse.
+            if application.getinfo(name).file_size != len(expected):
+                raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
             if application.read(name) != expected:
                 raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
 

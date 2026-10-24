@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import tomllib
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from repocache import wheelhouse
 from build_release import build_release
+from ci_offline_wheels import verify_first_party_modules
 
 
 def sha(raw: bytes) -> str:
@@ -58,6 +60,20 @@ def verify(output: Path) -> None:
         contents = wheelhouse.verified_extract(
             from_zip, sha(from_zip), clean / "wheels")
         wheelhouse.verify_application_wheel(contents, version)
+        # The immutable public v0.4.0 updater refuses any extra source TAR
+        # members. v0.5 first-party modules must therefore travel in the
+        # publisher-signed application wheel, which is checked byte-for-byte
+        # against the exact reviewed checkout BEFORE the owner's key unlocks.
+        # Do not rely only on a previous CI build: artifacts are mutable until
+        # independently signed. Never execute candidate wheel code here.
+        application = sorted((contents.parent / "wheels").glob(
+            "repocache_control-" + version + "-*.whl"))
+        if len(application) != 1:
+            raise ValueError("Missing or ambiguous first-party candidate wheel")
+        try:
+            verify_first_party_modules(ROOT, application[0])
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+            raise ValueError("Candidate first-party wheel differs from reviewed source") from exc
         if ((contents.parent / "THIRD_PARTY_NOTICES.md").read_bytes()
                 != (ROOT / "THIRD_PARTY_NOTICES.md").read_bytes()):
             raise ValueError("Wheelhouse license notices differ from authenticated source")
