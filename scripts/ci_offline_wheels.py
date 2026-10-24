@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """CI-only, native-OS offline dependency installation smoke for #49."""
 import argparse
+import configparser
 import gzip
 import hashlib
 import importlib.metadata
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -89,6 +91,47 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
             if (not name.startswith("repocache/")
                     and not (metadata_prefix and name.startswith(metadata_prefix))):
                 raise RuntimeError("First-party wheel contains unreviewed install path")
+        # A wheel's dist-info/entry_points.txt creates executable console
+        # wrappers at install time. Module byte identity alone cannot detect
+        # an attacker retargeting repocache or registering a new command.
+        # Compare installed entry-point semantics to the reviewed pyproject.
+        project_file = source / "pyproject.toml"
+        try:
+            project = (tomllib.loads(project_file.read_text("utf-8")).get("project", {})
+                       if project_file.exists() else {})
+            declared = {}
+            for group, field in (("console_scripts", "scripts"),
+                                 ("gui_scripts", "gui-scripts")):
+                scripts = project.get(field, {})
+                if not isinstance(scripts, dict):
+                    raise ValueError("Invalid reviewed script table")
+                if scripts:
+                    declared[group] = scripts
+            plugins = project.get("entry-points", {})
+            if not isinstance(plugins, dict):
+                raise ValueError("Invalid reviewed entry-point table")
+            for group, entries in plugins.items():
+                if group in declared or not isinstance(entries, dict):
+                    raise ValueError("Ambiguous reviewed entry-point table")
+                declared[group] = entries
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise RuntimeError("Cannot validate reviewed entry-point declarations") from exc
+        entry_path = (metadata_prefix + "entry_points.txt") if metadata_prefix else None
+        if bool(declared) != bool(entry_path and entry_path in names):
+            raise RuntimeError("First-party wheel entry points differ from reviewed source")
+        if entry_path and entry_path in names:
+            if application.getinfo(entry_path).file_size > 16_384:
+                raise RuntimeError("First-party wheel entry-point metadata exceeds limit")
+            try:
+                parser = configparser.ConfigParser(interpolation=None, strict=True)
+                parser.optionxform = str
+                parser.read_string(application.read(entry_path).decode("utf-8", "strict"))
+                actual = {group: dict(parser.items(group)) for group in parser.sections()}
+                if parser.defaults() or actual != declared:
+                    raise ValueError("Entry-point declarations do not match")
+            except (configparser.Error, UnicodeError, ValueError) as exc:
+                raise RuntimeError(
+                    "First-party wheel entry points differ from reviewed source") from exc
         packaged = {
             item.filename for item in members
             if item.filename.startswith("repocache/")
