@@ -196,3 +196,33 @@ def test_interrupted_rollback_refuses_modified_temp_xattrs(root):
         lab.recover_sandbox(root, ident)
     assert source.read_bytes() == AFTER
     assert os.getxattr(source, "user.repocache-example") == b"original"
+
+
+
+def test_fifo_substituted_for_pending_temp_refuses_without_blocking(root):
+    ident, source = prepared(root)
+    lab.apply_sandbox(root, ident)
+    terminate_before_replace(root, ident, "rollback")
+    pending = source.parent / (".repocache-atomic-" + ident)
+    pending.unlink()
+    os.mkfifo(pending, 0o600)
+    # Run this in a separate process with a timeout to detect any FIFO hang.
+    worker = r"""
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import transaction_atomic_lab as lab
+import transaction_stage as stage
+try:
+    lab.recover_sandbox(Path(sys.argv[2]), sys.argv[3])
+except stage.StageError:
+    sys.exit(0)
+sys.exit(3)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", worker, str(CLIENT), str(root), ident],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert source.read_bytes() == AFTER
+    assert pending.is_fifo()
