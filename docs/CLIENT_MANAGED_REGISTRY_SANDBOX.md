@@ -1,7 +1,7 @@
 # Client candidate managed-ID registry — protected sandbox proof
 
 **Issue:** [#24](https://github.com/teixemf/repocache/issues/24); functional UC-07, UC-25/26/27/29/30/33.  
-**Dependencies:** unmerged read-only preflight [PR #133](https://github.com/teixemf/repocache/pull/133) and read-only helper [PR #138](https://github.com/teixemf/repocache/pull/138).  
+**Integration:** read-only preflight [PR #133](https://github.com/teixemf/repocache/pull/133) is merged; this candidate registry and the earlier read-only helper [#138](https://github.com/teixemf/repocache/pull/138) are consolidated for review in [#152](https://github.com/teixemf/repocache/pull/152).  
 **Status:** scoped local experiment, **NOT** a production managed-ownership authority or native source writer.
 
 ## Managed identity versus discovery identity
