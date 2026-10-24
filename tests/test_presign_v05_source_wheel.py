@@ -43,7 +43,7 @@ def checked_source(tmp_path, monkeypatch):
         dest.write_bytes(data)
     (root / "THIRD_PARTY_NOTICES.md").write_bytes(b"approved notices\n")
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "repocache-control"\nversion = "0.5.0"\n'
+        '[project]\nname = "repocache-control"\nversion = "0.5.0"\n'\n        '[project.scripts]\nrepocache = "repocache.cli:cli"\n'
     )
     deps = root / "deps"
     deps.mkdir()
@@ -65,7 +65,7 @@ def checked_source(tmp_path, monkeypatch):
 
 def file_zip(modules: dict[str, bytes], *, duplicate=False,
              symlink=False, oversized_metadata=False,
-             alien_metadata=False) -> bytes:
+             alien_metadata=False, entrypoint_attack=None) -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as z:
         for name, data in modules.items():
@@ -79,6 +79,19 @@ def file_zip(modules: dict[str, bytes], *, duplicate=False,
         z.writestr("repocache_control-0.5.0.dist-info/METADATA",
                    "Metadata-Version: 2.3\nName: repocache-control\n"
                    "Version: 0.5.0\n\n")
+        entry_points = {
+            "entrypoint-modified": b"[console_scripts]\\nrepocache = repocache.submissions:intake\\n",
+            "entrypoint-extra": b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"
+                                b"unsafe = repocache.submissions:intake\\n",
+            "entrypoint-foreign-group": b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"
+                                        b"[other_group]\\nunsafe = repocache.cli:cli\\n",
+            "entrypoint-duplicate": b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"
+                                    b"repocache = repocache.submissions:intake\\n",
+        }
+        if entrypoint_attack != "entrypoint-missing":
+            z.writestr("repocache_control-0.5.0.dist-info/entry_points.txt",
+                       entry_points.get(entrypoint_attack,
+                                        b"[console_scripts]\\nrepocache = repocache.cli:cli\\n"))
         if alien_metadata:
             z.writestr("repocache_control-9.9.9.dist-info/entry_points.txt",
                        b"[console_scripts]\nunsafe=repocache.cli:app\n")
@@ -117,7 +130,8 @@ def build_fixture(tmp_path, checked_source, *, attack=None) -> Path:
     app = file_zip(candidate, duplicate=attack == "duplicate",
                    symlink=attack == "symlink",
                    oversized_metadata=attack == "oversized-metadata",
-                   alien_metadata=attack == "alien-dist-info")
+                   alien_metadata=attack == "alien-dist-info",
+                   entrypoint_attack=attack)
     app_name = "repocache_control-0.5.0-py3-none-any.whl"
     dep_name = "typer-1.0.0-py3-none-any.whl"
     dep = b"inert dependency fixture"
@@ -171,6 +185,8 @@ def test_real_verifier_accepts_exact_reviewed_first_party_wheel(
     "missing", "modified", "modified-same-size", "extra", "extra-path",
     "duplicate", "symlink",
     "oversized-module", "oversized-metadata", "alien-dist-info",
+    "entrypoint-modified", "entrypoint-extra", "entrypoint-foreign-group",
+    "entrypoint-duplicate", "entrypoint-missing",
 ])
 def test_real_verifier_rejects_rehashed_unreviewed_wheel(
         tmp_path, checked_source, attack):
