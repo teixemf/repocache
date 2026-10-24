@@ -43,7 +43,8 @@ def checked_source(tmp_path, monkeypatch):
         dest.write_bytes(data)
     (root / "THIRD_PARTY_NOTICES.md").write_bytes(b"approved notices\n")
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "repocache-control"\nversion = "0.5.0"\n'\n        '[project.scripts]\nrepocache = "repocache.cli:cli"\n'
+        '[project]\nname = "repocache-control"\nversion = "0.5.0"\n'
+        '[project.scripts]\nrepocache = "repocache.cli:cli"\n'
     )
     deps = root / "deps"
     deps.mkdir()
