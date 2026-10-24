@@ -27,6 +27,7 @@ def rootless_staging(tmp_path, monkeypatch):
     root.mkdir(mode=0o700)
     monkeypatch.setattr(updater, "ROOT", root)
     monkeypatch.setattr(updater, "CURRENT", root / "current")
+    monkeypatch.setattr(updater, "MANIFEST", root / "installed.json")
     monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.0.0"})
     monkeypatch.setattr(online_generation, "_current_host_target", lambda: "debian13-py313")
     observations = []
@@ -111,10 +112,13 @@ def rootless_staging(tmp_path, monkeypatch):
         if "--version" in argv:
             return "REPOCACHE Control Center 0.6.0"
         if "--help" in argv:
+            if "update" in argv:
+                return "Usage: repocache update [OPTIONS] COMMAND [ARGS]...\nlist\ncheck"
             return "Usage: repocache [OPTIONS] COMMAND [ARGS]...\nupdate"
         if "-c" in argv:
             assert "RepoCacheApp" in argv[-1]
-            assert "textual.app" in argv[-1]
+            assert "run_test" in argv[-1]
+            assert "TabbedContent" in argv[-1]
             return ""
         if "check" in argv:
             return ""
@@ -149,13 +153,14 @@ def test_signed_stage_uses_exclusive_rootless_transaction_and_never_activates(
         "status": "application-and-dependencies-verified-only", "version": "0.6.0",
         "target": "debian13-py313", "dependency_count": 1,
         "cli_smoke": "passed", "tui_import_smoke": "passed",
+        "tui_headless_smoke": "passed", "activation_guard": "unchanged",
         "activated": False,
     }
     assert events == ["lock-acquire", "recover", "signed-lock-verified",
                       "owned-wheel-verified", "download", "run-venv",
                       "run-install-deps", "owned-wheel-verified", "run-install-app",
                       "run-check", "run-list", "run-cli-version", "run-cli-help",
-                      "run-tui-import", "lock-release"]
+                      "run-cli-help", "run-tui-import", "lock-release"]
     assert not active["yes"]
     assert not (root / "current").exists()
     assert not (root / "installed.json").exists()
@@ -415,3 +420,58 @@ def test_publisher_locked_upstream_package_must_not_impersonate_repocache(
     assert "run-venv" not in events
     assert events[-1] == "lock-release"
     assert not (root / "online-preparations").exists()
+
+
+def test_preactivation_guard_detects_managed_manifest_mutation(
+        rootless_staging, monkeypatch):
+    """Detect an accidental modified active manifest before declaring PASS.
+
+    This is NOT a sandbox: already-running code under the same UID could
+    corrupt the manifest, so production activation needs real isolation.
+    """
+    root, events, _ = rootless_staging
+    original = updater._run
+
+    def tamper(argv, **kwargs):
+        value = original(argv, **kwargs)
+        if "-c" in argv:
+            (root / "installed.json").write_text("unexpected runtime mutation\n")
+        return value
+
+    monkeypatch.setattr(updater, "_run", tamper)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="Active generation changed"):
+        _rehearse()
+    assert events[-1] == "lock-release"
+    assert not (root / "current").exists()
+    assert not list((root / "online-preparations").iterdir())
+
+
+def test_preactivation_guard_rejects_symlinked_manifest(tmp_path, monkeypatch):
+    from repocache import online_generation
+    private = tmp_path / "installed.json"
+    private.write_text("{}")
+    link = tmp_path / "manifest-symlink.json"
+    link.symlink_to(private)
+    monkeypatch.setattr(updater, "CURRENT", tmp_path / "missing-current")
+    monkeypatch.setattr(updater, "MANIFEST", link)
+    with pytest.raises(online_generation.PreparationInstallError, match="symlink"):
+        online_generation._active_marker()
+
+
+def test_headless_smoke_invocation_has_no_shell_and_requires_installed_cli(
+        tmp_path):
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    interpreter = venv / "bin" / "python"
+    interpreter.write_text("# synthetic interpreter\n")
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="entrypoint missing"):
+        online_generation._smoke_commands(interpreter)
+    console = venv / "bin" / "repocache"
+    console.write_text("# synthetic CLI entrypoint\n")
+    cmds = online_generation._smoke_commands(interpreter)
+    assert len(cmds) == 4
+    assert cmds[2][-2:] == ["update", "--help"]
+    assert cmds[3][:3] == [str(interpreter), "-I", "-c"]
+    assert "run_test" in cmds[3][-1]

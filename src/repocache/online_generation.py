@@ -175,20 +175,74 @@ def _application_install_command(interpreter: Path, requirement: Path) -> list[s
             "--no-cache-dir", "--no-input", "-r", str(requirement)]
 
 
+# Executed from the *installed* venv, not from the repository checkout.
+# Disable application data polling before mounting: headless navigation must
+# never execute systemctl, read operator credentials or contact upstream hosts.
+TUI_HEADLESS_SMOKE = """
+import asyncio
+from textual.widgets import TabbedContent
+from repocache.tui import RepoCacheApp
+
+async def check():
+    app = RepoCacheApp(auto_refresh=False)
+    app.poll = lambda force=False: None
+    async with app.run_test(size=(120, 45)) as pilot:
+        assert app.query_one(TabbedContent).active == "overview"
+        for key, tab in (("2", "repos"), ("3", "metrics"),
+                         ("4", "diagnostics"), ("1", "overview")):
+            await pilot.press(key)
+            assert app.query_one(TabbedContent).active == tab
+        assert app.refresh_enabled is False
+        await pilot.press("a")
+        assert app.refresh_enabled is True
+        await pilot.press("a")
+        assert app.refresh_enabled is False
+        index = app.refresh_interval_index
+        await pilot.press("i")
+        assert app.refresh_interval_index != index
+        period = app.period_index
+        await pilot.press("p")
+        assert app.period_index != period
+        await pilot.press("r")
+
+asyncio.run(check())
+"""
+
+
 def _smoke_commands(interpreter: Path) -> tuple[list[str], ...]:
-    """Read-only CLI and import-time TUI smoke; not an interactive run_test."""
+    """Read-only installed CLI contracts + actual headless Textual navigation."""
     console = interpreter.parent / "repocache"
     if console.is_symlink() or not console.is_file():
         raise PreparationInstallError("First-party CLI console entrypoint missing")
-    # Do not invoke network-dependent update commands or a terminal UI here.
-    tui_import = (
-        "from textual.app import App; "
-        "from repocache.tui import RepoCacheApp; "
-        "assert issubclass(RepoCacheApp, App); "
-        "assert len(RepoCacheApp.BINDINGS) > 0"
-    )
-    return ([str(console), "--version"], [str(console), "--help"],
-            [str(interpreter), "-I", "-c", tui_import])
+    return ([str(console), "--version"],
+            [str(console), "--help"],
+            [str(console), "update", "--help"],
+            [str(interpreter), "-I", "-c", TUI_HEADLESS_SMOKE])
+
+
+def _active_marker() -> tuple[str | None, str | None]:
+    """Read-only detect changed managed activation state under update lock.
+
+    This is an accidental-mutation guard, NOT isolation from code running as
+    the managed account. The actual activation/journaling remains unwired.
+    """
+    current = updater.CURRENT
+    manifest = updater.MANIFEST
+    if current.is_symlink():
+        link = os.readlink(current)
+    elif current.exists():
+        raise PreparationInstallError("Unexpected non-symlink active generation")
+    else:
+        link = None
+    if manifest.is_symlink():
+        raise PreparationInstallError("Installed manifest must not be a symlink")
+    if manifest.exists():
+        if not manifest.is_file() or manifest.stat().st_size > 65536:
+            raise PreparationInstallError("Unexpected installed manifest layout")
+        digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    else:
+        digest = None
+    return link, digest
 
 
 def rehearse_signed_install(
@@ -207,6 +261,7 @@ def rehearse_signed_install(
         updater.recover_transaction()
         prior = updater._installed()
         updater._check_active_layout(prior)
+        original_active_marker = _active_marker()
         if target != _current_host_target():
             raise PreparationInstallError("Signed wheels do not match the native OS/Python")
         if updater._version_tuple(version) <= updater._version_tuple(
@@ -259,14 +314,20 @@ def rehearse_signed_install(
                 updater._run(check, timeout=90)
                 installed_json = updater._run(package_list, timeout=90)
                 _check_installed(installed_json, wheels, application_version=version)
-                cli_version, cli_help, tui_import = _smoke_commands(interpreter)
+                cli_version, cli_help, cli_update_help, tui_headless = _smoke_commands(interpreter)
                 version_output = updater._run(cli_version, timeout=30)
                 if version_output.strip() != f"REPOCACHE Control Center {version}":
                     raise PreparationInstallError("Staged CLI reports unexpected version")
                 help_output = updater._run(cli_help, timeout=30)
                 if "Usage:" not in help_output or "update" not in help_output:
                     raise PreparationInstallError("Staged CLI help is invalid")
-                updater._run(tui_import, timeout=30)
+                update_help = updater._run(cli_update_help, timeout=30)
+                if "Usage:" not in update_help or "list" not in update_help:
+                    raise PreparationInstallError("Staged update subcommands missing")
+                updater._run(tui_headless, timeout=75)
+                if _active_marker() != original_active_marker:
+                    raise PreparationInstallError(
+                        "Active generation changed during online preactivation checks")
                 # TemporaryDirectory destroys the entire (potentially
                 # executable) staged environment on success as well as error.
                 # It is intentionally NEVER named as an active generation.
@@ -275,6 +336,8 @@ def rehearse_signed_install(
                     "version": version, "target": target,
                     "dependency_count": len(wheels),
                     "cli_smoke": "passed", "tui_import_smoke": "passed",
+                    "tui_headless_smoke": "passed",
+                    "activation_guard": "unchanged",
                     "activated": False,
                 }
         except (online_deps.DependencyError, signed_dependency_staging.PreparationError,
