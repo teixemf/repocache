@@ -122,3 +122,51 @@ def test_send_does_not_allow_implicit_network_or_alter_sources(monkeypatch, cred
     assert client.run(["--json", "repos", "submit", "--send",
                        "--token-file", str(credential)], root=root) == 0
     assert before == source.read_bytes()
+
+
+def test_credential_replacement_between_lstat_and_open_is_refused(
+    monkeypatch, credential
+):
+    """A substituted safe-looking credential must not bypass inode checks."""
+    original_open = client.os.open
+    alternate = credential.parent / "alternate.json"
+    alternate.write_text(json.dumps({
+        "key_id": "attacker",
+        "secret": base64.urlsafe_b64encode(b"x" * 32).decode().rstrip("="),
+    }))
+    alternate.chmod(0o600)
+    invoked = []
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        if Path(path) == credential and not invoked:
+            invoked.append(True)
+            credential.unlink()
+            alternate.rename(credential)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(client.os, "open", replace_before_open)
+    with pytest.raises(client.ClientError, match="changed or is unsafe"):
+        client._submission_credential(credential)
+    assert invoked
+
+
+def test_credential_replacement_with_insecure_file_is_refused(
+    monkeypatch, credential
+):
+    original_open = client.os.open
+    replacement = credential.parent / "world-readable.json"
+    replacement.write_text(credential.read_text())
+    replacement.chmod(0o644)
+    once = []
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        if Path(path) == credential and not once:
+            once.append(True)
+            credential.unlink()
+            replacement.rename(credential)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(client.os, "open", replace_before_open)
+    with pytest.raises(client.ClientError, match="changed or is unsafe"):
+        client._submission_credential(credential)
+    assert once
