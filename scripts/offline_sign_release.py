@@ -80,6 +80,25 @@ def validate_candidate_identity(bundle: Path, commit: str, run_id: str,
         raise OfflineSigningError("Checked-out source does not match reviewed commit")
     if _read_only_command(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"]):
         raise OfflineSigningError("Unreviewed source modifications detected")
+    # A clean tracked-tree status is insufficient: an untracked or ignored
+    # first-party .py file could be injected into the wheel and would match
+    # the local checkout, but NOT the reviewed commit. Require the exact
+    # Git-indexed Python file inventory before any candidate can be signed.
+    tracked = _read_only_command([
+        "git", "-C", str(ROOT), "ls-files", "-z", "--", "src/repocache"
+    ]).split(b"\x00")
+    try:
+        reviewed = {entry.decode("utf-8", "strict") for entry in tracked
+                    if entry.endswith(b".py")}
+    except UnicodeError as exc:
+        raise OfflineSigningError("Invalid reviewed source file identity") from exc
+    observed = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "src/repocache").rglob("*.py")
+    }
+    if not reviewed or reviewed != observed:
+        raise OfflineSigningError(
+            "First-party source files differ from the reviewed Git commit")
     matched = re.fullmatch(r"repocache-(v[0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz", bundle.name)
     if not matched:
         raise OfflineSigningError("Malformed candidate asset filename")
