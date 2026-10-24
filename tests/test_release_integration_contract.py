@@ -98,11 +98,11 @@ def test_native_public_transport_security_gate_cannot_be_omitted():
     assert "Chained CDN redirect accepted" in native
 
 
-def test_rootless_rollback_checks_run_for_every_pr_and_release_branch_commit():
+def test_rootless_rollback_checks_run_for_every_pr_main_and_release_branch_commit():
     # Required status contexts must not silently disappear when a PR changes
     # only tests, documentation or CI, as happens with path-filtered triggers.
     workflow = (WORKFLOWS / "upgrade-distros.yml").read_text(encoding="utf-8")
-    assert "  pull_request:\n  push:\n    branches: [release/v0.4.0]\n  workflow_dispatch:" in workflow
+    assert "  pull_request:\n  push:\n    branches: [main, release/v0.4.0]\n  workflow_dispatch:" in workflow
     trigger = workflow.partition("  pull_request:")[2].partition("permissions:")[0]
     assert "paths:" not in trigger
     assert "Synthetic rootless update and rollback" in workflow
