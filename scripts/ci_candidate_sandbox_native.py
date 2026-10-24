@@ -72,6 +72,9 @@ def main() -> None:
               "real candidate console subprocess runs under rootless namespaces")
 
         outer_process = subprocess.Popen(["/usr/bin/sleep", "35"])
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
         try:
             injected_probe = r"""
 import errno
@@ -91,15 +94,18 @@ for candidate in ('/usr/repocache-forbidden-write', '/etc/repocache-forbidden-wr
         raise AssertionError('OS directory was writable: ' + candidate)
 out = pathlib.Path(os.environ['SANDBOX_WORKSPACE']) / 'isolation-proof'
 out.write_text('sandbox-only')
+# Explicitly require fresh namespaces; an offline runner is not proof of no-network.
+assert os.readlink('/proc/self/ns/net') != os.environ['OUTER_NET_NS'], 'host network namespace shared'
+assert os.readlink('/proc/self/ns/pid') != os.environ['OUTER_PID_NS'], 'host PID namespace shared'
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.settimeout(2)
 try:
-    assert s.connect_ex(('1.1.1.1', 443)) != 0, 'host network reachable'
+    assert s.connect_ex(('127.0.0.1', int(os.environ['OUTER_LISTEN_PORT']))) != 0, 'outer loopback reachable'
 finally:
     s.close()
 host_pid = int(os.environ['OUTER_PID'])
-if host_pid > 8:
-    assert not pathlib.Path(f'/proc/{host_pid}').exists(), 'host PID visible'
+assert host_pid > 8, 'test fixture cannot guarantee distinct outer PID'
+assert not pathlib.Path(f'/proc/{host_pid}').exists(), 'host PID visible'
 print('SANDBOX_ESCAPE_PROBES_PASS')
 """
             # The final negative test deliberately runs arbitrary probe code
@@ -115,6 +121,9 @@ print('SANDBOX_ESCAPE_PROBES_PASS')
             args[insert:insert] = [
                 "--setenv", "SANDBOX_WORKSPACE", str(work),
                 "--setenv", "OUTER_PID", str(outer_process.pid),
+                "--setenv", "OUTER_NET_NS", os.readlink("/proc/self/ns/net"),
+                "--setenv", "OUTER_PID_NS", os.readlink("/proc/self/ns/pid"),
+                "--setenv", "OUTER_LISTEN_PORT", str(listener.getsockname()[1]),
             ]
             env = {
                 "HOME": "/var/lib/repocache",
@@ -123,12 +132,13 @@ print('SANDBOX_ESCAPE_PROBES_PASS')
             }
             check(run(args, label="real kernel sandbox negative tests",
                       env=env) == "SANDBOX_ESCAPE_PROBES_PASS",
-                  "kernel denied host writes, reads, network and PID access")
+                  "kernel denied host writes, reads, loopback and PID access")
             check((work / "isolation-proof").read_text() == "sandbox-only",
                   "only disposable candidate staging is writable")
             check(marker.read_bytes() == original,
                   "active installed manifest remains byte-for-byte intact")
         finally:
+            listener.close()
             outer_process.terminate()
             outer_process.wait(timeout=10)
     finally:
