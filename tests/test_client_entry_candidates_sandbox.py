@@ -234,6 +234,19 @@ def test_tampered_authorization_flag_is_not_accepted(root):
         entries.inspect_entry_candidate_sandbox(root, ident)
 
 
+@pytest.mark.parametrize("wrong_type", ([], {}))
+def test_non_string_entry_kind_refuses_with_controlled_error(root, wrong_type):
+    ident = candidate(root, APT)
+    manifest = (root / "var/lib/repocache-client/entry-candidates-lab" /
+                ("entry-" + ident + ".json"))
+    doc = json.loads(manifest.read_text())
+    doc["kind"] = wrong_type
+    manifest.write_text(json.dumps(doc))
+    with pytest.raises(registry.RegistryRefused, match="schema"):
+        entries.inspect_entry_candidate_sandbox(root, ident)
+    assert (root / APT).read_bytes() == APT_TEXT
+
+
 def test_pending_or_unknown_metadata_blocks_entire_registry(root):
     ident = candidate(root, APT)
     state = root / "var/lib/repocache-client/entry-candidates-lab"

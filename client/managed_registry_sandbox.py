@@ -171,7 +171,8 @@ def _decode(name: str, raw: bytes) -> dict:
             or name != "candidate-" + entry["managed_id"] + ".json"
             or type(entry.get("source")) is not str
             or not pre.SOURCE_PATH.fullmatch(entry["source"])
-            or entry.get("source_format") not in {"apt-list", "apt-deb822", "dnf-repo"}
+            or type(entry.get("source_format")) is not str
+            or entry["source_format"] not in {"apt-list", "apt-deb822", "dnf-repo"}
             or type(entry.get("source_sha256")) is not str
             or not DIGEST.fullmatch(entry["source_sha256"])
             or any(type(entry.get(n)) is not int or entry[n] < 0 for n in (

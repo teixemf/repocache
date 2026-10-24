@@ -205,6 +205,19 @@ def test_corrupt_or_malicious_registry_state_fails_closed(root, mutation):
     assert (root / APT).read_bytes() == APT_SOURCE
 
 
+@pytest.mark.parametrize("wrong_type", ([], {}))
+def test_non_string_candidate_format_refuses_with_controlled_error(root, wrong_type):
+    ident = registry.register_candidate_sandbox(root, APT, digest(APT_SOURCE))["id"]
+    record = (root / "var/lib/repocache-client/managed-candidates-lab" /
+              ("candidate-" + ident + ".json"))
+    doc = json.loads(record.read_text())
+    doc["source_format"] = wrong_type
+    record.write_text(json.dumps(doc))
+    with pytest.raises(registry.RegistryRefused, match="schema"):
+        registry.inspect_candidate_sandbox(root, ident)
+    assert (root / APT).read_bytes() == APT_SOURCE
+
+
 def test_state_parent_symlink_is_refused(root):
     ident = registry.register_candidate_sandbox(root, APT, digest(APT_SOURCE))["id"]
     state = root / "var/lib/repocache-client"
