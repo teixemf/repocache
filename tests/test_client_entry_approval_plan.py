@@ -172,3 +172,30 @@ def test_new_url_not_exposed_from_unapproved_registry(root):
         approval.preview_entry_change_sandbox(
             root, ident, "https://user:secret@cache.invalid/repo")
     assert (root / APT).read_bytes() == APT_DATA
+
+
+
+def test_forged_sandbox_approval_cannot_be_consumed_as_non_root(
+        root, monkeypatch):
+    """A valid-looking local JSON file must not replace OS authorization."""
+    import json
+    ident = register(root, APT, APT_DATA)
+    with registry._registry_fd(root, create=True,
+                               subdir=approval.APPROVAL_DIR):
+        pass
+    directory = root / "var/lib/repocache-client" / approval.APPROVAL_DIR
+    record = {
+        "schema": 1, "candidate_id": ident,
+        "source_file_sha256": digest(APT_DATA),
+        "source_entry_sha256": boundaries.boundaries(APT, APT_DATA)[0]["sha256"],
+        "decision": "approve-entry-plan", "approver_euid": 0,
+        "scope": "sandbox-only", "production_write_eligible": False,
+    }
+    forged = directory / ("approval-" + ident + ".json")
+    forged.write_text(json.dumps(record))
+    forged.chmod(0o600)
+    monkeypatch.setattr(approval.os, "geteuid", lambda: 65534)
+    with pytest.raises(approval.ApprovalRefused, match="Root required"):
+        approval.preview_entry_change_sandbox(
+            root, ident, "https://cache.invalid/repo/")
+    assert (root / APT).read_bytes() == APT_DATA
