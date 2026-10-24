@@ -6,6 +6,7 @@ that could otherwise be rehashed after the CI wheel build.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib
 import io
@@ -93,6 +94,11 @@ def file_zip(modules: dict[str, bytes], *, duplicate=False,
             z.writestr("repocache_control-0.5.0.dist-info/entry_points.txt",
                        entry_points.get(entrypoint_attack,
                                         b"[console_scripts]\nrepocache = repocache.cli:cli\n"))
+        if entrypoint_attack != "wheel-missing":
+            z.writestr("repocache_control-0.5.0.dist-info/WHEEL",
+                       "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: "
+                       + ("false" if entrypoint_attack == "wheel-platlib" else "true")
+                       + "\nTag: py3-none-any\n")
         if alien_metadata:
             z.writestr("repocache_control-9.9.9.dist-info/entry_points.txt",
                        b"[console_scripts]\nunsafe=repocache.cli:app\n")
@@ -104,6 +110,30 @@ def file_zip(modules: dict[str, bytes], *, duplicate=False,
         if duplicate:
             with pytest.warns(UserWarning, match="Duplicate name"):
                 z.writestr("repocache/submissions.py", b"shadowed")
+    # Generate a genuine wheel RECORD manifest of every ZIP member, including
+    # the ATTACKED wheel's own bytes. Outer lock/SBOM hashes are also rehashed;
+    # a signing-time verifier must still refuse injected/forged RECORD paths.
+    with zipfile.ZipFile(stream, "a") as z:
+        rows = []
+        for item in z.infolist():
+            if item.is_dir():
+                continue
+            raw = z.read(item.filename)
+            digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+            rows.append(f"{item.filename},sha256={digest},{len(raw)}")
+        if entrypoint_attack == "record-foreign":
+            rows.append("../../etc/shadow,,")
+        if entrypoint_attack == "record-missing":
+            rows = [row for row in rows if not row.startswith("repocache/submissions.py,")]
+        if entrypoint_attack == "record-bad-hash":
+            rows[0] = rows[0].replace("sha256=", "sha256=0", 1)
+        if entrypoint_attack == "record-duplicate":
+            rows.append(rows[0])
+        record = "repocache_control-0.5.0.dist-info/RECORD"
+        rows.append(record + (",sha256=bogus,1" if entrypoint_attack == "record-self-hash"
+                              else ",,"))
+        if entrypoint_attack != "record-absent":
+            z.writestr(record, "\n".join(rows) + "\n")
     return stream.getvalue()
 
 
@@ -188,6 +218,8 @@ def test_real_verifier_accepts_exact_reviewed_first_party_wheel(
     "oversized-module", "oversized-metadata", "alien-dist-info",
     "entrypoint-modified", "entrypoint-extra", "entrypoint-foreign-group",
     "entrypoint-duplicate", "entrypoint-missing",
+    "wheel-missing", "wheel-platlib", "record-foreign", "record-missing",
+    "record-bad-hash", "record-duplicate", "record-self-hash", "record-absent",
 ])
 def test_real_verifier_rejects_rehashed_unreviewed_wheel(
         tmp_path, checked_source, attack):
