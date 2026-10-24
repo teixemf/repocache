@@ -171,3 +171,64 @@ def test_cross_device_restore_fails_closed_and_keeps_old_queue(
                                  service_stopped=lambda: True)
     assert _ids(dbfile) == {first, second}
     assert not list(backup.parent.glob(".repocache-restore-*"))
+
+
+def test_privileged_copy_rejects_inode_swap_and_oversized_file(tmp_path, monkeypatch):
+    original = tmp_path / "original.db"
+    replacement = tmp_path / "replacement.db"
+    output = tmp_path / "output.db"
+    original.write_bytes(b"original data")
+    replacement.write_bytes(b"attacker data")
+    expected = original.stat()
+    with replacement.open("rb") as source, output.open("wb") as destination:
+        with pytest.raises(SubmissionError, match="restore_source_changed"):
+            recovery._copy_verified_regular(source.fileno(), destination.fileno(), expected)
+    monkeypatch.setattr(recovery, "MAX_RESTORE_BYTES", 4)
+    with original.open("rb") as source, output.open("wb") as destination:
+        with pytest.raises(SubmissionError, match="restore_source_changed"):
+            recovery._copy_verified_regular(source.fileno(), destination.fileno(), expected)
+
+
+def test_privileged_copy_refuses_concurrent_service_file_growth(tmp_path, monkeypatch):
+    original = tmp_path / "queue.db"
+    output = tmp_path / "rollback.db"
+    original.write_bytes(b"old database contents")
+    original_read = recovery.os.read
+    touched = []
+
+    def grow_after_read(fd, length):
+        data = original_read(fd, length)
+        if data and not touched:
+            touched.append(True)
+            with original.open("ab") as writer:
+                writer.write(b"attacker append after stat")
+        return data
+
+    with original.open("rb") as source, output.open("wb") as destination:
+        expected = os.fstat(source.fileno())
+        monkeypatch.setattr(recovery.os, "read", grow_after_read)
+        with pytest.raises(SubmissionError, match="restore_source_changed"):
+            recovery._copy_verified_regular(source.fileno(), destination.fileno(), expected)
+    assert touched
+
+
+def test_restore_refuses_replaced_queue_inode_before_root_rollback_copy(
+    restored_state, monkeypatch
+):
+    import shutil
+    dbfile, backup, first, second = restored_state
+    original_verify = recovery._verify_sqlite
+    replacement = dbfile.parent / "replacement.sqlite3"
+
+    def swap_after_source_verification(staged):
+        original_verify(staged)
+        shutil.copy2(dbfile, replacement)
+        os.replace(replacement, dbfile)
+
+    monkeypatch.setattr(recovery, "_verify_sqlite", swap_after_source_verification)
+    with pytest.raises(SubmissionError, match="restore_source_changed"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
