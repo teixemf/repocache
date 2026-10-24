@@ -54,7 +54,7 @@ def checked_source(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "ROOT", root)
 
     def rebuild(dest: Path):
-        dest.mkdir()
+        assert dest.is_dir()  # production verifier created its secure tempdir
         path = dest / "repocache-v0.5.0.tar.gz"
         path.write_bytes(b"reviewed source archive fixture")
         return path, dest / (path.name + ".sha256")
