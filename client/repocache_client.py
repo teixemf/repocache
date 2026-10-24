@@ -76,15 +76,29 @@ def _distro(root: Path) -> dict[str, str]:
     return output
 
 
+def _needs_private_handling(value: str) -> bool:
+    """Reject ambiguous URLs from cache planning without exposing credentials."""
+    try:
+        uri = urlsplit(value.strip())
+        return bool(uri.username is not None or uri.password is not None
+                    or uri.query or uri.fragment)
+    except ValueError:
+        return True
+
+
 def _repo(name: str, kind: str, urls: list[str], path: Path,
-          server: str, enabled: bool = True) -> dict:
+          server: str, enabled: bool = True, *,
+          auth_hint: bool = False, weak_integrity: bool = False) -> dict:
     safe = list(dict.fromkeys(_safe_url(item) for item in urls if item.strip()))
     via = [_url_host(url) == _url_host(server) for url in safe]
     route = "mixed" if any(via) and not all(via) else (
         "repocache" if via and all(via) else "direct"
     )
     return {"name": name, "type": kind, "urls": safe,
-            "source": str(path), "enabled": enabled, "route": route}
+            "source": str(path), "enabled": enabled, "route": route,
+            "requires_auth_review": auth_hint or any(
+                _needs_private_handling(url) for url in urls),
+            "weak_integrity": weak_integrity}
 
 
 def _expand_mirror(uri: str, root: Path) -> list[str]:
@@ -136,15 +150,25 @@ def _apt_sources(root: Path, server: str) -> list[dict]:
                 if props.get("types") and props.get("uris"):
                     urls = [u for uri in props["uris"].split()
                             for u in _expand_mirror(uri, root)]
+                    weak = (props.get("trusted", "").lower() == "yes"
+                            or props.get("allow-insecure", "").lower() == "yes"
+                            or props.get("allow-weak", "").lower() == "yes")
                     repos.append(_repo(f"{path.name}:{number}", "apt-deb822",
                                        urls, path, server,
-                                       props.get("enabled", "yes").lower() != "no"))
+                                       props.get("enabled", "yes").lower() != "no",
+                                       weak_integrity=weak))
             continue
         for number, line in enumerate(source.splitlines(), 1):
-            match = re.match(r"^\s*(?:deb|deb-src)\s+(?:\[[^\]]+\]\s+)?(\S+)\s+", line)
+            match = re.match(
+                r"^\s*(?:deb|deb-src)\s+(?:\[([^\]]+)\]\s+)?(\S+)\s+", line)
             if match:
+                options = match.group(1) or ""
+                weak = bool(re.search(
+                    r"(?i)(?:^|\s)(?:trusted|allow-insecure|allow-weak)\s*=\s*yes(?:\s|$)",
+                    options))
                 repos.append(_repo(f"{path.name}:{number}", "apt-list",
-                                   _expand_mirror(match.group(1), root), path, server))
+                                   _expand_mirror(match.group(2), root), path, server,
+                                   weak_integrity=weak))
     return repos
 
 
@@ -165,8 +189,14 @@ def _dnf_sources(root: Path, server: str) -> list[dict]:
             val = parser[section]
             urls = [item for key in ("baseurl", "mirrorlist", "metalink")
                     for item in val.get(key, "").split()]
+            auth_keys = ("username", "password", "proxy_username",
+                         "proxy_password", "clientcert", "clientkey")
+            auth_hint = any(val.get(key, "").strip() for key in auth_keys)
+            weak = (val.get("gpgcheck", "1").lower() in ("0", "no", "false")
+                    or val.get("sslverify", "1").lower() in ("0", "no", "false"))
             repos.append(_repo(section, "dnf", urls, path, server,
-                               val.get("enabled", "1").lower() not in ("0", "no", "false")))
+                               val.get("enabled", "1").lower() not in ("0", "no", "false"),
+                               auth_hint=auth_hint, weak_integrity=weak))
     return repos
 
 
@@ -237,6 +267,41 @@ def _classify_repository(repo: dict, catalog: dict | None) -> str:
 def _compatibility_summary(repos: list[dict]) -> dict[str, int]:
     return {status: sum(r.get("compatibility") == status for r in repos)
             for status in ("supported", "unknown", "unavailable", "invalid")}
+
+
+def _sync_plan(repos: list[dict], catalog: dict) -> dict:
+    """Prepare an advisory, read-only plan. Never authorize package-source writes.
+
+    All seemingly supported sources still need native fallback, signing-policy
+    and repository-scoped TLS verification before they can be eligible for apply.
+    """
+    planned = []
+    counts: dict[str, int] = {}
+    for repo in repos:
+        supported = _mapped(repo, catalog)
+        if not repo.get("enabled", True):
+            status, reason = "skipped", "disabled-locally"
+        elif repo.get("requires_auth_review"):
+            status, reason = "blocked", "credentials-or-parameterized-url"
+        elif repo.get("weak_integrity"):
+            status, reason = "blocked", "weak-package-or-transport-verification"
+        elif _classify_repository(repo, catalog) == "invalid":
+            status, reason = "blocked", "invalid-or-unsupported-source"
+        elif repo.get("route") == "repocache":
+            status, reason = "blocked", "cache-only-no-fallback-evidence"
+        elif repo.get("route") == "mixed":
+            status, reason = "review", "existing-cache-fallback-not-verified"
+        elif not supported:
+            status, reason = "skipped", "not-in-active-catalog"
+        else:
+            status, reason = "candidate", "native-fallback-and-trust-not-verified"
+        counts[status] = counts.get(status, 0) + 1
+        planned.append(dict(repo, supported=supported, plan={
+            "status": status, "reason": reason, "action": "none",
+            "apply_eligible": False,
+        }))
+    return {"repositories": planned, "plan_summary": counts,
+            "dry_run": True, "planned_changes": 0}
 
 
 def _connectivity(server: str) -> list[dict]:
@@ -383,9 +448,10 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
             if args.apply:
                 raise ClientError("Applying changes is disabled until reviewed")
             catalog = _catalog(server)
-            _output({"server": server,
-                     "repositories": [dict(r, supported=_mapped(r, catalog)) for r in repos],
-                     "note": "DRY RUN: no APT/DNF configuration was changed."}, args.json)
+            plan = _sync_plan(repos, catalog)
+            _output({"server": server, **plan,
+                     "note": "DRY RUN: advisory only; native fallback and trust not verified. "
+                             "No APT/DNF configuration was changed."}, args.json)
             return 0
         raise ClientError("Unknown command")
     except (OSError, ValueError, ClientError) as exc:
