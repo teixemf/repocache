@@ -26,8 +26,11 @@ JOURNAL = "atomic-lab-journal.json"
 
 
 def _sandbox(root: Path) -> Path:
+    # Refuse the live filesystem root before any ownership-dependent check.
+    if Path(root) == Path("/"):
+        raise staging.StageError("Atomic test writer is restricted to /tmp sandbox roots")
     root = staging._root(root)
-    if (root == Path("/") or root == Path("/tmp") or
+    if (root == Path("/tmp") or
             root == Path("/var/tmp") or
             not any(parent in (Path("/tmp"), Path("/var/tmp"))
                     for parent in root.parents) or root.resolve() != root):
@@ -234,7 +237,9 @@ def _change(root: Path, ident: str, *, rollback: bool):
                 if any(meta[key] != record["metadata"][key]
                        for key in ("mode", "uid", "gid", "mtime_ns", "ctime_ns")):
                     raise staging.StageError("Source metadata drift")
-            if not _matches(current, meta, expected_payload, expected_identity):
+            if (not _matches(current, meta, expected_payload, expected_identity)
+                    or any(meta[key] != record["metadata"][key]
+                           for key in ("mode", "uid", "gid"))):
                 raise staging.StageError("External source drift; no replacement attempted")
             temp, new_identity = _write_new(parent_fd, leaf, ident, target, meta)
             _write_phase(directory, intent, new_identity, expected_identity)
@@ -268,6 +273,9 @@ def recover_sandbox(root: Path, ident: str) -> dict:
                                          max_size=staging.MAX_SOURCE_BYTES)
         with _source_directory(root, record["source"]) as (parent_fd, leaf):
             current, meta = _target_state(parent_fd, leaf)
+            if any(meta[key] != record["metadata"][key]
+                   for key in ("mode", "uid", "gid")):
+                raise staging.StageError("External source metadata drift during recovery")
             intended_identity = (journal["device"], journal["inode"])
             from_identity = (journal["from_device"], journal["from_inode"])
             if phase in ("installed", "restored"):
