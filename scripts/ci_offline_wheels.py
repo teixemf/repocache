@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """CI-only, native-OS offline dependency installation smoke for #49."""
 import argparse
+import base64
 import configparser
+import csv
 import gzip
 import hashlib
 import importlib.metadata
+from email.parser import BytesParser
 import io
 import json
 import os
@@ -132,6 +135,52 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
             except (configparser.Error, UnicodeError, ValueError) as exc:
                 raise RuntimeError(
                     "First-party wheel entry points differ from reviewed source") from exc
+        # A rehashed wheel can also poison RECORD. pip may preserve unknown
+        # RECORD rows in installed metadata; later uninstall must never trust
+        # attacker-invented paths outside the reviewed ZIP. Check the complete
+        # manifest and hashes before the owner signs any candidate.
+        if project_file.exists():
+            if metadata_prefix != (
+                    "repocache_control-" + str(project.get("version")) + ".dist-info/"):
+                raise RuntimeError("First-party wheel distribution version differs from source")
+            wheel_info = metadata_prefix + "WHEEL"
+            record_path = metadata_prefix + "RECORD"
+            if wheel_info not in names or record_path not in names:
+                raise RuntimeError("First-party wheel missing mandatory distribution metadata")
+            if (application.getinfo(wheel_info).file_size > 8192 or
+                    application.getinfo(record_path).file_size > 500_000):
+                raise RuntimeError("First-party wheel distribution metadata exceeds limit")
+            header = BytesParser().parsebytes(application.read(wheel_info))
+            if (header.get("Wheel-Version") != "1.0" or
+                    header.get("Root-Is-Purelib", "").lower() != "true"):
+                raise RuntimeError("First-party wheel install scheme differs from reviewed source")
+            try:
+                rows = list(csv.reader(
+                    application.read(record_path).decode("utf-8", "strict").splitlines(),
+                    strict=True))
+                records = {}
+                for row in rows:
+                    if (len(row) != 3 or row[0] in records or row[0] not in names
+                            or row[0].endswith("/")):
+                        raise ValueError("Unreviewed wheel RECORD entry")
+                    records[row[0]] = (row[1], row[2])
+                if set(records) != {name for name in names if not name.endswith("/")}:
+                    raise ValueError("Incomplete wheel RECORD inventory")
+                for name, (digest, length) in records.items():
+                    if name == record_path:
+                        if digest or length:
+                            raise ValueError("Self-referential wheel RECORD hash")
+                        continue
+                    item = application.getinfo(name)
+                    if not length.isdecimal() or int(length) != item.file_size:
+                        raise ValueError("Incorrect wheel RECORD size")
+                    actual = base64.urlsafe_b64encode(
+                        hashlib.sha256(application.read(name)).digest()
+                    ).rstrip(b"=").decode("ascii")
+                    if digest != "sha256=" + actual:
+                        raise ValueError("Incorrect wheel RECORD hash")
+            except (csv.Error, UnicodeError, ValueError) as exc:
+                raise RuntimeError("First-party wheel RECORD differs from ZIP contents") from exc
         packaged = {
             item.filename for item in members
             if item.filename.startswith("repocache/")
