@@ -8,7 +8,7 @@
 | `repocache --help`, `repocache update --help` non-interactive | Required | Required | Actual in-tree Typer commands; installed-v6 staged invocation mocked |
 | `repocache update check --help`, `repocache update list --help` and `--json` option | Required | Required | Actual Typer parser help, no network; online discovery remains read-only |
 | `repocache update list --json` result schema, offline/error exit codes and approved version selection | Required | Required | Actual in-tree JSON offline/error exit-code tests plus parser help; **NOT VERIFIED** on real native signed release |
-| `repocache-client check`, `repos list`, `repos submit`, `repos sync` | Required | Required | Actual in-tree client argparse/JSON tests using a disposable Debian 13 APT tree, explicit submit file, sync dry-run, refused --apply and synthetic offline check; **NOT VERIFIED** in real first-party online venv; client packaging remains separate |
+| `repocache-client check`, `repos list`, `repos submit`, `repos sync` | Required | Required | In-tree argparse/JSON tests against **disposable Debian 13 APT and AlmaLinux 10 DNF trees**; both exercise inventory, protected export, read-only sync, refused --apply and synthetic offline check. Added AlmaLinux fixture test requires exact-head CI confirmation; **NOT VERIFIED** in a real signed native online venv; client packaging remains separate |
 | `repocache repos --help`, `repocache health --help` | Required | Required | Actual in-tree CLI parser/help test; behavior on real host requires NGINX |
 | No-argument TTY starts interactive management TUI; no-argument non-TTY follows legacy JSON/status contract | Required | Required | **NOT VERIFIED** across separately installed target versions |
 | Textual mounts `RepoCacheApp`, shows overview/repositories/metrics/diagnostics | Required | Required | Real `App.run_test` against in-tree code, installed staged invocation mocked |
@@ -17,6 +17,8 @@
 | Signed installed wheel, full real pinned third-party closure, no prompts, no pip resolving | Wheelhouse (legacy) | Mandatory | Ephemeral Ed25519 security tests and **mocked** staged orchestration; no real PyPI/native signature evidence |
 | Pre-activation absence of state changes | Mandatory | Mandatory | Read-only current-target/installed-manifest digest comparison detects accidental changes but does not sandbox same-UID executable code |
 | Native Debian 13/Python 3.13, AlmaLinux 10/Python 3.12, NGINX, SELinux, systemd, rollback and same-version repair | Mandatory | Mandatory | Legacy disposable container regressions only; online real native signed candidate **NOT VERIFIED** |
+
+The AlmaLinux 10 test covers DNF INI sections, enabled/disabled repository filtering, exported-file permissions, dry-run catalog matching, offline diagnostics and byte-for-byte source preservation. It is a **synthetic filesystem fixture**, not a booted AlmaLinux 10, root/SELinux or signed-release test.
 
 ## Pre-activation trust boundaries
 

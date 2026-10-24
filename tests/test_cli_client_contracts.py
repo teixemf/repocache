@@ -137,3 +137,78 @@ def test_server_failed_update_never_prompts_or_reports_success(monkeypatch):
     assert document["ok"] is False
     assert "Synthetic unauthenticated" in document["error"]
     assert "Proceed?" not in result.output
+
+
+@pytest.fixture
+def test_almalinux10_root(tmp_path):
+    """Disposable AlmaLinux 10 DNF tree; never inspect the runner's /etc."""
+    (tmp_path / "etc/yum.repos.d").mkdir(parents=True)
+    (tmp_path / "etc/os-release").write_text(
+        'ID=almalinux\nVERSION_ID="10.1"\n', encoding="utf-8")
+    (tmp_path / "etc/yum.repos.d/official.repo").write_text(
+        "[baseos]\n"
+        "name=AlmaLinux BaseOS\n"
+        "baseurl=https://repo.almalinux.org/almalinux/10/BaseOS/x86_64/os/\n"
+        "enabled=1\n"
+        "\n[disabled-third-party]\n"
+        "name=Disabled third-party\n"
+        "baseurl=https://packages.example.org/private/\n"
+        "enabled=0\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_almalinux10_dnf_cli_inventory_export_and_sync_are_read_only(
+        test_almalinux10_root, monkeypatch, capsys):
+    """Exercise approved client commands against actual DNF parser, offline."""
+    client = _client()
+    root = test_almalinux10_root
+    repo_file = root / "etc/yum.repos.d/official.repo"
+    before = repo_file.read_bytes()
+    args = ["--server", "https://cache.example.org", "--json"]
+
+    assert client.run(args + ["repos", "list"], root=root) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed["os"]["ID"] == "almalinux"
+    assert listed["os"]["VERSION_ID"] == "10.1"
+    assert [(repo["name"], repo["type"], repo["enabled"])
+            for repo in listed["repositories"]] == [
+                ("baseos", "dnf", True),
+                ("disabled-third-party", "dnf", False)]
+    upstream = "https://repo.almalinux.org/almalinux/10/BaseOS/x86_64/os/"
+    assert listed["repositories"][0]["urls"] == [upstream]
+
+    exported = root / "request.json"
+    assert client.run(
+        args + ["repos", "submit", "--output", str(exported)], root=root) == 0
+    capsys.readouterr()
+    request = json.loads(exported.read_text(encoding="utf-8"))
+    assert request["os"] == {"id": "almalinux", "version": "10.1"}
+    assert request["repositories"] == [{"type": "dnf", "url": upstream}]
+    assert exported.stat().st_mode & 0o777 == 0o600
+
+    monkeypatch.setattr(client, "_catalog", lambda server: {
+        "schema": 1,
+        "repositories": [{
+            "upstream": upstream,
+            "cache": "https://cache.example.org/almalinux/baseos/",
+        }],
+    })
+    assert client.run(args + ["repos", "sync"], root=root) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert "DRY RUN" in preview["note"]
+    assert [repo["supported"] for repo in preview["repositories"]] == [True, False]
+    assert client.run(args + ["repos", "sync", "--apply"], root=root) == 2
+    rejected = json.loads(capsys.readouterr().out)
+    assert rejected["ok"] is False
+    assert repo_file.read_bytes() == before
+
+    monkeypatch.setattr(client, "_connectivity", lambda server: [
+        {"name": "dns", "ok": False, "detail": "Synthetic offline"}])
+    monkeypatch.setattr(client, "_catalog", lambda server:
+                        pytest.fail("Offline check must not fetch a catalog"))
+    assert client.run(args + ["check"], root=root) == 1
+    checked = json.loads(capsys.readouterr().out)
+    assert checked["ok"] is False
+    assert checked["exit_code"] == 1
+    assert checked["repositories"][0]["type"] == "dnf"
+    assert repo_file.read_bytes() == before
