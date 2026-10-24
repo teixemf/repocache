@@ -600,12 +600,22 @@ class SubmissionQueue:
         if os.geteuid() != 0:
             raise SubmissionError("operator_required", 403)
         destination = Path(destination)
+        # A root-private final directory is insufficient when an untrusted
+        # ancestor can rename it. Refuse relative paths and inspect every
+        # ancestor before creating or reading a privileged backup.
+        if not destination.is_absolute():
+            raise SubmissionError("unsafe_backup_destination", 403)
         try:
             parent = destination.parent.lstat()
             if (not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o077
                     or parent.st_uid != 0 or destination.exists() or
                     destination.is_symlink()):
                 raise SubmissionError("unsafe_backup_destination", 403)
+            for ancestor in destination.parent.parents:
+                st = ancestor.lstat()
+                if (not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or
+                        (st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX)):
+                    raise SubmissionError("unsafe_backup_destination", 403)
             descriptor, temp = tempfile.mkstemp(prefix=".repocache-backup-", dir=destination.parent)
             try:
                 os.fchmod(descriptor, 0o600)
