@@ -10,10 +10,14 @@ with identical content, is a conflict and must not be overwritten.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import json
 import os
 import stat
+
+import source_metadata_lab as attributes
 from pathlib import Path
 
 import transaction_stage as staging
@@ -42,7 +46,8 @@ def _sandbox(root: Path) -> Path:
 
 
 def _phase(directory: Path) -> dict | None:
-    allowed = {"manifest.json", "original.bin", "proposed.bin", JOURNAL}
+    allowed = {"manifest.json", "original.bin", "proposed.bin", JOURNAL,
+               "original-attributes.json"}
     if {entry.name for entry in directory.iterdir()} - allowed:
         raise staging.StageError("Unknown transaction file; manual review required")
     path = directory / JOURNAL
@@ -63,6 +68,53 @@ def _phase(directory: Path) -> dict | None:
             or type(data.get("from_inode")) is not int or data["from_inode"] < 1):
         raise staging.StageError("Invalid atomic intent journal")
     return data
+
+
+def _protected_attributes(directory: Path, record: dict) -> tuple[tuple[str, bytes], ...]:
+    """Validate original xattrs bound to the stage's protected source hash/inode."""
+    path = directory / "original-attributes.json"
+    if not path.exists() and not path.is_symlink():
+        return ()
+    raw = staging._read_private(path, max_size=128 * 1024)
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+        if (type(obj) is not dict or set(obj) != {
+                "schema", "original_sha256", "original_device",
+                "original_inode", "attributes"
+            } or type(obj["schema"]) is not int or obj["schema"] != 1
+                or obj["original_sha256"] != record["before_sha256"]
+                or obj["original_device"] != record["metadata"]["device"]
+                or obj["original_inode"] != record["metadata"]["inode"]
+                or type(obj["attributes"]) is not list
+                or len(obj["attributes"]) > attributes.MAX_ATTRS):
+            raise ValueError("Invalid attribute snapshot")
+        parsed = []
+        total = 0
+        for item in obj["attributes"]:
+            if (type(item) is not list or len(item) != 2 or
+                    type(item[0]) is not str or type(item[1]) is not str
+                    or not attributes._allowed_attribute(item[0])):
+                raise ValueError("Unsupported attribute")
+            value = base64.b64decode(item[1], validate=True)
+            total += len(value)
+            if (len(value) > attributes.MAX_ATTRIBUTE_BYTES
+                    or total > attributes.MAX_TOTAL_ATTRIBUTE_BYTES):
+                raise ValueError("Oversized attribute")
+            parsed.append((item[0], value))
+        if parsed != sorted(set(parsed), key=lambda pair: pair[0]):
+            raise ValueError("Duplicate or unordered attributes")
+        return tuple(parsed)
+    except (ValueError, KeyError, TypeError, UnicodeError, binascii.Error) as exc:
+        raise staging.StageError("Invalid protected original metadata snapshot") from exc
+
+
+def _check_attributes(fd: int, expected: tuple[tuple[str, bytes], ...]) -> None:
+    # Missing a snapshot must never authorize silently dropping xattrs.
+    _, actual = attributes._metadata(fd)
+    if actual != expected:
+        if not expected:
+            raise staging.StageError("Source has unhandled extended attributes")
+        raise staging.StageError("External source attribute drift")
 
 
 def _write_phase(directory: Path, phase: str, identity: tuple[int, int],
@@ -113,10 +165,11 @@ def _source_directory(root: Path, relative: str):
         os.close(fd)
 
 
-def _target_state(directory_fd: int, leaf: str) -> tuple[bytes, dict]:
+def _target_state(directory_fd: int, leaf: str,
+                  expected_attrs: tuple[tuple[str, bytes], ...] = ()) -> tuple[bytes, dict]:
     try:
-        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                     dir_fd=directory_fd)
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                     | os.O_NONBLOCK, dir_fd=directory_fd)
     except OSError as exc:
         raise staging.StageError("Repository source missing or replaced") from exc
     try:
@@ -129,15 +182,14 @@ def _target_state(directory_fd: int, leaf: str) -> tuple[bytes, dict]:
                 or (info.st_dev, info.st_ino) !=
                 (at_path.st_dev, at_path.st_ino)):
             raise staging.StageError("Untrusted or replaced source inode")
-        # For the test-only subset, do not silently discard ACL/xattr/SELinux.
-        if os.listxattr(fd):
-            raise staging.StageError("Source has unhandled extended attributes")
+        _check_attributes(fd, expected_attrs)
         content = os.read(fd, staging.MAX_SOURCE_BYTES + 1)
         after = os.fstat(fd)
         if (len(content) > staging.MAX_SOURCE_BYTES
                 or (info.st_mtime_ns, info.st_ctime_ns, info.st_size) !=
                    (after.st_mtime_ns, after.st_ctime_ns, after.st_size)):
             raise staging.StageError("Repository source changed during read")
+        _check_attributes(fd, expected_attrs)
         return content, {
             "device": after.st_dev, "inode": after.st_ino,
             "mode": stat.S_IMODE(after.st_mode), "uid": after.st_uid,
@@ -155,7 +207,8 @@ def _matches(payload: bytes, metadata: dict, expected: bytes,
 
 
 def _write_new(directory_fd: int, leaf: str, ident: str,
-               data: bytes, metadata: dict) -> tuple[str, tuple[int, int]]:
+               data: bytes, metadata: dict,
+               expected_attrs: tuple[tuple[str, bytes], ...] = ()) -> tuple[str, tuple[int, int]]:
     # Deterministic private temp names make ambiguous abandoned writes visible
     # and unambiguously fail closed rather than being silently deleted.
     temp = ".repocache-atomic-%s" % ident
@@ -172,6 +225,18 @@ def _write_new(directory_fd: int, leaf: str, ident: str,
             stream.write(data)
             stream.flush()
         os.fchmod(fd, metadata["mode"])
+        try:
+            for name, value in expected_attrs:
+                if name != "system.posix_acl_access":
+                    os.setxattr(fd, name, value)
+            for name, value in expected_attrs:
+                if name == "system.posix_acl_access":
+                    os.setxattr(fd, name, value)
+        except OSError as exc:
+            raise staging.StageError("Cannot preserve approved source metadata") from exc
+        _check_attributes(fd, expected_attrs)
+        if stat.S_IMODE(os.fstat(fd).st_mode) != metadata["mode"]:
+            raise staging.StageError("New source mode differs after ACL installation")
         os.fsync(fd)
         info = os.fstat(fd)
         return temp, (info.st_dev, info.st_ino)
@@ -191,6 +256,30 @@ def _replace(directory_fd: int, temp: str, leaf: str,
     os.fsync(directory_fd)
 
 
+def _pending_file(directory_fd: int, ident: str,
+                  expected_identity: tuple[int, int] | None,
+                  expected_payload: bytes,
+                  expected_attrs: tuple[tuple[str, bytes], ...]) -> str | None:
+    """Read a pending temporary file ONLY when a journal proves its identity.
+
+    A missing temp is distinct from a malicious symlink, foreign inode or
+    unknown content. Never delete or overwrite an unverified file.
+    """
+    name = ".repocache-atomic-%s" % ident
+    try:
+        observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if expected_identity is None:
+        raise staging.StageError("Unjournalled source temporary file requires review")
+    contents, metadata = _target_state(directory_fd, name, expected_attrs)
+    if not _matches(contents, metadata, expected_payload, expected_identity):
+        raise staging.StageError("Foreign or modified source temporary file")
+    if (observed.st_dev, observed.st_ino) != expected_identity:
+        raise staging.StageError("Pending source temporary inode changed")
+    return name
+
+
 def _precheck(root: Path, ident: str):
     root = _sandbox(root)
     if not isinstance(ident, str) or not staging.STAGE_ID.fullmatch(ident):
@@ -205,13 +294,14 @@ def _prepare(root: Path, ident: str, state: Path) -> tuple[Path, dict]:
         raise staging.StageError("Unknown stage ID")
     directory = state / ident
     _phase(directory)  # Validate unknown partial journals before any mutation.
-    return directory, records[ident]
+    attrs = _protected_attributes(directory, records[ident])
+    return directory, records[ident], attrs
 
 
 def _change(root: Path, ident: str, *, rollback: bool):
     root, state = _precheck(root, ident)
     with staging._locked(state):
-        directory, record = _prepare(root, ident, state)
+        directory, record, expected_attrs = _prepare(root, ident, state)
         prior = staging._read_private(directory / "original.bin",
                                       max_size=staging.MAX_SOURCE_BYTES)
         proposed = staging._read_private(directory / "proposed.bin",
@@ -222,7 +312,7 @@ def _change(root: Path, ident: str, *, rollback: bool):
         if not rollback and journal is not None:
             raise staging.StageError("Stage already modified or needs recovery")
         with _source_directory(root, record["source"]) as (parent_fd, leaf):
-            current, meta = _target_state(parent_fd, leaf)
+            current, meta = _target_state(parent_fd, leaf, expected_attrs)
             if rollback:
                 expected_identity = (journal["device"], journal["inode"])
                 expected_payload = proposed
@@ -241,7 +331,8 @@ def _change(root: Path, ident: str, *, rollback: bool):
                     or any(meta[key] != record["metadata"][key]
                            for key in ("mode", "uid", "gid"))):
                 raise staging.StageError("External source drift; no replacement attempted")
-            temp, new_identity = _write_new(parent_fd, leaf, ident, target, meta)
+            temp, new_identity = _write_new(parent_fd, leaf, ident, target, meta,
+                                            expected_attrs)
             _write_phase(directory, intent, new_identity, expected_identity)
             _replace(parent_fd, temp, leaf, expected_identity)
             _write_phase(directory, completed, new_identity, expected_identity)
@@ -262,9 +353,11 @@ def recover_sandbox(root: Path, ident: str) -> dict:
     """Fail closed on ambiguity; undo a provable interrupted install only."""
     root, state = _precheck(root, ident)
     with staging._locked(state):
-        directory, record = _prepare(root, ident, state)
+        directory, record, expected_attrs = _prepare(root, ident, state)
         journal = _phase(directory)
         if journal is None:
+            with _source_directory(root, record["source"]) as (parent_fd, _):
+                _pending_file(parent_fd, ident, None, b"", expected_attrs)
             return {"status": "no-intent", "id": ident}
         phase = journal["phase"]
         prior = staging._read_private(directory / "original.bin",
@@ -272,7 +365,7 @@ def recover_sandbox(root: Path, ident: str) -> dict:
         proposed = staging._read_private(directory / "proposed.bin",
                                          max_size=staging.MAX_SOURCE_BYTES)
         with _source_directory(root, record["source"]) as (parent_fd, leaf):
-            current, meta = _target_state(parent_fd, leaf)
+            current, meta = _target_state(parent_fd, leaf, expected_attrs)
             if any(meta[key] != record["metadata"][key]
                    for key in ("mode", "uid", "gid")):
                 raise staging.StageError("External source metadata drift during recovery")
@@ -282,23 +375,49 @@ def recover_sandbox(root: Path, ident: str) -> dict:
                 expected = proposed if phase == "installed" else prior
                 if not _matches(current, meta, expected, intended_identity):
                     raise staging.StageError("Committed source changed externally")
+                _pending_file(parent_fd, ident, None, b"", expected_attrs)
                 return {"status": phase, "id": ident}
             if phase == "install-intent":
                 if _matches(current, meta, prior, from_identity):
+                    pending = _pending_file(parent_fd, ident, intended_identity,
+                                            proposed, expected_attrs)
+                    if pending is not None:
+                        # Only remove the still-identical journalled inode.
+                        observed = os.stat(pending, dir_fd=parent_fd,
+                                           follow_symlinks=False)
+                        if (observed.st_dev, observed.st_ino) != intended_identity:
+                            raise staging.StageError("Pending source inode changed")
+                        os.unlink(pending, dir_fd=parent_fd)
+                        os.fsync(parent_fd)
                     _write_phase(directory, "restored", from_identity, from_identity)
                     return {"status": "not-applied", "id": ident}
                 if not _matches(current, meta, proposed, intended_identity):
                     raise staging.StageError("External drift during interrupted apply")
+                # The install temp should have been consumed in this phase.
+                # If it still exists, an unknown actor or crash window has
+                # created an ambiguous state: do not overwrite it.
+                _pending_file(parent_fd, ident, None, b"", expected_attrs)
             elif phase == "restore-intent":
                 if _matches(current, meta, prior, intended_identity):
+                    _pending_file(parent_fd, ident, None, b"", expected_attrs)
                     _write_phase(directory, "restored", intended_identity, from_identity)
                     return {"status": "restored", "id": ident}
                 if not _matches(current, meta, proposed, from_identity):
                     raise staging.StageError("External drift during interrupted rollback")
+                # Resume the verified exact rollback intent rather than
+                # creating a second temp and failing with EEXIST.
+                pending = _pending_file(parent_fd, ident, intended_identity,
+                                        prior, expected_attrs)
+                if pending is None:
+                    raise staging.StageError("Missing journalled rollback temporary file")
+                _replace(parent_fd, pending, leaf, from_identity)
+                _write_phase(directory, "restored", intended_identity, from_identity)
+                return {"status": "restored", "id": ident}
             else:
                 raise staging.StageError("Invalid recovery state")
-            temp, new_identity = _write_new(parent_fd, leaf, ident, prior, meta)
-            active_identity = ((meta["device"], meta["inode"]))
+            temp, new_identity = _write_new(parent_fd, leaf, ident, prior, meta,
+                                            expected_attrs)
+            active_identity = (meta["device"], meta["inode"])
             _write_phase(directory, "restore-intent", new_identity, active_identity)
             _replace(parent_fd, temp, leaf, active_identity)
             _write_phase(directory, "restored", new_identity, active_identity)
