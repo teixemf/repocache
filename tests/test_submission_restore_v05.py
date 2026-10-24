@@ -232,3 +232,50 @@ def test_restore_refuses_replaced_queue_inode_before_root_rollback_copy(
         )
     assert _ids(dbfile) == {first, second}
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+def test_restore_refuses_attacker_renameable_ancestor(tmp_path, monkeypatch):
+    import stat
+    from types import SimpleNamespace
+    private = tmp_path / "protected"
+    private.mkdir(mode=0o700)
+    real_lstat = Path.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        result = real_lstat(path, *args, **kwargs)
+        if path == private:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
+        if path == private.parent:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=12345)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", fake_lstat)
+        with pytest.raises(SubmissionError, match="unsafe_restore_ancestor"):
+            recovery._trusted_private_dir(private)
+
+
+def test_restore_refuses_service_owned_directory_below_sticky_parent(
+    tmp_path, monkeypatch
+):
+    import stat
+    from types import SimpleNamespace
+    private = tmp_path / "service-owned"
+    private.mkdir(mode=0o700)
+    real_lstat = Path.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        result = real_lstat(path, *args, **kwargs)
+        if path == private:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=12345)
+        if path == private.parent:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o1777, st_uid=0)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", fake_lstat)
+        patch.setattr(
+            recovery.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=12345)
+        )
+        with pytest.raises(SubmissionError, match="unsafe_restore_ancestor"):
+            recovery._trusted_private_dir(private, service_owned=True)
