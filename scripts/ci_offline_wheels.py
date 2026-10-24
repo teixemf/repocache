@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 def run(*args, **opts):
@@ -121,6 +122,29 @@ def build(out, release=False, poison_backend=False):
         raise RuntimeError("Empty resolved wheel set")
     if any(re.fullmatch(r"[A-Za-z0-9_.+-]+\.whl", x.name) is None for x in items):
         raise RuntimeError("Unrecognized wheel filename")
+    # The immutable v0.4.0 updater accepts only its historical source tar
+    # inventory. The signed first-party wheel may contain new modules, but
+    # every shipped Python module must exactly match the reviewed checkout.
+    app_wheels = [p for p in items if p.name.startswith("repocache_control-")]
+    if len(app_wheels) != 1:
+        raise RuntimeError("Missing or ambiguous first-party wheel")
+    expected_modules = {
+        "repocache/" + p.name: p.read_bytes()
+        for p in (source / "src/repocache").glob("*.py")
+    }
+    with zipfile.ZipFile(app_wheels[0]) as application:
+        packaged = {
+            name for name in application.namelist()
+            if name.startswith("repocache/") and name.endswith(".py")
+            and name.count("/") == 1
+        }
+        if packaged != set(expected_modules):
+            raise RuntimeError("First-party wheel module inventory differs from reviewed source")
+        for name, expected in expected_modules.items():
+            if application.read(name) != expected:
+                raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
+    print("PASS: first-party wheel modules exactly match reviewed source bytes",
+          flush=True)
     lock = "".join("./wheels/" + p.name + " --hash=sha256:" +
                    checksum(p.read_bytes()) + "\n" for p in items).encode("ascii")
     # Complete, publisher-digest-bound CycloneDX inventory: include
