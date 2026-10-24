@@ -136,11 +136,14 @@ class WorkerConnection:
             raise WorkerError("worker_spawn_failed") from exc
         # Keep stdin nonblocking: a stalled or hostile worker must not trap
         # the privileged parent inside a buffered pipe write indefinitely.
-        if self.process.stdin is None:
+        try:
+            if self.process.stdin is None:
+                raise OSError("missing worker stdin")
+            os.set_blocking(self.process.stdin.fileno(), False)
+        except OSError as exc:
             self.process.kill()
             self.process.wait()
-            raise WorkerError("worker_pipe_missing")
-        os.set_blocking(self.process.stdin.fileno(), False)
+            raise WorkerError("worker_pipe_unavailable") from exc
         self._buffer = bytearray()
         self._closed = False
         try:
