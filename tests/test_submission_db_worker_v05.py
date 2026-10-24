@@ -145,3 +145,65 @@ def test_root_refuses_relative_queue_path_before_sqlite(monkeypatch):
     monkeypatch.setattr(submissions.os, "geteuid", lambda: 0)
     with pytest.raises(SubmissionError, match="unsafe_store_path"):
         queue._needs_worker()
+
+
+def test_privileged_worker_ipc_write_is_bounded_and_handles_partial_writes(
+    monkeypatch
+):
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(
+        stdin=SimpleNamespace(fileno=lambda: 77)
+    )
+    writes = []
+    monkeypatch.setattr(
+        worker.select, "select", lambda readers, writers, errors, timeout:
+        ([], writers, []),
+    )
+
+    def short_write(fd, payload):
+        assert fd == 77
+        chunk = bytes(payload[:3])
+        writes.append(chunk)
+        return len(chunk)
+
+    monkeypatch.setattr(worker.os, "write", short_write)
+    connection._send({"op": "ping"})
+    assert b"".join(writes) == b'{"op":"ping"}\n'
+
+
+def test_privileged_worker_ipc_send_refuses_stalled_pipe(monkeypatch):
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(
+        stdin=SimpleNamespace(fileno=lambda: 77)
+    )
+    monkeypatch.setattr(
+        worker.select, "select", lambda readers, writers, errors, timeout:
+        ([], [], []),
+    )
+    monkeypatch.setattr(
+        worker.os, "write", lambda *args: pytest.fail("must not write"),
+    )
+    with pytest.raises(worker.WorkerError, match="worker_send_timeout"):
+        connection._send({"op": "ping"})
+
+
+def test_privileged_worker_ipc_send_handles_full_pipe_until_deadline(
+    monkeypatch
+):
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(
+        stdin=SimpleNamespace(fileno=lambda: 77)
+    )
+    ticks = iter((0, 1, 11))
+    monkeypatch.setattr(worker.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        worker.select, "select", lambda readers, writers, errors, timeout:
+        ([], writers, []),
+    )
+
+    def full_pipe(*args):
+        raise BlockingIOError()
+
+    monkeypatch.setattr(worker.os, "write", full_pipe)
+    with pytest.raises(worker.WorkerError, match="worker_send_timeout"):
+        connection._send({"op": "ping"})
