@@ -2,7 +2,7 @@
 
 **Status:** PROPOSED architecture, no executable privileged helper; [issue #24](https://github.com/teixemf/repocache/issues/24).  
 **Scope:** Debian 13 and AlmaLinux 10 only.  
-**Related:** protected staging #131, sandbox atomic recovery #132, source preflight #133, metadata #134, metadata-transaction integration #135. These PRs remain independent or stacked, **not yet merged**.
+**Related:** protected staging #131, sandbox atomic recovery #132, source preflight #133, metadata #134, metadata-transaction integration #135. #131–#135 are merged into main. This document proposes a future helper only and does not grant production write authority.
 
 ## Security model
 
