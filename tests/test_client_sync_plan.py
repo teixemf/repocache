@@ -53,6 +53,8 @@ def host(tmp_path):
         "username=account\npassword=do-not-emit\nenabled=1\n"
         "[unsafe]\nbaseurl=https://rpm.example.org/linux/\n"
         "gpgcheck=0\nenabled=1\n"
+        "[mirror]\nmirrorlist=https://rpm.example.org/linux/mirrors\nenabled=1\n"
+        "[metalink]\nmetalink=https://rpm.example.org/linux/metadata\nenabled=1\n"
     )
     return tmp_path
 
@@ -77,6 +79,8 @@ def test_advisory_plan_handles_apts_dnf_weak_signatures_and_private_urls(host):
     assert by_name["rpm"]["plan"]["status"] == "candidate"
     assert by_name["restricted"]["plan"]["reason"] == "credentials-or-parameterized-url"
     assert by_name["unsafe"]["plan"]["reason"] == "weak-package-or-transport-verification"
+    assert by_name["mirror"]["plan"]["reason"] == "native-mirror-indirection-not-verified"
+    assert by_name["metalink"]["plan"]["reason"] == "native-mirror-indirection-not-verified"
     assert all(x["plan"]["action"] == "none" for x in plan["repositories"])
     assert "password" not in json.dumps(plan)
     assert "do-not-emit" not in json.dumps(plan)
@@ -142,3 +146,37 @@ def test_explicitly_disabled_sources_precede_other_plan_checks(tmp_path):
     entry = client._sync_plan([repo], CATALOG)["repositories"][0]
     assert entry["plan"]["reason"] == "disabled-locally"
     assert not entry["plan"]["apply_eligible"]
+
+
+
+@pytest.mark.parametrize("url, expected", (
+    ("https://cache.example.org/debian/", True),
+    ("https://cache.example.org:443/debian/", True),
+    ("http://cache.example.org/debian/", False),
+    ("https://cache.example.org:8443/debian/", False),
+    ("https://user:pass@cache.example.org/debian/", False),
+    ("https://other.example.org/debian/", False),
+    ("https://cache.example.org:65536/debian/", False),
+))
+def test_cache_origin_includes_scheme_port_and_rejects_credentials(url, expected):
+    assert client._same_https_origin(url, SERVER) is expected
+
+
+def test_catalog_rejects_cache_route_on_different_port(monkeypatch):
+    def redirect_port(_url, *, max_bytes):
+        return {"schema": 1, "repositories": [{
+            "upstream": "https://deb.debian.org/debian/",
+            "cache": "https://cache.example.org:8443/debian/",
+        }]}
+    monkeypatch.setattr(client, "_fetch_json", redirect_port)
+    with pytest.raises(client.ClientError, match="Invalid catalog URL"):
+        client._catalog(SERVER)
+
+
+def test_http_same_host_is_not_treated_as_current_cache(tmp_path):
+    repo = client._repo("http", "apt-list",
+                        ["http://cache.example.org/debian/"],
+                        tmp_path / "repo.list", SERVER)
+    assert repo["route"] == "direct"
+    result = client._sync_plan([repo], CATALOG)
+    assert result["repositories"][0]["plan"]["reason"] == "not-in-active-catalog"
