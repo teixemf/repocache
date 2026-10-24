@@ -15,13 +15,21 @@ repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 printf 'OS userspace: %s\nKernel: GitHub runner (NOT native distro kernel)\n' "$image"
 # GitHub Docker's user namespace syscalls must be exposed. This is scoped
 # to a disposable test-only container, not a REPOCACHE production host.
-# Never use --privileged, host networking or the Docker socket. Test-only
-# CAP_NET_ADMIN is scoped to this disposable container network namespace
-# to let bwrap set up loopback; it does not grant host network access.
+# Never use --privileged, host networking, host PID namespace or Docker socket.
+# Test-only CAP_NET_ADMIN is scoped to the container network namespace.
+# Docker's default masked/read-only /proc paths prevent rootless bwrap
+# from mounting a *new* procfs in its own PID namespace (EPERM).
+# systempaths=unconfined removes the OUTER disposable container's procfs
+# masking; it does NOT bind the host /proc or weaken bwrap namespace flags.
+# This broadens CI container exposure to kernel procfs interfaces and MUST NOT
+# be reused for a production service or counted as native OS/SELinux evidence.
 docker run --rm --pull=always \
   --cap-add NET_ADMIN \
   --security-opt seccomp=unconfined \
   --security-opt apparmor=unconfined \
+  --security-opt systempaths=unconfined \
+  --pids-limit 512 \
+  --memory 3g \
   --mount "type=bind,source=$repo,target=/source,readonly" \
   "$image" /bin/sh -eu -c '
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
