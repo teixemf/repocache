@@ -22,7 +22,8 @@ def _staging(tmp_path, monkeypatch):
 
     def root_owned_fstat(fd):
         st = real_fstat(fd)
-        return SimpleNamespace(st_mode=st.st_mode, st_uid=0)
+        return SimpleNamespace(st_mode=st.st_mode, st_uid=0,
+                               st_nlink=st.st_nlink, st_size=st.st_size)
 
     monkeypatch.setattr(worker.os, "fstat", root_owned_fstat)
     return path
@@ -95,3 +96,47 @@ def test_backup_ipc_enforces_total_deadline_across_progress(tmp_path, monkeypatc
     with pytest.raises(worker.WorkerError, match="worker_backup_timeout"):
         connection.backup_file(stage)
     assert stage.stat().st_size == 0
+
+
+def test_backup_ipc_refuses_hardlinked_root_stage(tmp_path, monkeypatch):
+    stage = _staging(tmp_path, monkeypatch)
+    os.link(stage, stage.with_name("unexpected-second-link"))
+    connection, requests = _connection([{"ok": True, "done": True}])
+    with pytest.raises(worker.WorkerError, match="unsafe_backup_staging"):
+        connection.backup_file(stage)
+    assert requests == []
+
+
+def test_backup_ipc_refuses_nonempty_root_stage(tmp_path, monkeypatch):
+    stage = _staging(tmp_path, monkeypatch)
+    stage.write_bytes(b"stale backup bytes")
+    connection, requests = _connection([{"ok": True, "done": True}])
+    with pytest.raises(worker.WorkerError, match="unsafe_backup_staging"):
+        connection.backup_file(stage)
+    assert requests == []
+    assert stage.read_bytes() == b"stale backup bytes"
+
+
+def test_backup_ipc_refuses_fifo_substitution_without_blocking(tmp_path, monkeypatch):
+    stage = _staging(tmp_path, monkeypatch)
+    original_open = os.open
+    swapped = False
+
+    def swap_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(stage) and not swapped:
+            swapped = True
+            assert flags & os.O_NONBLOCK, "privileged backup must never block on a FIFO"
+            stage.unlink()
+            os.mkfifo(stage, mode=0o600)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(worker.os, "open", swap_before_open)
+    connection, requests = _connection([{"ok": True, "done": True}])
+    with pytest.raises(worker.WorkerError, match="unsafe_backup_staging"):
+        connection.backup_file(stage)
+    assert swapped
+    assert stage.is_fifo()
+    assert requests == []
