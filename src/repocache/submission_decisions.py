@@ -1,0 +1,294 @@
+"""Root-owned, append-only decision receipts independent from intake SQLite.
+
+A compromised intake service UID must not be able to create, replace, or
+delete verified administrator decisions. Root is the trust anchor: this is
+NOT tamper-proof against root, hostile storage, or a rollback of this entire
+protected directory. Native permissions/SELinux are issue #49.
+"""
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import tempfile
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+DEFAULT_DECISION_DIR = Path("/var/lib/repocache/decisions")
+MAX_EVENTS = 1024
+_HEX_ID = re.compile(r"[0-9a-f]{32}\Z")
+_HEX_HASH = re.compile(r"[0-9a-f]{64}\Z")
+STATES = {"review": "REVIEWED", "reject": "REJECTED", "reopen": "PENDING"}
+
+
+class DecisionError(ValueError):
+    def __init__(self, code: str, status: int = 503):
+        super().__init__(code)
+        self.code, self.status = code, status
+
+
+def _require_root() -> None:
+    if os.geteuid() != 0:
+        raise DecisionError("operator_required", 403)
+
+
+def _trusted_dir(path: Path) -> None:
+    # Root-only parent must be provisioned explicitly. No auto-created
+    # directory can accidentally inherit a service-writable ancestor.
+    try:
+        st = path.lstat()
+        ancestor = path.parent.lstat()
+    except OSError as exc:
+        raise DecisionError("decision_store_unavailable") from exc
+    if (not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or
+            st.st_mode & 0o077 or
+            not stat.S_ISDIR(ancestor.st_mode) or ancestor.st_uid != 0 or
+            ancestor.st_mode & 0o022):
+        raise DecisionError("unsafe_decision_directory")
+    # The direct parent being root-owned does not protect it from rename
+    # if an ancestor is controlled by the intake UID or another local user.
+    # Permit root-owned sticky ancestors such as /tmp only above that
+    # private direct parent; never trust a service-owned ancestor.
+    for ancestor_path in path.parent.parents:
+        try:
+            entry = ancestor_path.lstat()
+        except OSError as exc:
+            raise DecisionError("decision_store_unavailable") from exc
+        if (not stat.S_ISDIR(entry.st_mode) or entry.st_uid != 0 or
+                (entry.st_mode & 0o022 and not entry.st_mode & stat.S_ISVTX)):
+            raise DecisionError("unsafe_decision_directory")
+
+
+def _open_trusted(path: Path) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077 or st.st_size > 4096:
+        os.close(fd)
+        raise DecisionError("unsafe_decision_record")
+    return fd
+
+
+def _verify_lock_fd(fd: int) -> None:
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        raise DecisionError("unsafe_decision_lock")
+
+
+def _canonical(record: dict) -> bytes:
+    return json.dumps(record, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("ascii")
+
+
+class DecisionJournal:
+    """Read and append root-authored receipts with a hash-linked chain."""
+
+    def __init__(self, directory: Path = DEFAULT_DECISION_DIR):
+        self.directory = Path(directory)
+
+    @contextmanager
+    def locked(self):
+        _require_root()
+        _trusted_dir(self.directory)
+        lockfile = self.directory / ".decision.lock"
+        flags = (os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_CLOEXEC", 0))
+        try:
+            fd = os.open(lockfile, flags, 0o600)
+            try:
+                _verify_lock_fd(fd)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                yield self
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            raise DecisionError("decision_store_unavailable") from exc
+
+    def read(self, ident: str, *, known_names: set[str] | None = None) -> list[dict]:
+        """Validate a receipt chain under the journal lock.
+
+        A caller checking many proposals can pass one already enumerated name
+        set for this ID, avoiding O(proposals * directory entries) scans.
+        """
+        if not isinstance(ident, str) or not _HEX_ID.fullmatch(ident):
+            raise DecisionError("invalid_decision_id", 400)
+        chain = []
+        expected_prev = "0" * 64
+        for version in range(1, MAX_EVENTS + 1):
+            path = self.directory / f"{ident}.{version:04d}.json"
+            try:
+                fd = _open_trusted(path)
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                raise DecisionError("decision_store_unavailable") from exc
+            try:
+                with os.fdopen(fd, "rb") as file:
+                    raw = file.read(4097)
+            except OSError as exc:
+                raise DecisionError("decision_store_unavailable") from exc
+            try:
+                record = json.loads(raw.decode("ascii"))
+                if (not isinstance(record, dict) or set(record) !=
+                    {"id", "version", "action", "state", "actor_uid", "at",
+                     "proposal_digest", "previous_hash", "hash"}):
+                    raise ValueError("invalid fields")
+                check = dict(record)
+                checksum = check.pop("hash")
+                if (record["id"] != ident or type(record["version"]) is not int or
+                        record["version"] != version or record["action"] not in STATES or
+                        record["state"] != STATES[record["action"]] or
+                        type(record["actor_uid"]) is not int or record["actor_uid"] < 0 or
+                        type(record["at"]) is not int or
+                        not isinstance(record["proposal_digest"], str) or
+                        not _HEX_HASH.fullmatch(record["proposal_digest"]) or
+                        record["previous_hash"] != expected_prev or
+                        not isinstance(checksum, str) or
+                        not _HEX_HASH.fullmatch(checksum) or
+                        hashlib.sha256(_canonical(check)).hexdigest() != checksum):
+                    raise ValueError("invalid receipt")
+                if version == 1 and record["action"] == "reopen":
+                    raise ValueError("cannot reopen absent decision")
+                if version > 1:
+                    last = chain[-1]
+                    if (record["proposal_digest"] != last["proposal_digest"] or
+                            (record["action"] == "reopen") !=
+                            (last["state"] != "PENDING")):
+                        raise ValueError("invalid transition or metadata")
+                chain.append(record)
+                expected_prev = checksum
+            except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+                raise DecisionError("decision_journal_corrupt") from exc
+        # Refuse an overlong chain or hidden later receipts; never ignore a
+        # corrupt/noncontiguous sequence and silently trust an older version.
+        expected_names = {f"{ident}.{i:04d}.json" for i in range(1, len(chain) + 1)}
+        if known_names is None:
+            relevant_names = {
+                entry.name for entry in self.directory.iterdir()
+                if entry.name.startswith(ident + ".") and entry.name.endswith(".json")
+            }
+        else:
+            relevant_names = known_names
+        if relevant_names != expected_names:
+            raise DecisionError("decision_journal_gap")
+        return chain
+
+    def append(self, ident: str, action: str, metadata_digest: str,
+               previous: list[dict]) -> dict:
+        """Durably create next receipt *before* touching intake SQLite."""
+        _require_root()
+        if action not in STATES or not _HEX_HASH.fullmatch(metadata_digest):
+            raise DecisionError("invalid_decision", 400)
+        if len(previous) >= MAX_EVENTS:
+            raise DecisionError("decision_history_full")
+        if previous and previous[-1]["proposal_digest"] != metadata_digest:
+            raise DecisionError("decision_metadata_conflict", 409)
+        if ((action == "reopen") != (bool(previous) and previous[-1]["state"] != "PENDING")):
+            raise DecisionError("invalid_transition", 409)
+        version = len(previous) + 1
+        record = {
+            "id": ident, "version": version, "action": action,
+            "state": STATES[action], "actor_uid": os.getuid(),
+            "at": int(time.time()), "proposal_digest": metadata_digest,
+            "previous_hash": previous[-1]["hash"] if previous else "0" * 64,
+        }
+        record["hash"] = hashlib.sha256(_canonical(record)).hexdigest()
+        payload = _canonical(record) + b"\n"
+        fd, staging = tempfile.mkstemp(prefix=".decision-stage-", dir=self.directory)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as file:
+                file.write(payload)
+                file.flush()
+                os.fsync(file.fileno())
+            final = self.directory / f"{ident}.{version:04d}.json"
+            os.link(staging, final, follow_symlinks=False)  # EXCL, no overwrite
+            df = os.open(self.directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(df)
+            finally:
+                os.close(df)
+            return record
+        except (OSError, FileExistsError) as exc:
+            raise DecisionError("decision_write_failed") from exc
+        finally:
+            if os.path.exists(staging):
+                os.unlink(staging)
+
+
+    def verify_all(self) -> int:
+        """Verify every root receipt chain; caller must hold the journal lock."""
+        identifiers: set[str] = set()
+        for entry in self.directory.iterdir():
+            name = entry.name
+            if name == ".decision.lock":
+                continue
+            match = re.fullmatch(r"([a-f0-9]{32})\.([0-9]{4})\.json", name)
+            if not match:
+                # Interrupted staging is not silently treated as history:
+                # operator must investigate and reconcile file operations.
+                raise DecisionError("decision_journal_unknown_file")
+            identifiers.add(match.group(1))
+        for ident in identifiers:
+            self.read(ident)
+        return len(identifiers)
+
+    def snapshot(self, destination: Path) -> int:
+        """New, root-owned directory snapshot; never overwrites an old backup.
+
+        Caller must hold journal lock; backup directory parent must be
+        independently trusted. The snapshot carries ALL historical receipts,
+        not merely the convenience audit rows from the intake SQLite file.
+        """
+        _require_root()
+        dest = Path(destination)
+        _trusted_dir(dest.parent)
+        if dest.exists() or dest.is_symlink():
+            raise DecisionError("decision_backup_exists", 409)
+        count = self.verify_all()
+        stage = Path(tempfile.mkdtemp(prefix=".decision-backup-", dir=dest.parent))
+        committed = False
+        try:
+            os.chmod(stage, 0o700)
+            for entry in self.directory.iterdir():
+                if entry.name == ".decision.lock":
+                    continue
+                fd = _open_trusted(entry)
+                try:
+                    target = stage / entry.name
+                    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+                    out = os.open(target, flags, 0o600)
+                    try:
+                        with os.fdopen(fd, "rb", closefd=False) as source:
+                            with os.fdopen(out, "wb", closefd=False) as writer:
+                                shutil.copyfileobj(source, writer, 4096)
+                                writer.flush()
+                                os.fsync(writer.fileno())
+                    finally:
+                        os.close(out)
+                finally:
+                    os.close(fd)
+            df = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(df)
+            finally:
+                os.close(df)
+            # Root-controlled parent prevents races from the intake identity.
+            os.rename(stage, dest)
+            df = os.open(dest.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(df)
+            finally:
+                os.close(df)
+            committed = True
+            return count
+        except OSError as exc:
+            raise DecisionError("decision_backup_failed") from exc
+        finally:
+            if not committed:
+                shutil.rmtree(stage)

@@ -34,6 +34,39 @@ dispatch. Legacy `repocache update` is a transitional mutating exception.
 Parser and ephemeral signing tests are **not** evidence for native real
 Debian 13/AlmaLinux 10 owner-signed install, repair or rollback (C7).
 
+
+## Owner-approved Stage C adapter acceptance and separate native release gate
+
+On 2026-10-24 the maintainer explicitly approved separating CLI syntax and
+safe updater delegation acceptance (PR #114) from authentic native release
+candidate acceptance. The signed release **authorization boundary is unchanged**.
+No new release profile is enabled, no producer key is handled here, and no
+untested owner-signed release may be published by merging this CLI adapter.
+
+- **This PR must PASS:** canonical explicit `update install VERSION` parsing,
+  before-side-effect invalid/missing version refusal, existing authenticated
+  `updater.apply()` only (no alternative installer or signature bypass),
+  legacy command compatibility, v1 JSON/exit compatibility, complete
+  server/client/workstation inventory, security/negative/ephemeral-signature
+  tests and all nine required CI checks on the exact reviewed branch head.
+- **Release acceptance remains NOT VERIFIED / BLOCKING PUBLICATION:** [#76](https://github.com/teixemf/repocache/issues/76)
+  requires a genuine owner-key signed candidate upgraded from immutable
+  published v0.4.0 on Debian 13 and AlmaLinux 10, independently authenticated
+  eight-asset legacy v0.5.0 profile, same-version repair, recovery,
+  concurrency and rollback; [#85](https://github.com/teixemf/repocache/issues/85)
+  retains complete CLI/TUI, dependency profile and native OS regressions.
+  Actual systemd/SELinux/NGINX/TLS/APT/DNF boundaries require separately
+  executed evidence where applicable. Docker-on-Ubuntu CI does not establish
+  a booted target-host SELinux/systemd PASS.
+- The unresolved v0.4.0 legacy source-member set versus newly introduced
+  v0.5 modules is a **pre-signing release blocker** under #76. Neither
+  synthetic signed fixtures nor a successful CLI integration resolves it.
+
+This scope change supersedes the earlier designation of native C7 as a
+**PR #114 merge blocker**, but expressly does **not** waive C7 or downgrade
+any #76/#85 requirement. The approved separation is recorded in #107, #76,
+#85 and the PR acceptance checklist.
+
 ## Source of truth and test gates
 
 - The approved **design** lives in `docs/architecture/CLI_ARCHITECTURE.md`.

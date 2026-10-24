@@ -1,0 +1,27 @@
+# Inside an explicitly approved existing HTTPS server{} block only.
+# DO NOT serve this endpoint over HTTP. NGINX TLS certificate handling and
+# upstream service startup remain disabled pending #49 acceptance.
+location = /v1/repository-submissions {
+    limit_except POST { deny all; }
+    client_max_body_size 64k;
+    client_body_timeout 5s;
+    limit_req zone=repocache_submit burst=5 nodelay;
+    limit_conn repocache_submit_connections 5;
+    proxy_connect_timeout 2s;
+    proxy_read_timeout 8s;
+    proxy_send_timeout 8s;
+    proxy_buffering off;
+    proxy_intercept_errors off;
+    proxy_http_version 1.1;
+    proxy_set_header Connection close;
+    proxy_set_header Host 127.0.0.1;
+    proxy_set_header X-Forwarded-For "";
+    proxy_pass_request_headers off;
+    proxy_set_header Content-Type $content_type;
+    proxy_set_header X-Repocache-Key-ID $http_x_repocache_key_id;
+    proxy_set_header X-Repocache-Timestamp $http_x_repocache_timestamp;
+    proxy_set_header X-Repocache-Nonce $http_x_repocache_nonce;
+    proxy_set_header X-Repocache-Signature $http_x_repocache_signature;
+    access_log off;
+    proxy_pass http://127.0.0.1:8765;
+}
