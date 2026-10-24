@@ -1,0 +1,41 @@
+name: Client Entry Approval Plan Native
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  entry-approval:
+    name: Explicit root approval and byte-only preview (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:trixie-slim', 'almalinux:10']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Use the checked-out PR-head transaction staging already in main.
+      # An old pinned checkout would hide integration regressions.
+      - name: Test guarded approval and sibling preservation with native Python
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace '${{ matrix.image }}' \
+            sh -ec '
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq
+                apt-get install -y --no-install-recommends python3 >/dev/null
+              else
+                dnf install -y python3 >/dev/null
+              fi
+              python3 scripts/smoke_client_entry_approval_plan.py
+              python3 scripts/smoke_client_entry_stage.py
+            '

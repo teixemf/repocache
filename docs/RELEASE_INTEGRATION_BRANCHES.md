@@ -92,11 +92,21 @@ CI in GitHub-hosted containers is not actual booted native-kernel/SELinux,
 owner-signed candidate acceptance, release publication or production
 installation.
 
-## Branch protection — pending explicit settings validation
+## Branch protection — active ruleset and remaining verification
 
-The GitHub connector for this work can create branches and author PRs but
-does not expose repository ruleset/branch-protection modification. An
-administrator must configure and independently verify on **both** branches:
+**Observed 2026-10-24:** active GitHub ruleset `#25793496` matches
+`refs/heads/integration/*` and nested integration refs. It requires PRs,
+strictly up-to-date nine GitHub Actions check contexts, resolved review
+threads, and rejects force pushes/deletion with **no bypass actors**.
+The exact required contexts match protected-main ruleset `#25436501`
+(GitHub Actions app `15368`). Its `required_approving_review_count: 0`
+does **not** prove an independent security review or waive the project's
+documented reviewer gate. Ruleset presence is **PASS (API inspection)**;
+actual live integration push CI, review acceptance and the full release
+gate are still **NOT VERIFIED**.
+
+The following operator controls remain to be verified or strengthened
+before accepting feature changes into **either** integration branch:
 
 - Require PR-based changes, at least the review policy used on `main`,
   no force pushes or deletions, and no bypass of blocking reviews.

@@ -1,0 +1,41 @@
+name: Client Shared Source Atomic Sandbox
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shared-entry-atomic:
+    name: Multi-entry APT DNF atomic rollback (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:trixie-slim', 'almalinux:10']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Exercise transaction implementation from this exact PR head.
+      # No checkout of an older sandbox writer is permitted.
+      - name: Native OS sandbox atomic shared-file regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace '${{ matrix.image }}' \
+            sh -ec '
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq
+                apt-get install -y --no-install-recommends python3 acl >/dev/null
+              else
+                dnf install -y python3 acl >/dev/null
+              fi
+              python3 scripts/smoke_client_entry_atomic.py
+              python3 scripts/smoke_client_entry_acl_atomic.py
+            '
