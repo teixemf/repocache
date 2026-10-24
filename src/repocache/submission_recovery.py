@@ -177,9 +177,11 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
                 staged = Path(staging)
                 try:
                     os.fchmod(staging_fd, 0o600)
-                    _copy_verified_regular(source_fd, staging_fd, os.fstat(source_fd))
-                    os.fsync(staging_fd)
-                    os.close(staging_fd)
+                    try:
+                        _copy_verified_regular(source_fd, staging_fd, os.fstat(source_fd))
+                        os.fsync(staging_fd)
+                    finally:
+                        os.close(staging_fd)
                     _verify_sqlite(staged)
                     rollback = source.parent / ("repocache-before-restore-" +
                                                 os.urandom(12).hex() + ".sqlite3")
