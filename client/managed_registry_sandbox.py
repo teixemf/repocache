@@ -143,7 +143,7 @@ def _read_private(registry_fd: int, name: str) -> bytes:
             raise RegistryRefused("Unsafe protected candidate inode")
         data = os.read(fd, MAX_MANIFEST + 1)
         after = os.fstat(fd)
-        if (len(data) > MAX_MANIFEST or
+        if (len(data) != before.st_size or len(data) > MAX_MANIFEST or
                 (before.st_dev, before.st_ino, before.st_size, before.st_ctime_ns)
                 != (after.st_dev, after.st_ino, after.st_size, after.st_ctime_ns)):
             raise RegistryRefused("Protected candidate changed during inspection")
@@ -202,7 +202,11 @@ def _source_bytes(root: Path, relative: str, observed: dict) -> bytes:
     try:
         for component in relative.split("/")[:-1]:
             child = os.open(component, pre.DIR_FLAGS, dir_fd=fd)
-            pre._checked_directory(child, os.geteuid())
+            try:
+                pre._checked_directory(child, os.geteuid())
+            except BaseException:
+                os.close(child)
+                raise
             os.close(fd)
             fd = child
         leaf = relative.split("/")[-1]
@@ -288,6 +292,15 @@ def register_candidate_sandbox(root: Path, relative: str, expected_sha256: str) 
             or not isinstance(expected_sha256, str)
             or not DIGEST.fullmatch(expected_sha256)):
         raise RegistryRefused("Invalid candidate input")
+    # Refuse production roots before even reading any source file.
+    try:
+        root_fd = os.open(root, pre.DIR_FLAGS)
+        try:
+            pre._fixture(root, root_fd, os.geteuid())
+        finally:
+            os.close(root_fd)
+    except (OSError, pre.PreflightError) as exc:
+        raise RegistryRefused("Invalid private registry fixture") from exc
     # Validate before creating state; a mismatching plan is a true no-op.
     observed, parsed = _observe(root, relative)
     if observed["sha256"] != expected_sha256:
