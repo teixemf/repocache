@@ -122,3 +122,41 @@ def test_non_python_package_payload_is_not_audit_bypass(
     modules[unreviewed_member] = b"unreviewed payload"
     with pytest.raises(RuntimeError, match="unreviewed package payload"):
         builder.verify_first_party_modules(source, wheel(tmp_path, modules))
+
+
+# Independently frozen from genuine public v0.4.0 source-tar contract.
+# The immutable v0.4.0 upgrader rejects any extra/missing archive member;
+# newly approved v0.5 application modules must ship through the signed,
+# hash-pinned first-party wheel in the legacy wheelhouse instead.
+PUBLIC_V04_SOURCE_FILES = frozenset({
+    "README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
+    "pyproject.toml", "install.sh", "platform_check.py", "release-policy.json",
+    "docs/PRODUCTION_EXISTING_NGINX.md",
+    "src/repocache/__init__.py", "src/repocache/cli.py",
+    "src/repocache/core.py", "src/repocache/catalog.py",
+    "src/repocache/rendering.py", "src/repocache/tui.py",
+    "src/repocache/updater.py", "src/repocache/releases.py",
+    "src/repocache/upgrade.py", "src/repocache/signatures.py",
+    "src/repocache/recovery.py", "src/repocache/wheelhouse.py",
+    "client/repocache_client.py", "client/install.sh",
+    "scripts/bootstrap-rootless.sh", "scripts/repocache-launcher.sh",
+})
+
+
+def test_frozen_public_v04_archive_parser_remains_compatible_with_v05_builder():
+    from repocache import upgrade
+    from scripts import build_release
+
+    assert upgrade.RELEASE_FILES == PUBLIC_V04_SOURCE_FILES
+    assert set(build_release.FILES) == PUBLIC_V04_SOURCE_FILES
+    # These v0.5 feature modules are intentionally omitted from the old tar
+    # format but MUST be represented in the separately signed app wheel.
+    for name in (
+        "src/repocache/submissions.py",
+        "src/repocache/submission_decisions.py",
+        "src/repocache/submission_db_worker.py",
+        "src/repocache/submission_recovery.py",
+        "src/repocache/intake.py",
+    ):
+        assert name not in PUBLIC_V04_SOURCE_FILES
+        assert (ROOT / name).is_file()
