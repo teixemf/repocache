@@ -136,3 +136,12 @@ def test_operator_root_guard_cannot_use_arbitrary_service_uid(tmp_path, monkeypa
                             lambda: SimpleNamespace(pw_uid=parent.stat().st_uid + 1))
         with pytest.raises(SubmissionError, match="unsafe_store"):
             queue._needs_worker()
+
+
+def test_root_refuses_relative_queue_path_before_sqlite(monkeypatch):
+    queue = object.__new__(SubmissionQueue)
+    queue.path = Path("relative-queue.db")
+    monkeypatch.setattr(submissions, "_REAL_GETEUID", lambda: 0)
+    monkeypatch.setattr(submissions.os, "geteuid", lambda: 0)
+    with pytest.raises(SubmissionError, match="unsafe_store_path"):
+        queue._needs_worker()
