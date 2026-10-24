@@ -243,3 +243,27 @@ def test_unmarked_test_root_refused_without_touching_source(root):
     with pytest.raises(registry.RegistryRefused):
         registry.register_candidate_sandbox(root, APT, digest(APT_SOURCE))
     assert (root / APT).read_bytes() == APT_SOURCE
+
+
+
+@pytest.mark.parametrize("relative,data", [
+    ("../etc/apt/sources.list.d/fixture.list", APT_SOURCE),
+    ("/etc/apt/sources.list.d/fixture.list", APT_SOURCE),
+    ("etc/yum.repos.d/../../shadow.repo", DNF_SOURCE),
+    ("etc/apt/sources.list.d/nonexistent.conf", APT_SOURCE),
+    ("etc/apt/sources.list.d/subdir/file.sources", DEB822_SOURCE),
+])
+def test_pure_structure_validator_rejects_unapproved_paths(relative, data):
+    with pytest.raises(subset.StructureRefused, match="allowlist"):
+        subset.inspect_structure(relative, data)
+
+
+@pytest.mark.parametrize("relative,data", [
+    (APT, b"deb https://example.org/debian ../ main\n"),
+    (APT, b"deb https://example.org/debian a/../b main\n"),
+    (DEB822, b"Types: deb\nURIs: https://example.org/debian\n"
+             b"Suites: ../\nComponents: main\n"),
+])
+def test_structure_validator_rejects_ambiguous_suite_paths(relative, data):
+    with pytest.raises(subset.StructureRefused):
+        subset.inspect_structure(relative, data)
