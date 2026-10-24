@@ -372,6 +372,8 @@ def _sync_plan(repos: list[dict], catalog: dict) -> dict:
         supported = _mapped(repo, catalog)
         if not repo.get("enabled", True):
             status, reason = "skipped", "disabled-locally"
+        elif repo.get("identity_conflict"):
+            status, reason = "blocked", "ambiguous-discovery-identity"
         elif repo.get("requires_auth_review"):
             status, reason = "blocked", "credentials-or-parameterized-url"
         elif repo.get("weak_integrity"):
@@ -478,6 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync = actions.add_parser("sync")
     _common_options(sync, nested=True)
     sync.add_argument("--apply", action="store_true")
+    sync.add_argument("--repo", action="append", metavar="ID",
+                      help="Filter read-only plan by exact discovery ID (repeatable)")
     return parser
 
 
@@ -547,8 +551,9 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
         if args.action == "sync":
             if args.apply:
                 raise ClientError("Applying changes is disabled until reviewed")
+            selected = _select_repositories(repos, args.repo)
             catalog = _catalog(server)
-            plan = _sync_plan(repos, catalog)
+            plan = _sync_plan(selected, catalog)
             _output({"server": server, **plan,
                      "note": "DRY RUN: advisory only; native fallback and trust not verified. "
                              "No APT/DNF configuration was changed."}, args.json)
