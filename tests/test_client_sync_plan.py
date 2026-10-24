@@ -180,3 +180,25 @@ def test_http_same_host_is_not_treated_as_current_cache(tmp_path):
     assert repo["route"] == "direct"
     result = client._sync_plan([repo], CATALOG)
     assert result["repositories"][0]["plan"]["reason"] == "not-in-active-catalog"
+
+
+
+def test_one_approved_url_does_not_authorize_other_upstreams(tmp_path):
+    repo = client._repo("multi", "apt-deb822", [
+        "https://deb.debian.org/debian/",
+        "https://unapproved.example.org/private/",
+    ], tmp_path / "sources.sources", SERVER)
+    planned = client._sync_plan([repo], CATALOG)["repositories"][0]
+    assert planned["supported"] is True
+    assert planned["plan"]["status"] == "blocked"
+    assert planned["plan"]["reason"] == "unapproved-additional-upstreams"
+    assert planned["plan"]["apply_eligible"] is False
+
+
+def test_unsupported_repository_type_is_not_a_candidate(tmp_path):
+    repo = client._repo("future", "unrecognized", [
+        "https://deb.debian.org/debian/",
+    ], tmp_path / "future.sources", SERVER)
+    planned = client._sync_plan([repo], CATALOG)["repositories"][0]
+    assert planned["plan"]["reason"] == "unsupported-repository-format"
+    assert planned["plan"]["apply_eligible"] is False
