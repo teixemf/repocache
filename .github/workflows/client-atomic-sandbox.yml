@@ -1,0 +1,38 @@
+name: Client Atomic Sandbox Native
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-atomic-sandbox:
+    name: Atomic sandbox + SIGKILL (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:trixie-slim", "almalinux:10"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise sandbox-only atomic recovery using OS Python
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace '${{ matrix.image }}' \
+            sh -ec '
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq
+                apt-get install -y --no-install-recommends python3 >/dev/null
+              else
+                dnf install -y python3 >/dev/null
+              fi
+              python3 scripts/smoke_client_atomic_sandbox.py
+            '

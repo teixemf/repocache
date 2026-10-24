@@ -8,11 +8,13 @@ import io
 import json
 import os
 import re
+import stat
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 def run(*args, **opts):
@@ -33,6 +35,64 @@ def platform():
 
 def checksum(data):
     return hashlib.sha256(data).hexdigest()
+
+def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
+    """Require exact source-byte identity for all shipped first-party modules."""
+    package = source / "src/repocache"
+    files = sorted(package.rglob("*.py"))
+    if any(p.is_symlink() or not p.is_file() for p in files):
+        raise RuntimeError("Unsafe reviewed first-party source module")
+    expected_modules = {
+        "repocache/" + p.relative_to(package).as_posix(): p.read_bytes()
+        for p in files
+    }
+    if not expected_modules or "repocache/__init__.py" not in expected_modules:
+        raise RuntimeError("Missing reviewed first-party Python source")
+    with zipfile.ZipFile(application_wheel) as application:
+        members = application.infolist()
+        names = [item.filename for item in members]
+        # A duplicate ZIP member can make the reviewer read different bytes
+        # than a wheel installer: refuse ambiguity before checking contents.
+        if len(names) != len(set(names)):
+            raise RuntimeError("First-party wheel contains duplicate ZIP members")
+        # Wheel installers also process .data/purelib, .data/platlib, .pth and
+        # other top-level paths. Checking repocache/*.py alone would permit
+        # extra executable code outside the reviewed package tree.
+        metadata = re.compile(r"repocache_control-[0-9]+(?:\.[0-9]+){2}\.dist-info/")
+        for item in members:
+            name = item.filename
+            parts = name.split("/")
+            if (not name or "\\" in name or "\x00" in name
+                    or name.startswith("/") or any(part in {".", ".."} for part in parts)):
+                raise RuntimeError("Unsafe first-party wheel ZIP member")
+            if stat.S_ISLNK(item.external_attr >> 16):
+                if name.startswith("repocache/") and name.endswith(".py"):
+                    raise RuntimeError("First-party wheel contains a symlinked module")
+                raise RuntimeError("Unsafe first-party wheel ZIP member")
+            if (not item.is_dir() and not name.startswith("repocache/")
+                    and not metadata.match(name)):
+                raise RuntimeError("First-party wheel contains unreviewed install path")
+        packaged = {
+            item.filename for item in members
+            if item.filename.startswith("repocache/")
+            and item.filename.endswith(".py")
+        }
+        if packaged != set(expected_modules):
+            raise RuntimeError("First-party wheel module inventory differs from reviewed source")
+        # REPOCACHE v0.5 is pure Python: an unreviewed .so, .pth, data file,
+        # bytecode payload or executable under the package tree must not
+        # escape the .py identity check and reach the managed runtime.
+        additional_payload = {
+            item.filename for item in members
+            if item.filename.startswith("repocache/")
+            and not item.is_dir() and item.filename not in expected_modules
+        }
+        if additional_payload:
+            raise RuntimeError("First-party wheel contains unreviewed package payload")
+        for name, expected in expected_modules.items():
+            if application.read(name) != expected:
+                raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
+
 
 def build(out, release=False, poison_backend=False):
     native = platform()
@@ -121,6 +181,15 @@ def build(out, release=False, poison_backend=False):
         raise RuntimeError("Empty resolved wheel set")
     if any(re.fullmatch(r"[A-Za-z0-9_.+-]+\.whl", x.name) is None for x in items):
         raise RuntimeError("Unrecognized wheel filename")
+    # The immutable v0.4.0 updater accepts only its historical source tar
+    # inventory. The signed first-party wheel may contain new modules, but
+    # every shipped Python module must exactly match the reviewed checkout.
+    app_wheels = [p for p in items if p.name.startswith("repocache_control-")]
+    if len(app_wheels) != 1:
+        raise RuntimeError("Missing or ambiguous first-party wheel")
+    verify_first_party_modules(source, app_wheels[0])
+    print("PASS: first-party wheel modules exactly match reviewed source bytes",
+          flush=True)
     lock = "".join("./wheels/" + p.name + " --hash=sha256:" +
                    checksum(p.read_bytes()) + "\n" for p in items).encode("ascii")
     # Complete, publisher-digest-bound CycloneDX inventory: include

@@ -2,7 +2,7 @@
 
 **Scope:** experimental library `client/source_metadata_lab.py` for
 [issue #24](https://github.com/teixemf/repocache/issues/24), building on
-read-only preflight [PR #133](https://github.com/teixemf/repocache/pull/133).
+merged read-only preflight [PR #133](https://github.com/teixemf/repocache/pull/133).
 **Production status: NOT VERIFIED — no privileged writes or `repos sync --apply`.**
 
 ## Supported experimental round trips
