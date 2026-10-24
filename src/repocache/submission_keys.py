@@ -40,6 +40,17 @@ def _trusted_directory(path: Path, *, for_client: bool) -> None:
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
             or info.st_mode & (0o077 if for_client else 0o022)):
         raise SubmissionError("unsafe_credentials_directory", 403)
+    # A root-owned immediate directory is not enough: a caller-controlled
+    # ancestor could rename the directory between checking and writing an
+    # operator-issued client secret or replacing the service keyring.
+    for ancestor in path.parents:
+        try:
+            trusted = ancestor.lstat()
+        except OSError as exc:
+            raise SubmissionError("unsafe_credentials_directory", 403) from exc
+        if (not stat.S_ISDIR(trusted.st_mode) or trusted.st_uid != 0 or
+                (trusted.st_mode & 0o022 and not trusted.st_mode & stat.S_ISVTX)):
+            raise SubmissionError("unsafe_credentials_directory", 403)
 
 
 def _load(path: Path, service_uid: int) -> list[dict]:
