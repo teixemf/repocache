@@ -224,7 +224,12 @@ class WorkerConnection:
                 total += len(data)
                 if total > MAX_BACKUP:
                     raise WorkerError("oversized_worker_backup")
-                os.write(fd, data)
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise WorkerError("backup_write_failed")
+                    view = view[written:]
             if total == 0:
                 raise WorkerError("empty_worker_backup")
             os.fsync(fd)
@@ -275,8 +280,10 @@ def _worker_main(path: Path) -> int:
         return 3
     _check_directory(path.parent, account.pw_uid)
     _check_queue(path, account.pw_uid)
+    os.umask(0o077)
     try:
         connection = sqlite3.connect(path, timeout=3, isolation_level=None)
+        _check_queue(path, account.pw_uid)
         connection.execute("PRAGMA busy_timeout=3000")
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA journal_mode=DELETE")
