@@ -260,8 +260,6 @@ def test_private_fixture_required_before_source_access(root):
 
 def test_whole_file_candidate_namespace_unaffected(root):
     ident = candidate(root, APT)
-    another = registry.register_candidate_sandbox(root, DEB822,
-                                                   sha(DEB822_TEXT)) if False else None
     # Existing whole-file candidate validation remains strict; the separate
     # namespace must never make its _entries parser reject unknown filenames.
     with registry._registry_fd(root, create=True) as fd:
