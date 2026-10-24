@@ -260,6 +260,9 @@ def _change_entry(relative: str, kind: str, before: bytes, https_url: bytes) -> 
 
 def _build_plan(root: Path, candidate_id: str, https_url: str) -> dict:
     """Private in-memory plan. Output bytes MUST NOT be used for native writes."""
+    # Check the real privilege boundary BEFORE reading any candidate record.
+    if os.geteuid() != 0:
+        raise ApprovalRefused("Root required to consume sandbox entry approval")
     _name(candidate_id)
     candidate = _candidate(root, candidate_id)
     approved = _read_approval(root, candidate_id)
