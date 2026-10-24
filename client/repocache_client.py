@@ -296,8 +296,17 @@ def _submission_credential(path: Path) -> tuple[str, bytes]:
                 or st.st_uid not in {0, os.geteuid()} or st.st_size > 4096
                 or not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o022):
             raise ClientError("Credential file ownership or permissions are unsafe")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # Validate the inode actually opened, not only a pre-open lstat:
+        # an attacker might replace the file between those operations.
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as stream:
+            actual = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(actual.st_mode) or actual.st_mode & 0o077
+                    or actual.st_uid not in {0, os.geteuid()}
+                    or actual.st_size > 4096
+                    or (actual.st_dev, actual.st_ino) != (st.st_dev, st.st_ino)):
+                raise ClientError("Credential file changed or is unsafe")
             raw = stream.read(4097)
         cfg = json.loads(raw.decode("utf-8"))
         if not isinstance(cfg, dict) or set(cfg) != {"key_id", "secret"}:
