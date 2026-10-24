@@ -195,7 +195,7 @@ def test_privileged_worker_ipc_send_handles_full_pipe_until_deadline(
         stdin=SimpleNamespace(fileno=lambda: 77)
     )
     ticks = iter((0, 1, 11))
-    monkeypatch.setattr(worker.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     monkeypatch.setattr(
         worker.select, "select", lambda readers, writers, errors, timeout:
         ([], writers, []),
