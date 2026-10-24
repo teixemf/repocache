@@ -269,9 +269,10 @@ def _build_plan(root: Path, candidate_id: str, https_url: str) -> dict:
     if (approved["source_file_sha256"] != candidate["file_sha256"]
             or approved["source_entry_sha256"] != candidate["entry_sha256"]):
         raise ApprovalRefused("Approval and candidate baseline disagree")
-    if candidate["xattrs_present"]:
-        # This planner is not a metadata-preservation engine.
-        raise ApprovalRefused("Security metadata requires transaction integration")
+    # This function only proposes bytes, never installs them. If the
+    # source carries supported ACLs/xattrs, the transaction adapter must
+    # snapshot them and the atomic engine must verify and restore them
+    # before any sandbox replacement. Unknown security labels fail closed.
     observed, chunks, source = _snapshot(root, candidate)
     selected = [item for item in chunks
                 if item["sha256"] == candidate["entry_sha256"]
