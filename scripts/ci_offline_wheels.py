@@ -58,11 +58,11 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         # Wheel installers also process .data/purelib, .data/platlib, .pth and
         # other top-level paths. Checking repocache/*.py alone would permit
         # extra executable code outside the reviewed package tree.
-        metadata = re.compile(r"repocache_control-[0-9]+(?:\\.[0-9]+){2}\\.dist-info/")
+        metadata = re.compile(r"repocache_control-[0-9]+(?:\.[0-9]+){2}\.dist-info/")
         for item in members:
             name = item.filename
             parts = name.split("/")
-            if (not name or "\\\\" in name or "\\x00" in name
+            if (not name or "\\" in name or "\x00" in name
                     or name.startswith("/") or any(part in {".", ".."} for part in parts)
                     or stat.S_ISLNK(item.external_attr >> 16)):
                 raise RuntimeError("Unsafe first-party wheel ZIP member")
