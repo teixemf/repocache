@@ -262,6 +262,106 @@ def test_actual_backend_rejects_partial_local_bundle_before_any_network_or_insta
 
 
 
+
+def test_cli_routes_ephemerally_signed_candidate_through_real_verifier(
+        monkeypatch, tmp_path):
+    """Prove CLI -> signed verifier -> policy parsing, with no activation.
+
+    Signing keys exist only in tmp_path in disposable CI; this does NOT use
+    the real publisher private key or test native privileged activation.
+    """
+    import contextlib
+    import hashlib
+    import importlib.util
+    import subprocess
+    import time
+
+    from repocache import signatures, upgrade, wheelhouse
+
+    root = Path(__file__).resolve().parents[1]
+
+    def load_module(name, path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def openssl(*args):
+        subprocess.run(["/usr/bin/openssl", *map(str, args)],
+                       check=True, capture_output=True, timeout=20)
+
+    private = tmp_path / "ephemeral-private.pem"
+    public = tmp_path / "ephemeral-public.pem"
+    openssl("genpkey", "-algorithm", "Ed25519", "-out", private)
+    private.chmod(0o600)
+    openssl("pkey", "-in", private, "-pubout", "-out", public)
+    public.chmod(0o644)
+    monkeypatch.setattr(signatures, "_trusted_key", lambda key_id: public)
+
+    builder = load_module("cli_v1_signed_builder", root / "scripts/build_release.py")
+    signer = load_module("cli_v1_signed_signer", root / "scripts/sign_release.py")
+    archive, checksum = builder.build_release(tmp_path / "output", "v0.4.0")
+    wheel_file = archive.with_name(archive.name + ".wheelhouse.tar.gz")
+    wheel_file.write_bytes(b"ephemeral wheelhouse placeholder, not executable")
+    now = int(time.time())
+    manifest, signature = signer.sign(
+        archive, private, "ci-ephemeral", "a" * 40, now - 60, now + 3600,
+        wheelhouse_sha256=hashlib.sha256(wheel_file.read_bytes()).hexdigest())
+
+    monkeypatch.setattr(updater, "update_transaction", contextlib.nullcontext)
+    monkeypatch.setattr(updater, "recover_transaction", lambda: None)
+    monkeypatch.setattr(updater, "_require_service_account", lambda: None)
+    monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.0.0"})
+    monkeypatch.setattr(releases, "discover", lambda *_a, **_kw:
+                        pytest.fail("Local signed candidate must not access GitHub"))
+    monkeypatch.setattr(upgrade, "_download_asset", lambda *_a, **_kw:
+                        pytest.fail("Local signed candidate must not download"))
+
+    # The runner is Ubuntu, not an approved native host. Inject ONLY the
+    # explicit Debian 13 test-host identity into the real policy validator.
+    # Real archive extraction, manifest hash and Ed25519 checks remain live.
+    real_extract = upgrade._extract_verified
+
+    def simulated_host_extract(data, version, directory, previous,
+                               system=None, signed_policy_sha256=None):
+        assert system is None
+        return real_extract(
+            data, version, directory, previous,
+            {"ID": "debian", "VERSION_ID": "13"},
+            signed_policy_sha256=signed_policy_sha256)
+
+    monkeypatch.setattr(upgrade, "_extract_verified", simulated_host_extract)
+    monkeypatch.setattr(wheelhouse, "verified_extract",
+                        lambda data, digest, destination:
+                        destination / "requirements.lock")
+    monkeypatch.setattr(wheelhouse, "verify_application_wheel",
+                        lambda *_a, **_kw: None)
+    installed = []
+
+    def record_installer(source, **kwargs):
+        installed.append(kwargs)
+        assert (source / "pyproject.toml").is_file()
+        return {"ok": True, "status": "installed", "version": "0.4.0",
+                "previous_version": "0.0.0"}
+
+    monkeypatch.setattr(updater, "install_source", record_installer)
+    result = CliRunner().invoke(cli.app, [
+        "update", "install", "0.4.0", "--json",
+        "--bundle", str(archive), "--checksum", str(checksum),
+        "--manifest", str(manifest), "--signature", str(signature),
+        "--wheelhouse", str(wheel_file),
+    ])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["version"] == "0.4.0"
+    assert len(installed) == 1
+    identity = installed[0]["release_identity"]
+    assert identity["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert identity["publisher_key_id"] == "ci-ephemeral"
+    assert installed[0]["release_policy"]["version"] == "0.4.0"
+
+
+
 def test_updater_remains_single_source_for_signature_and_recovery():
     # An architectural guard: CLI must delegate, not bypass, signature
     # verification or implement a second updater pipeline.
