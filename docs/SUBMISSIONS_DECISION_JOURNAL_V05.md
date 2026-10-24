@@ -44,12 +44,12 @@ On-host privileges/ACLs, SELinux policy and backup custody are Gate B #49.
    **error** and no "decision recorded" success notification is emitted.
    Subsequent decisions on that row are blocked until explicit reconciliation.
 5. A root operator must investigate, prove the service inactive, and
-   explicitly run \`repocache-submissions-admin reconcile --id <proposal-id>
+   explicitly run \`/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin reconcile --id <proposal-id>
    --approve\`. Recovery validates the full root chain, exact proposal
    metadata and coherent prior SQLite version/state. A future/stale or
    forged version, altered metadata or corrupted receipt **fails closed**.
    No client can initiate reconciliation and nothing auto-approves.
-6. \`repocache-submissions-admin journal-verify\` verifies **all** surviving
+6. \`/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin journal-verify\` verifies **all** surviving
    root chains. \`journal-backup --output-dir <new-empty-path> --approve\`
    snapshots all receipts to a new private root-controlled directory without
    overwriting existing backups. Keep this backup separate from the
