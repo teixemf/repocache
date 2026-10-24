@@ -2,13 +2,16 @@ name: Pull request milestone governance
 
 on:
   pull_request_target:
-    types: [opened, reopened, edited, ready_for_review, milestoned, demilestoned]
+    types: [opened, reopened, synchronize, edited, ready_for_review, milestoned, demilestoned]
 
 # This privileged metadata-only workflow MUST use code from the protected
 # default branch; never checkout or execute code from a pull request head.
+# Read issue metadata; change only PR milestone metadata through GitHub's
+# Issues API, which requires Pull requests: write for a PR target (issue #148).
 permissions:
   contents: read
-  issues: write
+  issues: read
+  pull-requests: write
 
 concurrency:
   group: pr-milestone-${{ github.event.pull_request.number }}
