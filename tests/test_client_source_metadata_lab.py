@@ -205,3 +205,27 @@ def test_copy_failure_deletes_temporary_output(root, monkeypatch):
         lab.clone_sandbox_source(root, APT)
     assert not list((root / APT).parent.glob(lab.TEMP_PREFIX + "*"))
     assert os.getxattr(root / APT, "user.repocache") == b"value"
+
+
+
+def test_corrupted_clone_bytes_are_detected_and_removed(root, monkeypatch):
+    original_open = lab.os.open
+    corrupted = False
+
+    def intercept(path, flags, *args, **kwargs):
+        nonlocal corrupted
+        fd = original_open(path, flags, *args, **kwargs)
+        if (isinstance(path, str) and path.startswith(lab.TEMP_PREFIX)
+                and flags == lab.FLAGS_FILE and not corrupted):
+            corrupted = True
+            with os.fdopen(original_open(path, os.O_WRONLY,
+                                         dir_fd=kwargs["dir_fd"]), "wb") as output:
+                output.write(b"X" + APT_BYTES[1:])
+        return fd
+
+    monkeypatch.setattr(lab.os, "open", intercept)
+    with pytest.raises(pre.PreflightError, match="content verification failed"):
+        lab.clone_sandbox_source(root, APT)
+    assert corrupted is True
+    assert (root / APT).read_bytes() == APT_BYTES
+    assert not list((root / APT).parent.glob(lab.TEMP_PREFIX + "*"))
