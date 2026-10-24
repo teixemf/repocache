@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -152,3 +153,37 @@ def test_keyring_replacement_between_lstat_and_open_is_refused(
     with pytest.raises(SubmissionError, match="invalid_credentials"):
         load_keyring(keyring)
     assert replaced
+
+
+@pytest.mark.parametrize("for_client", (True, False))
+@pytest.mark.parametrize(("ancestor_uid", "ancestor_mode", "reject"), (
+    (12345, 0o700, True),
+    (0, 0o777, True),
+    (0, 0o1777, False),
+))
+def test_root_keyring_and_client_handoff_reject_renamable_ancestors(
+    tmp_path, monkeypatch, for_client, ancestor_uid, ancestor_mode, reject
+):
+    """Root secret writes may never traverse an attacker-renamable ancestor."""
+    attacker = tmp_path / "attacker-controlled"
+    protected = attacker / "root-owned-handoff"
+    protected.mkdir(parents=True, mode=0o700)
+    protected.chmod(0o700)
+    original_lstat = Path.lstat
+
+    def model_ownership(path, *args, **kwargs):
+        details = original_lstat(path, *args, **kwargs)
+        if path == attacker:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | ancestor_mode,
+                                   st_uid=ancestor_uid)
+        if path == protected or path == tmp_path or path in tmp_path.parents:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
+        return details
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", model_ownership)
+        if reject:
+            with pytest.raises(SubmissionError, match="unsafe_credentials_directory"):
+                submission_keys._trusted_directory(protected, for_client=for_client)
+        else:
+            submission_keys._trusted_directory(protected, for_client=for_client)
