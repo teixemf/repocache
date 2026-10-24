@@ -1,8 +1,8 @@
 # Client metadata-aware shared-file transaction integration
 
 **Tracking:** [issue #24](https://github.com/teixemf/repocache/issues/24).  
-**Integration parent:** [PR #144](https://github.com/teixemf/repocache/pull/144), stacked on [#142](https://github.com/teixemf/repocache/pull/142) / #141 / #140 / #138.  
-**Source provenance:** [#134](https://github.com/teixemf/repocache/pull/134) is already merged to `main` (its cloned ACL/xattr laboratory files must not be duplicated or reverted). [#135](https://github.com/teixemf/repocache/pull/135) and [#137](https://github.com/teixemf/repocache/pull/137) remain separate experimental PRs; their incremental protected-snapshot and recovery logic is reconciled here.  
+**Active review stack:** [#152](https://github.com/teixemf/repocache/pull/152) (`main`-based read-only foundations) → [#155](https://github.com/teixemf/repocache/pull/155) (sandbox approvals and atomic staging) → [#156](https://github.com/teixemf/repocache/pull/156) (metadata-aware recovery). Earlier [#138](https://github.com/teixemf/repocache/pull/138)/#140/#141/#142/#144/#146 are superseded for integration review, with original PR history and refs retained.  
+**Source provenance:** [#134](https://github.com/teixemf/repocache/pull/134) and [#135](https://github.com/teixemf/repocache/pull/135) are already merged to `main`: preserve their laboratory ACL/xattr and staging implementations instead of duplicating or reverting them. [#137](https://github.com/teixemf/repocache/pull/137)'s additional recovery-intent logic and tests are represented in this clean review stack; its independent experimental PR is superseded, not separately merged.  
 **Already merged:** #131 protected transaction staging, #132 sandbox atomic writer, #133 dirfd preflight; this integration aligns the preflight with merged `main` and incorporates the metadata and recovery experiments into a single **sandbox-only** transaction engine.
 
 ## Changes, boundaries and trust
@@ -33,4 +33,4 @@ The protected snapshots contain source bytes and **base64-encoded xattr values**
 
 **SELinux enforcing remains NOT VERIFIED.** Normal GitHub Actions containers do not demonstrate actual enforcing context correctness. The production acceptance gate still requires a booted AlmaLinux 10 host or VM with SELinux enforcing and verified label preservation. Until that is proven, unknown security namespaces must always refuse writes.
 
-Parent PRs and parallel experiments may have different base commits and overlapping files. This integration PR is **stacked on #144**, not a merge of any of those PRs. Before any eventual mainline integration, reconcile branch ancestry/duplicate code, collect human/security reviews, rerun required exact-head tests and map every final accepted criterion to executed evidence. **Do not merge or activate apply under a partial PASS.**
+The clean integration review is **#152 → #155 → #156**, with each PR based on the immediately preceding reviewed branch; do not merge the superseded experimental PRs independently. Before any eventual mainline integration, revalidate exact-head ancestry and that already-merged #131/#132/#133/#134/#135 code is not duplicated or reverted; obtain human/security reviews, run required exact-head CI and map every acceptance criterion to reproducible evidence. **Do not merge or activate apply under a partial PASS.**
