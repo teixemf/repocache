@@ -83,3 +83,28 @@ def test_state_reads_open_inode_not_replacement_path(monkeypatch, tmp_path):
     assert release.read_state("v0.5.0") == record
     assert swapped
     assert path.read_text() == '{"untrusted": true}'
+
+def test_state_refuses_fifo_swapped_before_open_without_blocking(monkeypatch, tmp_path):
+    """A FIFO substituted for the JSON record must not block before fstat."""
+    path, _ = _state(monkeypatch, tmp_path)
+    original_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            # Fail the test before a blocking open if this protection regresses.
+            assert flags & os.O_NONBLOCK, "state read must open nonblocking"
+            path.rename(path.with_name("original.json"))
+            os.mkfifo(path, mode=0o600)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert swapped
+    assert caught.value.code == "UNSAFE_STATE"
+    assert path.is_fifo()

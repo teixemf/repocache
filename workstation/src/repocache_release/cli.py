@@ -182,7 +182,9 @@ def read_state(version: str) -> dict[str, Any] | None:
     # interrupted or locally replaced record must never be followed through
     # a symlink or a hardlink to another owner file.
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+        # O_NONBLOCK prevents a replaced FIFO from stalling before fstat() can reject it.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | getattr(os, "O_CLOEXEC", 0))
     except FileNotFoundError:
         return None
     except OSError as exc:
