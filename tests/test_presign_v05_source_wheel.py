@@ -64,7 +64,8 @@ def checked_source(tmp_path, monkeypatch):
 
 
 def file_zip(modules: dict[str, bytes], *, duplicate=False,
-             symlink=False, oversized_metadata=False) -> bytes:
+             symlink=False, oversized_metadata=False,
+             alien_metadata=False) -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as z:
         for name, data in modules.items():
@@ -78,6 +79,9 @@ def file_zip(modules: dict[str, bytes], *, duplicate=False,
         z.writestr("repocache_control-0.5.0.dist-info/METADATA",
                    "Metadata-Version: 2.3\nName: repocache-control\n"
                    "Version: 0.5.0\n\n")
+        if alien_metadata:
+            z.writestr("repocache_control-9.9.9.dist-info/entry_points.txt",
+                       b"[console_scripts]\nunsafe=repocache.cli:app\n")
         if oversized_metadata:
             # A tiny compressed ZIP member can expand beyond safe pre-signing
             # memory bounds even though the outer wheelhouse is hash-locked.
@@ -109,7 +113,8 @@ def build_fixture(tmp_path, checked_source, *, attack=None) -> Path:
         candidate["evil.pth"] = b"import unreviewed\n"
     app = file_zip(candidate, duplicate=attack == "duplicate",
                    symlink=attack == "symlink",
-                   oversized_metadata=attack == "oversized-metadata")
+                   oversized_metadata=attack == "oversized-metadata",
+                   alien_metadata=attack == "alien-dist-info")
     app_name = "repocache_control-0.5.0-py3-none-any.whl"
     dep_name = "typer-1.0.0-py3-none-any.whl"
     dep = b"inert dependency fixture"
@@ -161,7 +166,7 @@ def test_real_verifier_accepts_exact_reviewed_first_party_wheel(
 
 @pytest.mark.parametrize("attack", [
     "missing", "modified", "extra", "extra-path", "duplicate", "symlink",
-    "oversized-module", "oversized-metadata",
+    "oversized-module", "oversized-metadata", "alien-dist-info",
 ])
 def test_real_verifier_rejects_rehashed_unreviewed_wheel(
         tmp_path, checked_source, attack):
