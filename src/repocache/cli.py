@@ -118,7 +118,21 @@ def settings() -> Settings:
 
 
 def emit_json(data: Dict[str, Any]) -> None:
-    print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+    """Add v1 fields without discarding the operation's established fields."""
+    result = {"schema_version": 1, **data}
+    result.setdefault("ok", not bool(result.get("error")))
+    if result["ok"] is False:
+        error = result.get("error")
+        if not isinstance(error, dict):
+            code = {"busy": "BUSY", "offline": "OFFLINE",
+                    "authentication-required": "AUTHENTICATION_REQUIRED"}.get(
+                        result.get("status"), "OPERATION_FAILED")
+            result["error"] = {
+                "code": code,
+                "message": str(error) if error is not None
+                else "Operation reported a required failure.",
+            }
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
 def human_bytes(value: Any) -> str:
