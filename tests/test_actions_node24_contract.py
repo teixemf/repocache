@@ -15,9 +15,9 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 EXPECTED = {
     "actions/checkout": ("93cb6efe18208431cddfb8368fd83d5badbf9bfd", "v5.0.1"),
     "actions/setup-python": ("e797f83bcb11b83ae66e0230d6156d7c80228e7c", "v6.0.0"),
-    "actions/upload-artifact": ("b7c566a772e6b6bfb58ed0dc250532a479d7789f", "v6.0.0"),
+    "actions/upload-artifact": ("cf430e030ddbb5b0abf93d22962f4752f3646cd9", "v7.0.2"),
     # The signed candidate acceptance workflow merged in PR #77 uses this action.
-    "actions/download-artifact": ("37930b1c2abaa49bbe596cd826c3c89aef350131", "v7.0.0"),
+    "actions/download-artifact": ("9000827ccba6bdab643e8b6fd33ac0654aef8333", "v8.0.2"),
 }
 USE = re.compile(r"^\s*-\s+uses:\s+([^\s#]+)", re.MULTILINE)
 PINNED = re.compile(

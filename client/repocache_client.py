@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import hashlib
 import json
 import os
 import re
@@ -62,6 +63,19 @@ def _url_host(url: str) -> str:
         return ""
 
 
+def _same_https_origin(url: str, server: str) -> bool:
+    """Require the same HTTPS scheme, hostname and effective port."""
+    try:
+        candidate, trusted = urlsplit(url), urlsplit(server)
+        return bool(candidate.scheme == trusted.scheme == "https"
+                    and candidate.hostname and candidate.hostname == trusted.hostname
+                    and (443 if candidate.port is None else candidate.port)
+                    == (443 if trusted.port is None else trusted.port)
+                    and candidate.username is None and candidate.password is None)
+    except ValueError:
+        return False
+
+
 def _distro(root: Path) -> dict[str, str]:
     try:
         lines = (root / "etc/os-release").read_text(encoding="utf-8").splitlines()
@@ -76,15 +90,64 @@ def _distro(root: Path) -> dict[str, str]:
     return output
 
 
+def _source_identity_uri(raw: str) -> str:
+    """Ignore credentials and URL parameters in discovery identities."""
+    if raw.startswith("mirror+file:"):
+        uri = urlsplit(raw)
+        return "mirror+file:" + uri.path
+    return _safe_url(raw)
+
+
+def _discovery_id(root: Path, path: Path, kind: str, fields: tuple) -> str:
+    """Deterministic read-only ID, NOT an immutable managed repository ID."""
+    relative_path = path.relative_to(root).as_posix()
+    payload = json.dumps(
+        ["discovery-v1", relative_path, kind, fields],
+        sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")
+    prefix = "dnf" if kind == "dnf" else "apt"
+    return prefix + "-" + hashlib.sha256(payload).hexdigest()[:24]
+
+
+def _mark_identity_conflicts(repositories: list[dict]) -> list[dict]:
+    occurrences: dict[str, int] = {}
+    for repo in repositories:
+        identity = repo.get("id")
+        if identity:
+            occurrences[identity] = occurrences.get(identity, 0) + 1
+    for repo in repositories:
+        repo["identity_conflict"] = occurrences.get(repo.get("id", ""), 0) > 1
+    return repositories
+
+
+def _needs_private_handling(value: str) -> bool:
+    """Reject ambiguous URLs from cache planning without exposing credentials."""
+    try:
+        uri = urlsplit(value.strip())
+        return bool(uri.username is not None or uri.password is not None
+                    or uri.query or uri.fragment)
+    except ValueError:
+        return True
+
+
 def _repo(name: str, kind: str, urls: list[str], path: Path,
-          server: str, enabled: bool = True) -> dict:
+          server: str, enabled: bool = True, *,
+          auth_hint: bool = False, weak_integrity: bool = False,
+          indirect_mirror: bool = False, discovery_id: str | None = None) -> dict:
     safe = list(dict.fromkeys(_safe_url(item) for item in urls if item.strip()))
-    via = [_url_host(url) == _url_host(server) for url in safe]
+    via = [_same_https_origin(url, server) for url in safe]
     route = "mixed" if any(via) and not all(via) else (
         "repocache" if via and all(via) else "direct"
     )
-    return {"name": name, "type": kind, "urls": safe,
-            "source": str(path), "enabled": enabled, "route": route}
+    result = {"name": name, "type": kind, "urls": safe,
+              "source": str(path), "enabled": enabled, "route": route,
+              "requires_auth_review": auth_hint or any(
+                  _needs_private_handling(url) for url in urls),
+              "weak_integrity": weak_integrity,
+              "indirect_mirror": indirect_mirror}
+    if discovery_id is not None:
+        result["id"] = discovery_id
+    return result
 
 
 def _expand_mirror(uri: str, root: Path) -> list[str]:
@@ -136,15 +199,43 @@ def _apt_sources(root: Path, server: str) -> list[dict]:
                 if props.get("types") and props.get("uris"):
                     urls = [u for uri in props["uris"].split()
                             for u in _expand_mirror(uri, root)]
+                    weak = (props.get("trusted", "").lower() == "yes"
+                            or props.get("allow-insecure", "").lower() == "yes"
+                            or props.get("allow-weak", "").lower() == "yes")
+                    identity = _discovery_id(root, path, "apt-deb822", (
+                        tuple(sorted(props["types"].split())),
+                        tuple(sorted(_source_identity_uri(uri)
+                                     for uri in props["uris"].split())),
+                        tuple(sorted(props.get("suites", "").split())),
+                        tuple(sorted(props.get("components", "").split())),
+                        tuple(sorted(props.get("architectures", "").split())),
+                    ))
                     repos.append(_repo(f"{path.name}:{number}", "apt-deb822",
                                        urls, path, server,
-                                       props.get("enabled", "yes").lower() != "no"))
+                                       props.get("enabled", "yes").lower() != "no",
+                                       weak_integrity=weak, discovery_id=identity))
             continue
         for number, line in enumerate(source.splitlines(), 1):
-            match = re.match(r"^\s*(?:deb|deb-src)\s+(?:\[[^\]]+\]\s+)?(\S+)\s+", line)
+            match = re.match(
+                r"^\s*(deb|deb-src)\s+(?:\[([^\]]+)\]\s+)?(\S+)\s+(\S+)(?:\s+([^#]*))?",
+                line)
             if match:
+                options = match.group(2) or ""
+                weak = bool(re.search(
+                    r"(?i)(?:^|\s)(?:trusted|allow-insecure|allow-weak)\s*=\s*yes(?:\s|$)",
+                    options))
+                architectures = tuple(sorted(
+                    token for token in options.split()
+                    if token.startswith(("arch=", "arch+=", "arch-="))))
+                identity = _discovery_id(root, path, "apt-list", (
+                    match.group(1), _source_identity_uri(match.group(3)),
+                    match.group(4),
+                    tuple(sorted((match.group(5) or "").split())),
+                    architectures,
+                ))
                 repos.append(_repo(f"{path.name}:{number}", "apt-list",
-                                   _expand_mirror(match.group(1), root), path, server))
+                                   _expand_mirror(match.group(3), root), path, server,
+                                   weak_integrity=weak, discovery_id=identity))
     return repos
 
 
@@ -165,13 +256,43 @@ def _dnf_sources(root: Path, server: str) -> list[dict]:
             val = parser[section]
             urls = [item for key in ("baseurl", "mirrorlist", "metalink")
                     for item in val.get(key, "").split()]
+            auth_keys = ("username", "password", "proxy_username",
+                         "proxy_password", "clientcert", "clientkey")
+            auth_hint = any(val.get(key, "").strip() for key in auth_keys)
+            weak = (val.get("gpgcheck", "1").lower() in ("0", "no", "false")
+                    or val.get("sslverify", "1").lower() in ("0", "no", "false"))
+            indirect = bool(val.get("mirrorlist", "").strip()
+                            or val.get("metalink", "").strip())
+            identity = _discovery_id(root, path, "dnf", (section,))
             repos.append(_repo(section, "dnf", urls, path, server,
-                               val.get("enabled", "1").lower() not in ("0", "no", "false")))
+                               val.get("enabled", "1").lower() not in ("0", "no", "false"),
+                               auth_hint=auth_hint, weak_integrity=weak,
+                               indirect_mirror=indirect, discovery_id=identity))
     return repos
 
 
 def discover(root: Path, server: str) -> list[dict]:
-    return _apt_sources(root, server) + _dnf_sources(root, server)
+    return _mark_identity_conflicts(
+        _apt_sources(root, server) + _dnf_sources(root, server))
+
+
+def _select_repositories(repositories: list[dict],
+                         requested_ids: list[str] | None) -> list[dict]:
+    """Filter an advisory plan with exact, unambiguous discovery IDs."""
+    if not requested_ids:
+        return repositories
+    if len(requested_ids) > 100 or any(
+        not re.fullmatch(r"(?:apt|dnf)-[0-9a-f]{24}", item)
+        for item in requested_ids
+    ):
+        raise ClientError("Invalid repository selection")
+    wanted = set(requested_ids)
+    matched = [repo for repo in repositories if repo.get("id") in wanted]
+    if {repo["id"] for repo in matched} != wanted:
+        raise ClientError("Unknown repository ID")
+    if any(repo.get("identity_conflict") for repo in matched):
+        raise ClientError("Ambiguous repository ID; resolve duplicate sources")
+    return matched
 
 
 def _fetch_json(url: str, *, max_bytes: int):
@@ -208,7 +329,7 @@ def _catalog(server: str) -> dict:
         if (not source.startswith("https://") or not cache.startswith("https://")
                 or _safe_url(source) != source or _safe_url(cache) != cache
                 or not source.endswith("/") or not cache.endswith("/")
-                or _url_host(cache) != _url_host(server)):
+                or not _same_https_origin(cache, server)):
             raise ClientError("Invalid catalog URL")
         verified.append({"upstream": source, "cache": cache})
     return {"schema": 1, "repositories": verified}
@@ -237,6 +358,49 @@ def _classify_repository(repo: dict, catalog: dict | None) -> str:
 def _compatibility_summary(repos: list[dict]) -> dict[str, int]:
     return {status: sum(r.get("compatibility") == status for r in repos)
             for status in ("supported", "unknown", "unavailable", "invalid")}
+
+
+def _sync_plan(repos: list[dict], catalog: dict) -> dict:
+    """Prepare an advisory, read-only plan. Never authorize package-source writes.
+
+    All seemingly supported sources still need native fallback, signing-policy
+    and repository-scoped TLS verification before they can be eligible for apply.
+    """
+    planned = []
+    counts: dict[str, int] = {}
+    for repo in repos:
+        supported = _mapped(repo, catalog)
+        if not repo.get("enabled", True):
+            status, reason = "skipped", "disabled-locally"
+        elif repo.get("identity_conflict"):
+            status, reason = "blocked", "ambiguous-discovery-identity"
+        elif repo.get("requires_auth_review"):
+            status, reason = "blocked", "credentials-or-parameterized-url"
+        elif repo.get("weak_integrity"):
+            status, reason = "blocked", "weak-package-or-transport-verification"
+        elif repo.get("type") not in ("apt-list", "apt-deb822", "dnf"):
+            status, reason = "blocked", "unsupported-repository-format"
+        elif _classify_repository(repo, catalog) == "invalid":
+            status, reason = "blocked", "invalid-or-unsupported-source"
+        elif repo.get("indirect_mirror"):
+            status, reason = "review", "native-mirror-indirection-not-verified"
+        elif repo.get("route") == "repocache":
+            status, reason = "blocked", "cache-only-no-fallback-evidence"
+        elif repo.get("route") == "mixed":
+            status, reason = "review", "existing-cache-fallback-not-verified"
+        elif not supported:
+            status, reason = "skipped", "not-in-active-catalog"
+        elif _classify_repository(repo, catalog) != "supported":
+            status, reason = "blocked", "unapproved-additional-upstreams"
+        else:
+            status, reason = "candidate", "native-fallback-and-trust-not-verified"
+        counts[status] = counts.get(status, 0) + 1
+        planned.append(dict(repo, supported=supported, plan={
+            "status": status, "reason": reason, "action": "none",
+            "apply_eligible": False,
+        }))
+    return {"repositories": planned, "plan_summary": counts,
+            "dry_run": True, "planned_changes": 0}
 
 
 def _connectivity(server: str) -> list[dict]:
@@ -276,12 +440,16 @@ def _payload(distro: dict, repos: list[dict], server: str) -> dict:
 
 def _output(data: dict, json_mode: bool) -> None:
     if json_mode:
-        print(json.dumps(data, indent=2))
+        document = {"schema_version": 1, "ok": True, **data}
+        print(json.dumps(document, indent=2))
         return
     for item in data.get("checks", []):
         print(("OK" if item["ok"] else "WARN") + " " + item["name"] + ": " + item["detail"])
     for repo in data.get("repositories", []):
-        print(repo["name"] + " " + repo.get("support", repo["route"]) +
+        plan = repo.get("plan")
+        detail = (plan["status"] + " (" + plan["reason"] + ")"
+                  if plan else repo.get("support", repo["route"]))
+        print(repo["name"] + " " + detail +
               " " + ", ".join(repo.get("urls", [])))
     if "note" in data:
         print(data["note"])
@@ -294,16 +462,31 @@ def _common_options(parser: argparse.ArgumentParser, *, nested: bool = False) ->
     parser.add_argument("--json", action="store_true", **defaults)
 
 
+class _SyntaxError(ValueError):
+    """Client parser error handled before filesystem, APT or DNF access."""
+
+
+class _ClientParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise _SyntaxError(message)
+
+
+def _json_failure(code: str, message: str) -> None:
+    print(json.dumps({"schema_version": 1, "ok": False,
+                      "error": {"code": code, "message": message}}))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Register the approved client command grammar in one auditable place."""
-    parser = argparse.ArgumentParser(prog="repocache-client")
+    parser = _ClientParser(prog="repocache-client")
     _common_options(parser)
-    cmds = parser.add_subparsers(dest="command", required=True)
+    cmds = parser.add_subparsers(dest="command", required=True,
+                                     parser_class=_ClientParser)
     check = cmds.add_parser("check")
     _common_options(check, nested=True)
     repos_cmd = cmds.add_parser("repos", aliases=["repo"])
     _common_options(repos_cmd, nested=True)
-    actions = repos_cmd.add_subparsers(dest="action")
+    actions = repos_cmd.add_subparsers(dest="action", parser_class=_ClientParser)
     listing = actions.add_parser("list", aliases=["ls"])
     _common_options(listing, nested=True)
     submit = actions.add_parser("submit")
@@ -313,12 +496,22 @@ def build_parser() -> argparse.ArgumentParser:
     sync = actions.add_parser("sync")
     _common_options(sync, nested=True)
     sync.add_argument("--apply", action="store_true")
+    sync.add_argument("--repo", action="append", metavar="ID",
+                      help="Filter read-only plan by exact discovery ID (repeatable)")
     return parser
 
 
 def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(arguments)
+    except _SyntaxError as exc:
+        if "--json" in arguments:
+            _json_failure("INVALID_ARGUMENT", str(exc))
+        else:
+            print("ERROR [INVALID_ARGUMENT]: " + str(exc), file=sys.stderr)
+        return 2
     if args.command in {"repos", "repo"} and args.action is None:
         # Do not consult the network or local package manager for object help.
         repos_action = next(action for action in parser._actions
@@ -362,9 +555,18 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
                            "required": False, "detail": "Configured fallback check"})
             bad = any(r["enabled"] and r["compatibility"] == "invalid" for r in repos)
             code = 1 if not all(c["ok"] for c in checks if c.get("required", True)) else 3 if bad else 0
-            _output({"ok": code == 0, "os": distro, "server": server, "checks": checks,
-                     "repositories": repos, "compatibility_summary": _compatibility_summary(repos),
-                     "exit_code": code}, args.json)
+            result = {"ok": code == 0, "os": distro, "server": server,
+                      "checks": checks, "repositories": repos,
+                      "compatibility_summary": _compatibility_summary(repos),
+                      "exit_code": code}
+            if code:
+                result["error"] = {
+                    "code": "REPOSITORY_INVALID" if code == 3
+                    else "REQUIRED_CHECK_FAILED",
+                    "message": ("An enabled repository is invalid." if code == 3
+                                else "A required connectivity check failed."),
+                }
+            _output(result, args.json)
             return code
         if args.action in {"list", "ls"}:
             _output({"os": distro, "server": server, "repositories": repos}, args.json)
@@ -382,15 +584,17 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
         if args.action == "sync":
             if args.apply:
                 raise ClientError("Applying changes is disabled until reviewed")
+            selected = _select_repositories(repos, args.repo)
             catalog = _catalog(server)
-            _output({"server": server,
-                     "repositories": [dict(r, supported=_mapped(r, catalog)) for r in repos],
-                     "note": "DRY RUN: no APT/DNF configuration was changed."}, args.json)
+            plan = _sync_plan(selected, catalog)
+            _output({"server": server, **plan,
+                     "note": "DRY RUN: advisory only; native fallback and trust not verified. "
+                             "No APT/DNF configuration was changed."}, args.json)
             return 0
         raise ClientError("Unknown command")
     except (OSError, ValueError, ClientError) as exc:
         if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}))
+            _json_failure("OPERATION_FAILED", str(exc))
         else:
             print("ERROR: " + str(exc), file=sys.stderr)
         return 2
