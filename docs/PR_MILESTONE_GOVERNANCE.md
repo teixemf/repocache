@@ -24,11 +24,33 @@ The check is **not a substitute** for the project's functional, regression, secu
 
 ## Execution and security
 
-`.github/workflows/pr-milestone.yml` uses `pull_request_target` to grant narrowly scoped GitHub issue-metadata updates (`issues: write` and `contents: read`). It checks out only code from the protected repository **default branch**, pins the reviewed first-party checkout SHA and sets `persist-credentials: false`. It never checks out the PR head or executes PR-supplied code. Untrusted PR title/body are parsed as text and only same-repository numeric issue references are resolved via GitHub's API.
+`.github/workflows/pr-milestone.yml` uses `pull_request_target` to grant narrowly scoped GitHub issue-metadata updates (`pull-requests: write`, `issues: read` and `contents: read`). It checks out only code from the protected repository **default branch**, pins the reviewed first-party checkout SHA and sets `persist-credentials: false`. It never checks out the PR head or executes PR-supplied code. Untrusted PR title/body are parsed as text and only same-repository numeric issue references are resolved via GitHub's API.
 
 Runs on PR opened/reopened/edited/ready-for-review and milestone-attachment/removal events. It verifies live PR metadata, is idempotent for existing milestones, and checks the GitHub response after assigning a new milestone. Transient GitHub API errors produce a non-passing check rather than an inferred milestone.
 
 A required status check must be configured separately in branch protection/rulesets by the maintainer. Until that is done, this workflow is advisory despite being able to fail its own job. The workflow is not operationally verified until a **post-merge** GitHub Actions `pull_request_target` run proves its token scope, event behavior, and assignment on the live repository.
+
+## GitHub token permissions: live integration finding (#148)
+
+The first live pilot on GitHub Actions proved that `issues: write` alone is
+insufficient to PATCH a **pull request** via `/repos/{owner}/{repo}/issues/{number}`:
+the workflow returned **HTTP 403** on automatic milestone assignment despite
+being able to read issue metadata. GitHub's PR-specific authorization boundary
+requires `pull-requests: write`. Use `issues: read` only to inspect linked
+issue milestones; keep `contents: read` for trusted default-branch checkout.
+
+This token scope still grants more power than the one PATCH operation. Treat
+all PR metadata as untrusted text; never execute PR code or expand PR content
+into a shell command. The workflow uses pinned checkout, disabled credential
+persistence, the trusted default branch and fixed GitHub API URLs. A static
+permission test protects this configuration against accidental changes.
+
+**Do not make the check required in `main` rulesets until a new live pilot
+proves automatic assignment and negative cases.** The existing nine mandatory
+status contexts are separate and must not be removed or weakened. The token
+fix itself requires the ordinary PR review and exact-head CI acceptance before
+integration, and a subsequent live `pull_request_target` run is required
+before issue #148 can be accepted.
 
 ## Testing
 
