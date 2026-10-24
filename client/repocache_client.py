@@ -202,22 +202,40 @@ def _apt_sources(root: Path, server: str) -> list[dict]:
                     weak = (props.get("trusted", "").lower() == "yes"
                             or props.get("allow-insecure", "").lower() == "yes"
                             or props.get("allow-weak", "").lower() == "yes")
+                    identity = _discovery_id(root, path, "apt-deb822", (
+                        tuple(sorted(props["types"].split())),
+                        tuple(sorted(_source_identity_uri(uri)
+                                     for uri in props["uris"].split())),
+                        tuple(sorted(props.get("suites", "").split())),
+                        tuple(sorted(props.get("components", "").split())),
+                        tuple(sorted(props.get("architectures", "").split())),
+                    ))
                     repos.append(_repo(f"{path.name}:{number}", "apt-deb822",
                                        urls, path, server,
                                        props.get("enabled", "yes").lower() != "no",
-                                       weak_integrity=weak))
+                                       weak_integrity=weak, discovery_id=identity))
             continue
         for number, line in enumerate(source.splitlines(), 1):
             match = re.match(
-                r"^\s*(?:deb|deb-src)\s+(?:\[([^\]]+)\]\s+)?(\S+)\s+", line)
+                r"^\s*(deb|deb-src)\s+(?:\[([^\]]+)\]\s+)?(\S+)\s+(\S+)(?:\s+([^#]*))?",
+                line)
             if match:
-                options = match.group(1) or ""
+                options = match.group(2) or ""
                 weak = bool(re.search(
                     r"(?i)(?:^|\s)(?:trusted|allow-insecure|allow-weak)\s*=\s*yes(?:\s|$)",
                     options))
+                architectures = tuple(sorted(
+                    token for token in options.split()
+                    if token.startswith(("arch=", "arch+=", "arch-="))))
+                identity = _discovery_id(root, path, "apt-list", (
+                    match.group(1), _source_identity_uri(match.group(3)),
+                    match.group(4),
+                    tuple(sorted((match.group(5) or "").split())),
+                    architectures,
+                ))
                 repos.append(_repo(f"{path.name}:{number}", "apt-list",
-                                   _expand_mirror(match.group(2), root), path, server,
-                                   weak_integrity=weak))
+                                   _expand_mirror(match.group(3), root), path, server,
+                                   weak_integrity=weak, discovery_id=identity))
     return repos
 
 
@@ -245,15 +263,36 @@ def _dnf_sources(root: Path, server: str) -> list[dict]:
                     or val.get("sslverify", "1").lower() in ("0", "no", "false"))
             indirect = bool(val.get("mirrorlist", "").strip()
                             or val.get("metalink", "").strip())
+            identity = _discovery_id(root, path, "dnf", (section,))
             repos.append(_repo(section, "dnf", urls, path, server,
                                val.get("enabled", "1").lower() not in ("0", "no", "false"),
                                auth_hint=auth_hint, weak_integrity=weak,
-                               indirect_mirror=indirect))
+                               indirect_mirror=indirect, discovery_id=identity))
     return repos
 
 
 def discover(root: Path, server: str) -> list[dict]:
-    return _apt_sources(root, server) + _dnf_sources(root, server)
+    return _mark_identity_conflicts(
+        _apt_sources(root, server) + _dnf_sources(root, server))
+
+
+def _select_repositories(repositories: list[dict],
+                         requested_ids: list[str] | None) -> list[dict]:
+    """Filter an advisory plan with exact, unambiguous discovery IDs."""
+    if not requested_ids:
+        return repositories
+    if len(requested_ids) > 100 or any(
+        not re.fullmatch(r"(?:apt|dnf)-[0-9a-f]{24}", item)
+        for item in requested_ids
+    ):
+        raise ClientError("Invalid repository selection")
+    wanted = set(requested_ids)
+    matched = [repo for repo in repositories if repo.get("id") in wanted]
+    if {repo["id"] for repo in matched} != wanted:
+        raise ClientError("Unknown repository ID")
+    if any(repo.get("identity_conflict") for repo in matched):
+        raise ClientError("Ambiguous repository ID; resolve duplicate sources")
+    return matched
 
 
 def _fetch_json(url: str, *, max_bytes: int):
