@@ -144,3 +144,28 @@ review, source/wheel compatibility with the immutable public v0.4.0 updater,
 and full original #17 acceptance. Do not merge, enable intake, sign or publish
 on this checkpoint. Previous successful CI runs apply only to their exact
 historical commits.
+
+
+## 2026-10-24 bounded backup IPC follow-up (feature PR, #17/#57)
+
+**Threat addressed (code-level):** a service-UID worker could repeatedly send
+empty or tiny syntactically valid backup frames. The former parent loop
+enforced a 128 MiB byte cap and a timeout **per response**, but neither
+bounded the number of zero-length frames nor enforced a deadline for the
+whole transfer. A misbehaving worker could therefore keep the privileged
+backup operation open indefinitely without producing a valid snapshot.
+
+**Proposed mitigation:** reject empty frames and decoded chunks larger than
+the worker's fixed 64 KiB protocol, cap the stream at 2048 data frames,
+and apply a 120-second total monotonic deadline in addition to the existing
+10-second per-response limit. The normal worker sends 64 KiB chunks followed
+by a terminal frame; a valid snapshot still requires downstream SQLite
+integrity verification. This change does **not** relax backup-size,
+root-private staging, trusted inode, journal, or restore requirements.
+
+**PASS (source inspection):** the bounded-progress checks and deterministic
+positive/negative regression tests have been added on a separate feature
+branch. **NOT VERIFIED:** exact-final-head Python 3.12/3.13 tests, all nine
+required Actions jobs, independent security review, real native UID/SELinux
+and power-loss behavior, and the full #17/#57 acceptance matrix. No merge
+or production activation is authorized by this scoped fix.
