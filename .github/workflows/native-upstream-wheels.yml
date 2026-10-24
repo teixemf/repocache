@@ -65,7 +65,7 @@ jobs:
               ;;
             *) exit 1 ;;
           esac
-          useradd --system --home-dir /work --shell /bin/sh \
+          useradd --system --user-group --home-dir /work --shell /bin/sh \
             --no-create-home repocacheci
           mkdir -m 0700 /work
           chown repocacheci:repocacheci /work
