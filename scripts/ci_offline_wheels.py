@@ -72,7 +72,7 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
             if item.filename.split("/")[0].endswith(".dist-info")
         }
         if (len(metadata_dirs) > 1 or any(
-                re.fullmatch(r"repocache_control-[0-9]+(?:\\.[0-9]+){2}\\.dist-info", name)
+                re.fullmatch(r"repocache_control-[0-9]+(?:\.[0-9]+){2}\.dist-info", name)
                 is None for name in metadata_dirs)):
             raise RuntimeError("First-party wheel contains unreviewed install path")
         metadata_prefix = (next(iter(metadata_dirs)) + "/") if metadata_dirs else None
