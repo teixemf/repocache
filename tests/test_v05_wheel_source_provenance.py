@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import zipfile
+import stat
 from pathlib import Path
 
 import pytest
@@ -58,3 +59,50 @@ def test_empty_source_is_not_accepted(tmp_path):
     (tmp_path / "src/repocache").mkdir(parents=True)
     with pytest.raises(RuntimeError, match="Missing reviewed"):
         builder.verify_first_party_modules(tmp_path, wheel(tmp_path, {}))
+
+
+def test_reviewed_nested_first_party_modules_are_verified(source, tmp_path):
+    package = source / "src/repocache"
+    nested = package / "extensions"
+    nested.mkdir()
+    (nested / "__init__.py").write_bytes(b"# reviewed nested package\\n")
+    (nested / "worker.py").write_bytes(b"def guard(): return True\\n")
+    modules = {f"repocache/{p.relative_to(package).as_posix()}": p.read_bytes()
+               for p in package.rglob("*.py")}
+    builder.verify_first_party_modules(source, wheel(tmp_path, modules))
+    del modules["repocache/extensions/worker.py"]
+    with pytest.raises(RuntimeError, match="module inventory"):
+        builder.verify_first_party_modules(source, wheel(tmp_path, modules))
+
+
+def test_unreviewed_nested_wheel_module_is_rejected(source, tmp_path):
+    modules = {f"repocache/{p.name}": p.read_bytes()
+               for p in (source / "src/repocache").glob("*.py")}
+    modules["repocache/hidden/entry.py"] = b"def side_effect(): pass\\n"
+    with pytest.raises(RuntimeError, match="module inventory"):
+        builder.verify_first_party_modules(source, wheel(tmp_path, modules))
+
+
+def test_duplicate_first_party_wheel_zip_member_is_rejected(source, tmp_path):
+    modules = {f"repocache/{p.name}": p.read_bytes()
+               for p in (source / "src/repocache").glob("*.py")}
+    output = wheel(tmp_path, modules)
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(output, "a") as archive:
+            archive.writestr("repocache/submissions.py",
+                             b"def accept(): return True\\n")
+    with pytest.raises(RuntimeError, match="duplicate ZIP members"):
+        builder.verify_first_party_modules(source, output)
+
+
+def test_first_party_wheel_symlinked_python_module_is_rejected(source, tmp_path):
+    output = tmp_path / "linked.whl"
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("repocache/__init__.py",
+                         (source / "src/repocache/__init__.py").read_bytes())
+        member = zipfile.ZipInfo("repocache/submissions.py")
+        member.create_system = 3
+        member.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(member, "repocache/__init__.py")
+    with pytest.raises(RuntimeError, match="symlinked module"):
+        builder.verify_first_party_modules(source, output)
