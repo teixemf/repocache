@@ -47,6 +47,42 @@ or rebuilt equivalents. See #76 and docs/RELEASE_ACCEPTANCE_POLICY.md.
    acceptance evidence. That evidence is itself checked against its immutable
    GitHub Actions artifact SHA-256 and the originating successful workflow.
 
+## Immutable v0.4.0 archive and reviewed v0.5 first-party wheel
+
+The publicly released v0.4.0 updater accepts **exactly** its frozen
+`RELEASE_FILES` source TAR members. An archive containing the new v0.5
+`submissions`, `intake`, or privileged review modules will fail closed.
+**Do not modify the public v0.4.0 verifier or append new TAR members.**
+
+The v0.5 legacy eight-asset profile must retain that source archive while
+shipping every reviewed first-party Python module in the **separately signed
+and hash-locked application wheel**, inside the signed wheelhouse. For this
+transition, `scripts/verify_release_candidate.py`, invoked by the
+**owner's offline signer before unlocking the private key**, now checks
+all of the following on the actual candidate files:
+
+1. Rebuild the old-compatible source archive deterministically from the
+   reviewed checkout and require exact SHA-256 identity.
+2. Verify the wheelhouse TAR, its signed-bound SHA-256, complete pinned
+   wheel lock/SBOM, license notices and application wheel version.
+3. Compare the **full first-party Python module inventory and exact bytes**
+   between the reviewed checkout and the extracted, hash-pinned application
+   wheel; refuse missing, extra, modified, symlinked, duplicate ZIP or
+   unreviewed installer-path contents. This check is repeated at
+   **signing time**, not merely assumed from an earlier CI wheel build.
+4. Reject all discrepancies before requesting access to the owner key.
+   This check alone does not authenticate the signing identity or replace
+   signed Draft Release / published-v0.4 native acceptance.
+
+The trusted checkout and complete source commit must be independently
+authenticated by the existing protected release-operator identity checks.
+Do not sign from an altered/unreviewed checkout. The final owner-signed
+candidate must still be exercised through
+`signed-candidate-acceptance.yml` on Debian 13 and AlmaLinux 10 with
+actual public v0.4.0 baseline. Installed CLI/TUI/submission imports and
+recoverability must be proven; **full C7 remains NOT VERIFIED** until
+the genuine test has completed with immutable evidence.
+
 ## Prerequisites for each real signed candidate
 
 - All relevant feature and security PRs merged/reviewed with exact-head
