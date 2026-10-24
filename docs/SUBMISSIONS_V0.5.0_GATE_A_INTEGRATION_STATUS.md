@@ -100,3 +100,24 @@ No release signer key, tag, signing, Draft, publication, production
 activation, or branch-protection bypass is authorized by this checkpoint.
 Original parent #15/#16/#17/#22/#23/#57 and child #127 remain OPEN until
 their respective full criteria have evidence.
+
+
+## 2026-10-24 real-UID privilege-separation checkpoint (PR #128)
+
+**Disposition: still DRAFT / NOT READY TO MERGE.** The previously identified
+root-SQLite-on-intake-writable-path defect has a candidate remediation, but
+a passing regression is not full Gate A acceptance.
+
+| Criterion | Status | Evidence / residual risk |
+| --- | --- | --- |
+| Root SQLite privilege boundary, candidate code | **PASS (reviewed design and synthetic execution only)** | `submission_db_worker.py` uses a fixed root-owned `setpriv`, dedicated intake UID/GID, cleared groups, no-new-privs, isolated Python, bounded JSON IPC, root-only decision journal and fail-closed commit acknowledgements. Root queue paths beneath untrusted ancestors or relative paths are refused. |
+| Actual worker UID drop, SQLite sidecars, root-owned receipt and backup | **PASS (disposable containers)** | [GitHub Actions #40096004150](https://github.com/teixemf/repocache/actions/runs/40096004150), both Debian13 and AlmaLinux10 jobs completed SUCCESS. Inspected job logs show actual `setpriv` service-UID worker, no direct root SQLite access to service path, receipt-backed review/reconcile, private backup, hostile journal symlink with root sentinel unchanged. Ubuntu runner kernel and Docker userland only; **not** native SELinux/systemd. |
+| Offline restore staging and lock | **PASS (synthetic tests)** | Root-only backup directory now holds the restore lock and preverification staging. Atomic `os.replace` into service directory is the only handoff; cross-device EXDEV fails closed. Crash/power-loss/native concurrency remain NOT VERIFIED. |
+| Nine required checks on code HEAD `41e645383aa792d3fc2a61a5685b8cd5122431a6` | **PASS (historical SHA only)** | [Tests #40096004125](https://github.com/teixemf/repocache/actions/runs/40096004125) 4/4; [Offline #40096004126](https://github.com/teixemf/repocache/actions/runs/40096004126) 3/3; [Upgrade/real-UID #40096004150](https://github.com/teixemf/repocache/actions/runs/40096004150) 2/2, all SUCCESS. Newer code/docs commits require their own exact-head checks. |
+| **Immutable public v0.4.0 → v0.5.0 source inventory compatibility** | **NOT VERIFIED / RELEASE BLOCKER** | The published v0.4.0 `upgrade.RELEASE_FILES` enforces an **exact** archive-member set, while new `repocache.submissions`, intake, decision journal, recovery and worker modules are outside the old source tar allowlist. Blindly adding them to the v0.5.0 source tar would make the immutable v0.4.0 updater reject the release. The separately owner-signed application wheel may carry additional modules, but its source provenance and complete release inventory must be explicitly reviewed and tested under #76 before signing. Do not change the immutable v0.4.0 policy or claim release compatibility based on synthetic CI. |
+| Full Gate A review and native production activation | **NOT VERIFIED** | Stress-tested IPC timeouts, malicious parent path swaps, complete recovery concurrency, protected reviews/rules, original #17 and production Gate B #49 remain independent blockers. No endpoint is enabled. |
+
+This update supersedes earlier pre-remediation status for the specific root
+SQLite candidate. It does not mark all Gate A criteria PASS, authorize merge,
+or create any release/tag/signature/Draft/publication. See
+`docs/SUBMISSIONS_PRIVILEGE_SEPARATION_V05.md` for the design and limits.
