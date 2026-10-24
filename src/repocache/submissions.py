@@ -344,6 +344,34 @@ class SubmissionQueue:
         try:
             with self._journal().locked() as journal:
                 with self._connect() as db:
+                    # Read one SQLite snapshot. Without this, an intake writer
+                    # could flip a row between our two root-authenticated
+                    # visibility checks and hide an undecided proposal.
+                    db.execute("BEGIN")
+                    # Refuse a service-UID-forged REVIEWED/REJECTED row that
+                    # would otherwise disappear from the pending-only query.
+                    # The root journal decides which transitions are valid.
+                    decided = db.execute(
+                        "SELECT id,state,version FROM proposals WHERE state!='PENDING'"
+                    ).fetchall()
+                    if decided:
+                        known: dict[str, set[str]] = {}
+                        # Enumerate the protected directory just once. Chain
+                        # verification for every decided row then scales with
+                        # its receipts, not with all receipt filenames squared.
+                        for entry in journal.directory.iterdir():
+                            name = entry.name
+                            if name.endswith(".json"):
+                                known.setdefault(name.split(".", 1)[0], set()).add(name)
+                        for ident, state, version in decided:
+                            if (not isinstance(ident, str) or
+                                    not re.fullmatch(r"[a-f0-9]{32}", ident) or
+                                    type(version) is not int or version < 1):
+                                raise SubmissionError("unaudited_decision_state", 503)
+                            chain = journal.read(ident, known_names=known.get(ident, set()))
+                            if (not chain or chain[-1]["state"] != state or
+                                    chain[-1]["version"] != version):
+                                raise SubmissionError("unaudited_decision_state", 503)
                     # Verify all returned rows against root-owned receipts.
                     # The intake may not forge a REVIEWED state by editing DB.
                     rows = db.execute(
