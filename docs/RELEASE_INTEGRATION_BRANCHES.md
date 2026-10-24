@@ -64,14 +64,19 @@ inventory of open PRs. Recheck GitHub immediately before each change.
 ## Continuous integration
 
 The CI PR for #157 adds nonprivileged `push` triggers for both integration
-branches to:
+branches to FOUR existing workflows, preserving the full original nine
+mandatory unfiltered contexts plus a separate path-filtered compatibility check:
 
-- `.github/workflows/tests.yml`: Python 3.12/3.13 unit, CLI v1 and
-  mandatory security tests, plus Debian/Alma source bundle smoke.
-- `.github/workflows/native-upstream-wheels.yml`: read-only,
+- `.github/workflows/tests.yml`: four jobs for Python 3.12/3.13 unit, CLI v1,
+  mandatory security tests and Debian/Alma source bundle integrity.
+- `.github/workflows/offline-wheelhouse.yml`: three jobs for signed legacy
+  offline wheelchain and artifact verification.
+- `.github/workflows/upgrade-distros.yml`: two jobs for rootless legacy
+  upgrade and rollback on the supported distro userspaces.
+- `.github/workflows/native-upstream-wheels.yml`: separate read-only,
   disposable upstream pinned-PyPI compatibility on changed runtime paths.
 
-Existing `pull_request` triggers remain unchanged. The second workflow is
+Existing `pull_request` triggers remain unchanged. The fourth workflow is
 path-filtered: a successful `push` without relevant changes may have
 **no run**, which must NOT be misrepresented as a passed check. Other
 legacy/offline/rollback and platform-specific jobs must continue to be
