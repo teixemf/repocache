@@ -8,15 +8,22 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
+import stat
 import socket
 import ssl
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler, HTTPSHandler, ProxyHandler
 
 DEFAULT_SERVER = "https://cache.example.org"
 CONFIG_FILE = Path("/etc/repocache-client/config.json")
@@ -274,6 +281,100 @@ def _payload(distro: dict, repos: list[dict], server: str) -> dict:
             "repositories": out}
 
 
+class RemoteSubmissionError(ClientError):
+    def __init__(self, message: str, code: int):
+        super().__init__(message)
+        self.exit_code = code
+
+
+def _submission_credential(path: Path) -> tuple[str, bytes]:
+    """Read a local, non-symlinked 0600 file without exposing its contents."""
+    try:
+        st = path.lstat()
+        parent = path.parent.lstat()
+        if (not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077
+                or st.st_uid not in {0, os.geteuid()} or st.st_size > 4096
+                or not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o022):
+            raise ClientError("Credential file ownership or permissions are unsafe")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            raw = stream.read(4097)
+        cfg = json.loads(raw.decode("utf-8"))
+        if not isinstance(cfg, dict) or set(cfg) != {"key_id", "secret"}:
+            raise ClientError("Invalid submission credential format")
+        key_id, encoded = cfg["key_id"], cfg["secret"]
+        if (not isinstance(key_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key_id)
+                or not isinstance(encoded, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded)):
+            raise ClientError("Invalid submission credential format")
+        secret = base64.urlsafe_b64decode(encoded + "=")
+        if (len(secret) != 32 or base64.urlsafe_b64encode(secret).decode().rstrip("=")
+                != encoded):
+            raise ClientError("Invalid submission credential format")
+        return key_id, secret
+    except (OSError, ValueError, UnicodeError) as exc:
+        if isinstance(exc, ClientError):
+            raise
+        raise ClientError("Cannot read a valid protected submission credential") from None
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        # Never replay credentials, request bodies or signatures to any URL.
+        return None
+
+
+def _send_submission(server: str, payload: dict, credential: Path) -> dict:
+    """Explicit HTTPS-only one-shot submission; never follow redirects."""
+    key_id, secret = _submission_credential(credential)
+    if not payload["repositories"]:
+        raise ClientError("No eligible repositories to submit")
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                     ensure_ascii=True).encode("ascii")
+    if not 0 < len(raw) <= 65536:
+        raise ClientError("Submission exceeds the maximum size")
+    timestamp = str(int(time.time()))
+    nonce = base64.urlsafe_b64encode(secrets.token_bytes(16)).decode().rstrip("=")
+    target = server + "/v1/repository-submissions"
+    canonical = (f"repocache-v1\nPOST\n/v1/repository-submissions\n{timestamp}\n{nonce}\n"
+                 f"{hashlib.sha256(raw).hexdigest()}").encode("ascii")
+    signature = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+    request = Request(target, data=raw, method="POST", headers={
+        "Content-Type": "application/json",
+        "X-Repocache-Key-Id": key_id,
+        "X-Repocache-Timestamp": timestamp,
+        "X-Repocache-Nonce": nonce,
+        "X-Repocache-Signature": signature,
+    })
+    # No ambient proxy, no redirected Authorization/HMAC headers, standard TLS
+    # validation and hostname checking from the OS trust store.
+    opener = build_opener(ProxyHandler({}), _RejectRedirects(),
+                          HTTPSHandler(context=ssl.create_default_context()))
+    try:
+        with opener.open(request, timeout=8) as response:
+            if response.status != 202:
+                raise RemoteSubmissionError("Submission not accepted", 6)
+            answer = response.read(2049)
+            if len(answer) > 2048:
+                raise RemoteSubmissionError("Oversized submission response", 6)
+            doc = json.loads(answer.decode("utf-8"))
+            ident = doc.get("proposal_id") if isinstance(doc, dict) else None
+            if (not isinstance(ident, str) or
+                    not re.fullmatch(r"[a-f0-9]{32}", ident)):
+                raise RemoteSubmissionError("Invalid submission response", 6)
+            return {"ok": True, "status": "pending", "proposal_id": ident}
+    except HTTPError as exc:
+        # Ignore untrusted response text and headers; 3xx cannot be followed.
+        if exc.code in (401, 403):
+            raise RemoteSubmissionError("Submission authentication failed", 4) from None
+        if exc.code == 429:
+            raise RemoteSubmissionError("Submission rate limit exceeded", 5) from None
+        raise RemoteSubmissionError("Submission endpoint rejected request", 6) from None
+    except (URLError, TimeoutError, OSError):
+        raise RemoteSubmissionError("Submission endpoint unavailable or TLS failed", 6) from None
+    except (UnicodeError, ValueError, TypeError):
+        raise RemoteSubmissionError("Invalid submission response", 6) from None
+
+
 def _output(data: dict, json_mode: bool) -> None:
     if json_mode:
         print(json.dumps(data, indent=2))
@@ -310,6 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     _common_options(submit, nested=True)
     submit.add_argument("--output", type=Path)
     submit.add_argument("--token-file", type=Path)
+    submit.add_argument("--send", action="store_true", help="Explicit authenticated pending-only HTTPS submission")
     sync = actions.add_parser("sync")
     _common_options(sync, nested=True)
     sync.add_argument("--apply", action="store_true")
@@ -371,6 +473,15 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
             return 0
         if args.action == "submit":
             payload = _payload(distro, repos, server)
+            if args.send:
+                if args.output or not args.token_file:
+                    raise ClientError("Explicit --send requires --token-file and forbids --output")
+                result = _send_submission(server, payload, args.token_file)
+                if args.json:
+                    print(json.dumps(result))
+                else:
+                    print("Submission accepted as pending: " + result["proposal_id"])
+                return 0
             if args.output and not args.token_file:
                 fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -388,6 +499,12 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
                      "note": "DRY RUN: no APT/DNF configuration was changed."}, args.json)
             return 0
         raise ClientError("Unknown command")
+    except RemoteSubmissionError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc), "exit_code": exc.exit_code}))
+        else:
+            print("ERROR: " + str(exc), file=sys.stderr)
+        return exc.exit_code
     except (OSError, ValueError, ClientError) as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}))

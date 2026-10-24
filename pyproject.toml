@@ -18,6 +18,9 @@ dependencies = [
 
 [project.scripts]
 repocache = "repocache.cli:app"
+repocache-intake = "repocache.intake_service:main"
+repocache-submissions-admin = "repocache.submission_admin:main"
+repocache-submissions-keys = "repocache.submission_keys:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
