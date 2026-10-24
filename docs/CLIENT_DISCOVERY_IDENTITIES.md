@@ -73,6 +73,6 @@ manifests, validate complete APT/DNF source grammar, reject duplicates
 and symlink drift, prove verified package-manager fallback on both
 distributions and implement atomic backups, locking, recovery and
 read-before-write revalidation. See [read-only planner](CLIENT_SYNC_PLAN.md)
-and [functional contract](architecture/CLIENT_FUNCTIONAL_CONTRACT.md).
+and the [functional contract draft in PR #115](https://github.com/teixemf/repocache/pull/115) (not yet merged).
 
 No merge or release until exact-head CI, review and explicit maintainer approval.
