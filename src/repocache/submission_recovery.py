@@ -39,6 +39,20 @@ def _trusted_private_dir(path: Path, *, service_owned: bool = False) -> None:
     if (not stat.S_ISDIR(details.st_mode) or details.st_uid not in owners
             or details.st_mode & 0o077):
         raise SubmissionError("unsafe_restore_directory", 403)
+    # A private final directory is not enough: an intake-writable ancestor
+    # can be renamed to a symlink between validation and root os.replace().
+    # A service-owned directory also cannot be trusted directly below a
+    # sticky /tmp-style parent: its owner can rename it there.
+    if details.st_uid != 0:
+        immediate = path.parent.lstat()
+        if (not stat.S_ISDIR(immediate.st_mode) or immediate.st_uid != 0
+                or immediate.st_mode & 0o022):
+            raise SubmissionError("unsafe_restore_ancestor", 403)
+    for ancestor in path.parents:
+        st = ancestor.lstat()
+        if (not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or
+                (st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX)):
+            raise SubmissionError("unsafe_restore_ancestor", 403)
 
 
 def _check_backup_stat(details: os.stat_result) -> None:
