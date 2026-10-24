@@ -50,6 +50,18 @@ def _trusted_dir(path: Path) -> None:
             not stat.S_ISDIR(ancestor.st_mode) or ancestor.st_uid != 0 or
             ancestor.st_mode & 0o022):
         raise DecisionError("unsafe_decision_directory")
+    # The direct parent being root-owned does not protect it from rename
+    # if an ancestor is controlled by the intake UID or another local user.
+    # Permit root-owned sticky ancestors such as /tmp only above that
+    # private direct parent; never trust a service-owned ancestor.
+    for ancestor_path in path.parent.parents:
+        try:
+            entry = ancestor_path.lstat()
+        except OSError as exc:
+            raise DecisionError("decision_store_unavailable") from exc
+        if (not stat.S_ISDIR(entry.st_mode) or entry.st_uid != 0 or
+                (entry.st_mode & 0o022 and not entry.st_mode & stat.S_ISVTX)):
+            raise DecisionError("unsafe_decision_directory")
 
 
 def _open_trusted(path: Path) -> int:
