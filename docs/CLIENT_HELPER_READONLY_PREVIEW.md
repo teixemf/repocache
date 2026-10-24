@@ -2,7 +2,7 @@
 
 **Status:** experimental, **not installed or exposed as an approved public CLI**.  
 **Tracking:** [issue #24](https://github.com/teixemf/repocache/issues/24), CLI architecture #107.  
-**Dependency:** [PR #133](https://github.com/teixemf/repocache/pull/133) for the strictly read-only, dirfd-anchored source preflight. **The parent PR remains unmerged.**
+**Dependency:** [PR #133](https://github.com/teixemf/repocache/pull/133) for the strictly read-only, dirfd-anchored source preflight. **PR #133 is already merged into `main`.**
 
 ## Narrow prototype interface
 
