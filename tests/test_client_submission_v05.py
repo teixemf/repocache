@@ -63,7 +63,9 @@ def test_client_submits_explicitly_over_https_without_redirects(monkeypatch, cre
                                                        "https://evil.example.net") is None
 
 
-@pytest.mark.parametrize("status,expected", [(401, 4), (403, 4), (429, 5), (503, 6), (307, 6)])
+@pytest.mark.parametrize("status,expected", [(401, "AUTHENTICATION_REQUIRED"), (403, "AUTHENTICATION_REQUIRED"),
+     (429, "RATE_LIMITED"), (503, "SUBMISSION_REJECTED"),
+     (307, "SUBMISSION_REJECTED")])
 def test_server_failure_codes_do_not_echo_remote_body(monkeypatch, credential, status, expected):
     class FakeOpener:
         def open(self, request, timeout):
@@ -72,7 +74,8 @@ def test_server_failure_codes_do_not_echo_remote_body(monkeypatch, credential, s
     monkeypatch.setattr(client, "build_opener", lambda *handlers: FakeOpener())
     with pytest.raises(client.RemoteSubmissionError) as failure:
         client._send_submission("https://cache.example.org", _data(), credential)
-    assert failure.value.exit_code == expected
+    assert failure.value.exit_code == 2
+    assert failure.value.error_code == expected
     assert "secret" not in str(failure.value)
     assert "cache.example.org" not in str(failure.value)
 
@@ -84,7 +87,8 @@ def test_invalid_response_and_network_errors_are_redacted(monkeypatch, credentia
     monkeypatch.setattr(client, "build_opener", lambda *handlers: BadResponse())
     with pytest.raises(client.RemoteSubmissionError) as failure:
         client._send_submission("https://cache.example.org", _data(), credential)
-    assert failure.value.exit_code == 6
+    assert failure.value.exit_code == 2
+    assert failure.value.error_code == "SUBMISSION_REJECTED"
 
     class NoNetwork:
         def open(self, request, timeout):
@@ -170,3 +174,37 @@ def test_credential_replacement_with_insecure_file_is_refused(
     with pytest.raises(client.ClientError, match="changed or is unsafe"):
         client._submission_credential(credential)
     assert once
+
+
+@pytest.mark.parametrize("status,symbol", [
+    (401, "AUTHENTICATION_REQUIRED"), (429, "RATE_LIMITED"),
+    (503, "SUBMISSION_REJECTED"),
+])
+def test_remote_submission_cli_v1_exit_json_contract(
+    monkeypatch, credential, tmp_path, capsys, status, symbol
+):
+    root = tmp_path / "host"
+    (root / "etc/apt").mkdir(parents=True)
+    (root / "etc/os-release").write_text('ID=debian\\nVERSION_ID="13"\\n')
+    (root / "etc/apt/sources.list").write_text(
+        "deb https://mirror.example.org/debian trixie main\\n"
+    )
+
+    def rejected(*_args):
+        errors = {
+            401: "Submission authentication failed",
+            429: "Submission rate limit exceeded",
+            503: "Submission endpoint rejected request",
+        }
+        raise client.RemoteSubmissionError(errors[status], symbol)
+
+    monkeypatch.setattr(client, "_send_submission", rejected)
+    result = client.run(["--json", "repos", "submit", "--send",
+                         "--token-file", str(credential)], root=root)
+    output = json.loads(capsys.readouterr().out)
+    assert result == 2
+    assert output["schema_version"] == 1
+    assert output["ok"] is False
+    assert output["exit_code"] == 2
+    assert output["error"]["code"] == symbol
+    assert isinstance(output["error"]["message"], str)
