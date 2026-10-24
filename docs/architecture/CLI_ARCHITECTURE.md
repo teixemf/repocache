@@ -11,6 +11,8 @@
 
 > **Reading this document:** **FROZEN DESIGN** means the maintainer explicitly chose this user-facing behavior. **PLANNED INTERFACE** means the command belongs in the target architecture but is not an assertion of implementation or of an approved release target. **INTEGRATION DEPENDENCY** means a detailed contract must be reconciled with another workstream before implementation can be accepted. No command is considered available without inspection and tests of the exact installed version.
 
+**Implementation guard:** [CLI conformance and migration plan](CLI_CONFORMANCE.md) documents the required automated command-tree inventory, parser regression tests, CI gate and future CLI change checklist (tracking issue #107). This implementation guard does not imply that planned commands are shipped.
+
 ## 1. Architecture decision record
 
 The CLI-design discussion established the following binding decisions. They are consolidated here without reopening the previously approved alternatives.
@@ -365,7 +367,7 @@ No release-operator command is presumed implemented by this document.
 
 In normal text mode, results go to stdout and errors/warnings to stderr. A failure does not become a success because the command printed a JSON document. An idempotent no-op may succeed but must be distinguishable from a fresh mutation when reported.
 
-The **minimum semantic fields** to preserve in a versioned JSON implementation are `ok` (boolean), `error.code` (stable symbolic identifier on failure) and `error.message` (redacted, actionable string on failure). A `schema_version` field and per-operation result records are recommended implementation details; their exact normative schema version and fields must be verified by integration tests before the first release of this new contract.
+The **minimum semantic fields** to preserve in a versioned JSON implementation are `ok` (boolean), `error.code` (stable symbolic identifier on failure) and `error.message` (redacted, actionable string on failure). The [CLI JSON/exit contract v1](CLI_ERROR_CONTRACT_V1.md) now specifies `schema_version: 1`, retained operation-specific fields and an explicit compatibility-preserving numeric status table. This integration-stage mapping must pass tests on all three executables before it is promoted as a stable public interface.
 
 Illustrative JSON *shape* (not proof of implemented field names):
 
@@ -403,7 +405,7 @@ Do not misrepresent a sequence of JSON lines as a single JSON document. Until a 
 
 Symbolic error identifiers are stable uppercase/underscore names, not translations of prose; e.g. `REPOSITORY_NOT_FOUND`, `REPOSITORY_CONFLICT`, `INVALID_CONFIG`, `PERMISSION_DENIED`, `UNSAFE_PURGE`, `UPSTREAM_UNAVAILABLE`, `INVALID_RELEASE`, `BUSY`, `PARTIAL_FAILURE`. Names are candidates for the cross-executable error registry, not an indication that all handlers exist.
 
-**Approved invariant:** exit 0 for successful operations, including a safe idempotent no-op; nonzero for required failures and partial batch failures. No numeric code is assigned here for partial success. The maintainer approved uniform categories in principle and explicitly delegated **the final numeric mapping and edge cases to the separate `repocache-client` architecture session**. Once that work is accessible, produce one registry covering all three executables and run compatibility tests against the published v0.4.0 behavior. Do not invent that session's decisions or prematurely freeze 1/2/3/4/5/75 as a normative new map.
+**Approved invariant:** exit 0 for successful operations, including safe idempotent no-ops; nonzero for required and partial-batch failures. The [v1 integration registry](CLI_ERROR_CONTRACT_V1.md) preserves observed existing exit statuses `0`, `1`, `2`, `3` and `75` across all three frontends; these include deliberately retained command-specific compatibility exceptions (in particular updater failures returning 2 and client repository-validation failures returning 3). It does **not** introduce a new universal partial-batch number or renumber approved client `check`. Any final mapping for not-yet-implemented operations still requires explicit issue-level approval and execution evidence.
 
 Published v0.4.0 provides command-specific meanings (for example updater busy uses 75; client `check` uses distinct nonzero statuses). The redesigned interface may deliberately break some non-mandated old mappings, but this must be documented explicitly and never silently change the already approved client contracts.
 

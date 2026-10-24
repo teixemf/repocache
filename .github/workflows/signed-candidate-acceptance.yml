@@ -1,0 +1,188 @@
+name: Signed release candidate acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact owner-approved signed draft tag (e.g. v0.5.0)
+        type: string
+        required: true
+      commit:
+        description: Full reviewed candidate source SHA-1 (40 lowercase hex)
+        type: string
+        required: true
+      draft_release_id:
+        description: Owner-staged, unpublished draft GitHub Release ID
+        type: string
+        required: true
+      source_run_id:
+        description: Owner-authorized unsigned official release workflow run ID
+        type: string
+        required: true
+      source_run_attempt:
+        description: Exact source build attempt (normally 1)
+        type: string
+        required: true
+        default: "1"
+
+permissions:
+  contents: read
+  actions: read # Required for source-run/job and immutable evidence-artifact API reads.
+
+concurrency:
+  group: signed-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft-auth:
+    name: Signed draft publisher and asset identity
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - name: Accept only manually dispatched owner-approved main workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_ACTOR" == teixemf ]] ||
+            { echo "ERROR: Reviewed main and owner dispatch required." >&2; exit 1; }
+      - name: Read private draft without leaking token to CDN and verify real Ed25519
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ inputs.tag }}
+          RC_COMMIT: ${{ inputs.commit }}
+          RC_DRAFT: ${{ inputs.draft_release_id }}
+          RC_BUILD_RUN: ${{ inputs.source_run_id }}
+          RC_BUILD_ATTEMPT: ${{ inputs.source_run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/candidate-handoff"
+          python3 scripts/draft_release_gate.py fetch \
+            --tag "$RC_TAG" --commit "$RC_COMMIT" \
+            --release-id "$RC_DRAFT" \
+            --run-id "$RC_BUILD_RUN" --run-attempt "$RC_BUILD_ATTEMPT" \
+            --dest "$RUNNER_TEMP/candidate-handoff/assets" \
+            --inventory "$RUNNER_TEMP/candidate-handoff/validated.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: authenticated-draft-candidate
+          path: ${{ runner.temp }}/candidate-handoff/
+          if-no-files-found: error
+          retention-days: 3
+
+  native:
+    name: Upgrade signed candidate (${{ matrix.platform }})
+    needs: draft-auth
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: debian13
+            image: debian:13-slim
+          - platform: almalinux10
+            image: almalinux:10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: authenticated-draft-candidate
+          path: ${{ runner.temp }}/candidate-handoff
+      - name: Download and authenticate real previous public stable v0.4.0
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/public_release_acceptance.py fetch \
+            --tag v0.4.0 --dest "$RUNNER_TEMP/public-baseline"
+      - name: Prepare clean native OS container
+        env:
+          BASE_IMAGE: ${{ matrix.image }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cat > "$RUNNER_TEMP/Dockerfile.repocache-candidate" <<'DOCKERFILE'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          RUN if command -v apt-get >/dev/null 2>&1; then \
+                apt-get update -qq && \
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  python3 python3-venv python3-pip python3-setuptools python3-wheel \
+                  ca-certificates openssl util-linux passwd; \
+              else \
+                dnf -y -q install python3 python3-pip python3-devel python3-setuptools \
+                  python3-wheel ca-certificates openssl util-linux util-linux-user shadow-utils; \
+              fi
+          DOCKERFILE
+          docker build --pull --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+            -t "repocache-candidate:${{ matrix.platform }}" \
+            -f "$RUNNER_TEMP/Dockerfile.repocache-candidate" "$RUNNER_TEMP"
+      - name: Exercise signed v0.4.0 to draft candidate upgrade and recovery
+        env:
+          RC_TAG: ${{ inputs.tag }}
+          RC_COMMIT: ${{ inputs.commit }}
+          RC_DRAFT: ${{ inputs.draft_release_id }}
+          RC_BUILD_RUN: ${{ inputs.source_run_id }}
+          RC_BUILD_ATTEMPT: ${{ inputs.source_run_attempt }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge --user 0:0 \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/repo,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/public-baseline,target=/artifacts,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/candidate-handoff/assets,target=/candidate,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/candidate-handoff,target=/candidate-inventory,readonly" \
+            "repocache-candidate:${{ matrix.platform }}" \
+            /usr/bin/python3 /repo/scripts/ci_signed_candidate_native.py \
+              --tag "$RC_TAG" --commit "$RC_COMMIT" --release-id "$RC_DRAFT" \
+              --run-id "$RC_BUILD_RUN" --run-attempt "$RC_BUILD_ATTEMPT"
+
+  freeze:
+    name: Freeze final candidate acceptance evidence
+    needs: [draft-auth, native]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: authenticated-draft-candidate
+          path: ${{ runner.temp }}/candidate-handoff
+      - name: Re-check unchanged draft and generate exact acceptance fingerprint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RC_TAG: ${{ inputs.tag }}
+          RC_COMMIT: ${{ inputs.commit }}
+          RC_DRAFT: ${{ inputs.draft_release_id }}
+          RC_BUILD_RUN: ${{ inputs.source_run_id }}
+          RC_BUILD_ATTEMPT: ${{ inputs.source_run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/draft_release_gate.py recheck \
+            --tag "$RC_TAG" --commit "$RC_COMMIT" \
+            --release-id "$RC_DRAFT" --run-id "$RC_BUILD_RUN" \
+            --run-attempt "$RC_BUILD_ATTEMPT" \
+            --inventory "$RUNNER_TEMP/candidate-handoff/validated.json"
+          python3 scripts/draft_release_gate.py freeze \
+            --inventory "$RUNNER_TEMP/candidate-handoff/validated.json" \
+            --evidence "$RUNNER_TEMP/publisher-candidate-acceptance.json" \
+            --ci-run-id "$GITHUB_RUN_ID" \
+            --ci-attempt "$GITHUB_RUN_ATTEMPT" \
+            --ci-commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: signed-candidate-acceptance
+          path: ${{ runner.temp }}/publisher-candidate-acceptance.json
+          if-no-files-found: error
+          retention-days: 14
