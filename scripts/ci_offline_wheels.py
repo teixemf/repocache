@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import stat
 import shutil
 import subprocess
 import sys
@@ -37,20 +38,33 @@ def checksum(data):
 
 def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
     """Require exact source-byte identity for all shipped first-party modules."""
+    package = source / "src/repocache"
+    files = sorted(package.rglob("*.py"))
+    if any(p.is_symlink() or not p.is_file() for p in files):
+        raise RuntimeError("Unsafe reviewed first-party source module")
     expected_modules = {
-        "repocache/" + p.name: p.read_bytes()
-        for p in (source / "src/repocache").glob("*.py")
+        "repocache/" + p.relative_to(package).as_posix(): p.read_bytes()
+        for p in files
     }
     if not expected_modules or "repocache/__init__.py" not in expected_modules:
         raise RuntimeError("Missing reviewed first-party Python source")
     with zipfile.ZipFile(application_wheel) as application:
+        members = application.infolist()
+        names = [item.filename for item in members]
+        # A duplicate ZIP member can make the reviewer read different bytes
+        # than a wheel installer: refuse ambiguity before checking contents.
+        if len(names) != len(set(names)):
+            raise RuntimeError("First-party wheel contains duplicate ZIP members")
         packaged = {
-            name for name in application.namelist()
-            if name.startswith("repocache/") and name.endswith(".py")
-            and name.count("/") == 1
+            item.filename for item in members
+            if item.filename.startswith("repocache/")
+            and item.filename.endswith(".py")
         }
         if packaged != set(expected_modules):
             raise RuntimeError("First-party wheel module inventory differs from reviewed source")
+        for item in members:
+            if item.filename in packaged and stat.S_ISLNK(item.external_attr >> 16):
+                raise RuntimeError("First-party wheel contains a symlinked module")
         for name, expected in expected_modules.items():
             if application.read(name) != expected:
                 raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
