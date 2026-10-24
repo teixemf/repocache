@@ -68,8 +68,11 @@ all of the following on the actual candidate files:
 3. Compare the **full first-party Python module inventory and exact bytes**
    between the reviewed checkout and the extracted, hash-pinned application
    wheel; refuse missing, extra, modified, symlinked, duplicate ZIP or
-   unreviewed installer-path contents. This check is repeated at
-   **signing time**, not merely assumed from an earlier CI wheel build.
+   unreviewed installer-path contents. In particular, validate wheel
+   `entry_points.txt` against the reviewed `pyproject.toml` console/GUI/plugin
+   declarations: rehashed wheel metadata could otherwise redirect or add
+   executable entry points despite identical Python module bytes. This check
+   is repeated at **signing time**, not merely assumed from an earlier CI wheel build.
 4. Reject all discrepancies before requesting access to the owner key.
    This check alone does not authenticate the signing identity or replace
    signed Draft Release / published-v0.4 native acceptance.
