@@ -64,7 +64,13 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         # Wheel installers also process .data/purelib, .data/platlib, .pth and
         # other top-level paths. Checking repocache/*.py alone would permit
         # extra executable code outside the reviewed package tree.
-        metadata = re.compile(r"repocache_control-[0-9]+(?:\.[0-9]+){2}\.dist-info/")
+        wheel_parts = application_wheel.name.split("-")
+        if (len(wheel_parts) not in (5, 6)
+                or wheel_parts[0] != "repocache_control"
+                or re.fullmatch(r"[0-9]+(?:\\.[0-9]+){2}", wheel_parts[1]) is None
+                or not application_wheel.name.endswith(".whl")):
+            raise RuntimeError("Unexpected first-party wheel filename")
+        metadata_prefix = "repocache_control-" + wheel_parts[1] + ".dist-info/"
         for item in members:
             name = item.filename
             parts = name.split("/")
@@ -75,8 +81,8 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
                 if name.startswith("repocache/") and name.endswith(".py"):
                     raise RuntimeError("First-party wheel contains a symlinked module")
                 raise RuntimeError("Unsafe first-party wheel ZIP member")
-            if (not item.is_dir() and not name.startswith("repocache/")
-                    and not metadata.match(name)):
+            if (not name.startswith("repocache/")
+                    and not name.startswith(metadata_prefix)):
                 raise RuntimeError("First-party wheel contains unreviewed install path")
         packaged = {
             item.filename for item in members
