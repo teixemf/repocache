@@ -105,6 +105,9 @@ def build_fixture(tmp_path, checked_source, *, attack=None) -> Path:
         del candidate["repocache/submissions.py"]
     if attack == "modified":
         candidate["repocache/submissions.py"] = b"def intake(): return 'modified'\n"
+    if attack == "modified-same-size":
+        candidate["repocache/submissions.py"] = reviewed["repocache/submissions.py"].replace(
+            b"reviewed", b"malware!")
     if attack == "oversized-module":
         candidate["repocache/submissions.py"] = b"X" * 1_000_000
     if attack == "extra":
@@ -165,7 +168,8 @@ def test_real_verifier_accepts_exact_reviewed_first_party_wheel(
 
 
 @pytest.mark.parametrize("attack", [
-    "missing", "modified", "extra", "extra-path", "duplicate", "symlink",
+    "missing", "modified", "modified-same-size", "extra", "extra-path",
+    "duplicate", "symlink",
     "oversized-module", "oversized-metadata", "alien-dist-info",
 ])
 def test_real_verifier_rejects_rehashed_unreviewed_wheel(
