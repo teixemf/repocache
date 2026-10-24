@@ -32,9 +32,10 @@ jobs:
             sh -ec '
               if command -v apt-get >/dev/null 2>&1; then
                 apt-get update -qq
-                apt-get install -y --no-install-recommends python3 >/dev/null
+                apt-get install -y --no-install-recommends python3 acl >/dev/null
               else
-                dnf install -y python3 >/dev/null
+                dnf install -y python3 acl >/dev/null
               fi
               python3 scripts/smoke_client_entry_atomic.py
+              python3 scripts/smoke_client_entry_acl_atomic.py
             '
