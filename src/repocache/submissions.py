@@ -391,20 +391,47 @@ class SubmissionQueue:
                             raise SubmissionError("invalid_stored_proposal", 503) from exc
                         if not isinstance(repositories, list) or not 1 <= len(repositories) <= 32:
                             raise SubmissionError("invalid_stored_proposal", 503)
+                        # SQLite is writable by the unprivileged intake UID.
+                        # Do not hand its unchecked nested objects to a root
+                        # administrator TUI (including Rich markup or control
+                        # sequences). Revalidate ALL entries, not just the
+                        # first displayed upstream.
+                        try:
+                            original = [
+                                {"type": record["type"], "url": record["url"]}
+                                for record in repositories
+                                if isinstance(record, dict) and
+                                set(record) == {"type", "url", "insecure_http"}
+                            ]
+                            if len(original) != len(repositories):
+                                raise ValueError("malformed stored repository")
+                            raw = json.dumps({
+                                "schema": 1,
+                                "os": {"id": os_id, "version": os_version},
+                                "repositories": original,
+                            }, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+                            normalized = validate_payload(raw)["repositories"]
+                            if normalized != repositories:
+                                raise ValueError("stored repository differs from validated input")
+                        except (SubmissionError, ValueError, TypeError, KeyError,
+                                UnicodeError, RecursionError) as exc:
+                            raise SubmissionError("invalid_stored_proposal", 503) from exc
                         digest = self._proposal_digest(
                             (ident, os_id, os_version, items, created))
                         self._verify_state(state, version, digest, journal.read(ident))
                         proposals.append({"id": ident, "os": os_id,
                                           "version_os": os_version,
-                                          "repositories": repositories,
-                                          "version": version})
+                                          "repositories": normalized,
+                                          "version": version,
+                                          "metadata_digest": digest})
             return proposals
         except DecisionError as exc:
             raise SubmissionError(exc.code, exc.status) from exc
         except sqlite3.Error as exc:
             raise SubmissionError("store_unavailable", 503) from exc
 
-    def decide(self, ident: str, action: str, *, expected_version: int | None = None) -> None:
+    def decide(self, ident: str, action: str, *, expected_version: int | None = None,
+               expected_digest: str | None = None) -> None:
         if os.geteuid() != 0:
             raise SubmissionError("operator_required", 403)
         if (action not in {"review", "reject", "reopen"} or
@@ -423,6 +450,13 @@ class SubmissionQueue:
                     if not row:
                         raise SubmissionError("proposal_missing", 404)
                     proposal_digest = self._proposal_digest(row)
+                    # The root UI binds the approval to the exact metadata
+                    # displayed earlier, not merely its mutable SQLite version.
+                    if expected_digest is not None and (
+                            not isinstance(expected_digest, str) or
+                            not re.fullmatch(r"[a-f0-9]{64}", expected_digest) or
+                            proposal_digest != expected_digest):
+                        raise SubmissionError("stale_decision", 409)
                     chain = journal.read(ident)
                     self._verify_state(row[5], row[6], proposal_digest, chain)
                     state, version = row[5], row[6]
