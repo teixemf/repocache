@@ -187,7 +187,10 @@ def test_decision_journal_refuses_unsafe_indirect_ancestors(
         if self == outer:
             return SimpleNamespace(st_mode=stat.S_IFDIR | ancestor_mode,
                                    st_uid=attacker_uid)
-        if self in {journal, parent, tmp_path}:
+        # pytest's own /tmp/pytest-of-runner ancestors are non-root on CI.
+        # Model all unrelated ancestors as root-controlled to isolate the
+        # deliberately hostile `outer` directory under examination.
+        if self in {journal, parent, tmp_path} or self in tmp_path.parents:
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
         return observed
 
