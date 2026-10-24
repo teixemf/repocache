@@ -62,6 +62,16 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         }
         if packaged != set(expected_modules):
             raise RuntimeError("First-party wheel module inventory differs from reviewed source")
+        # REPOCACHE v0.5 is pure Python: an unreviewed .so, .pth, data file,
+        # bytecode payload or executable under the package tree must not
+        # escape the .py identity check and reach the managed runtime.
+        additional_payload = {
+            item.filename for item in members
+            if item.filename.startswith("repocache/")
+            and not item.is_dir() and item.filename not in expected_modules
+        }
+        if additional_payload:
+            raise RuntimeError("First-party wheel contains unreviewed package payload")
         for item in members:
             if item.filename in packaged and stat.S_ISLNK(item.external_attr >> 16):
                 raise RuntimeError("First-party wheel contains a symlinked module")
