@@ -294,16 +294,31 @@ def _common_options(parser: argparse.ArgumentParser, *, nested: bool = False) ->
     parser.add_argument("--json", action="store_true", **defaults)
 
 
+class _SyntaxError(ValueError):
+    """Client parser error handled before filesystem, APT or DNF access."""
+
+
+class _ClientParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise _SyntaxError(message)
+
+
+def _json_failure(code: str, message: str) -> None:
+    print(json.dumps({"schema_version": 1, "ok": False,
+                      "error": {"code": code, "message": message}}))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Register the approved client command grammar in one auditable place."""
-    parser = argparse.ArgumentParser(prog="repocache-client")
+    parser = _ClientParser(prog="repocache-client")
     _common_options(parser)
-    cmds = parser.add_subparsers(dest="command", required=True)
+    cmds = parser.add_subparsers(dest="command", required=True,
+                                     parser_class=_ClientParser)
     check = cmds.add_parser("check")
     _common_options(check, nested=True)
     repos_cmd = cmds.add_parser("repos", aliases=["repo"])
     _common_options(repos_cmd, nested=True)
-    actions = repos_cmd.add_subparsers(dest="action")
+    actions = repos_cmd.add_subparsers(dest="action", parser_class=_ClientParser)
     listing = actions.add_parser("list", aliases=["ls"])
     _common_options(listing, nested=True)
     submit = actions.add_parser("submit")
@@ -317,8 +332,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(arguments)
+    except _SyntaxError as exc:
+        if "--json" in arguments:
+            _json_failure("INVALID_ARGUMENT", str(exc))
+        else:
+            print("ERROR [INVALID_ARGUMENT]: " + str(exc), file=sys.stderr)
+        return 2
     if args.command in {"repos", "repo"} and args.action is None:
         # Do not consult the network or local package manager for object help.
         repos_action = next(action for action in parser._actions
@@ -390,7 +413,7 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
         raise ClientError("Unknown command")
     except (OSError, ValueError, ClientError) as exc:
         if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}))
+            _json_failure("OPERATION_FAILED", str(exc))
         else:
             print("ERROR: " + str(exc), file=sys.stderr)
         return 2
