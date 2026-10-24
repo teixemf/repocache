@@ -169,3 +169,21 @@ branch. **NOT VERIFIED:** exact-final-head Python 3.12/3.13 tests, all nine
 required Actions jobs, independent security review, real native UID/SELinux
 and power-loss behavior, and the full #17/#57 acceptance matrix. No merge
 or production activation is authorized by this scoped fix.
+
+
+### Privileged backup staging inode guard (same scoped feature PR)
+
+The root-side backup stream now opens the pre-created private staging path
+with `O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC` and checks the **opened inode**
+before sending the backup request. A FIFO substituted at open cannot hang
+root; hardlinked or nonempty staging files are rejected rather than reused.
+The caller still creates a fresh root-private 0600 temporary file and checks
+SQLite integrity before atomically publishing a non-overwriting backup.
+
+Synthetic negative regressions cover a FIFO swap at open, a second hardlink
+and stale bytes, plus the existing bounded-frame and deadline tests. These
+are **code-level defenses, not proof of hostile-root resistance**: native
+service-UID, SELinux, power-loss and operational custody remain Gate B #49.
+All new tests and nine required contexts on the updated PR HEAD are **NOT
+VERIFIED** until their fresh GitHub Actions jobs complete successfully;
+previous-head CI results must not be reused.
