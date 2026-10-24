@@ -21,8 +21,10 @@ new, randomized, same-directory **clone**, never replacing the original name.
   Attributes are read through file descriptors and bounded to **32 names,
   8 KiB each, 64 KiB total**. POSIX access ACLs are applied after file mode
   to avoid silently rewriting the effective mask.
-- The cloned file is fsynced and independently verified for content length,
-  POSIX mode, owner/group, exact xattr name/value tuples and matching ACL.
+- The cloned file is fsynced, reopened through its directory descriptor,
+  and independently verified for exact content SHA-256, content length,
+  unchanged inode, POSIX mode, owner/group, exact xattr name/value tuples
+  and matching ACL.
   On detectable errors, the incomplete clone is unlinked.
 - Source file bytes and attribute **values** are never included in the
   result or diagnostic messages. The result always includes
