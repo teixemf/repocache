@@ -66,6 +66,42 @@ def test_backup_rejects_nonroot_or_unsafe_destination(tmp_path, monkeypatch):
             queue.backup(parent / "state-backup.db")
 
 
+def test_backup_refuses_relative_path_and_untrusted_indirect_ancestor(
+    tmp_path, monkeypatch
+):
+    outer = tmp_path / "untrusted"
+    outer.mkdir(mode=0o700)
+    private = outer / "root-private"
+    private.mkdir(mode=0o700)
+    private.chmod(0o700)
+    queue = SubmissionQueue(private / "state.db")
+    monkeypatch.setattr(submissions.os, "geteuid", lambda: 0)
+
+    # Relative paths must never be interpreted against a root process cwd.
+    with pytest.raises(SubmissionError, match="unsafe_backup_destination"):
+        queue.backup(submissions.Path("relative-backup.db"))
+
+    # Simulate a private root-owned final directory nested under a
+    # user-controlled ancestor. Reject before opening/creating backup files.
+    original = submissions.Path.lstat
+
+    def unsafe_ancestor_stat(path):
+        result = original(path)
+        if path == private or path == outer:
+            class OwnerStat:
+                st_mode = result.st_mode
+                st_uid = 0 if path == private else 12345
+            return OwnerStat()
+        return result
+
+    monkeypatch.setattr(submissions.Path, "lstat", unsafe_ancestor_stat)
+    backup = private / "backup.db"
+    with pytest.raises(SubmissionError, match="unsafe_backup_destination"):
+        queue.backup(backup)
+    assert not backup.exists()
+    assert not list(private.glob(".repocache-backup-*"))
+
+
 def test_backup_is_valid_and_never_overwrites_existing(tmp_path, monkeypatch):
     parent = tmp_path / "private"
     parent.mkdir(mode=0o700)
@@ -84,7 +120,9 @@ def test_backup_is_valid_and_never_overwrites_existing(tmp_path, monkeypatch):
     original = submissions.Path.lstat
     def trusted_stat(path):
         result = original(path)
-        if str(path) == str(parent):
+        if path == parent or path in parent.parents:
+            # Simulate the complete trusted root-owned ancestor chain,
+            # not just a private final directory under an untrusted path.
             class RootStat:
                 st_mode = result.st_mode
                 st_uid = 0
