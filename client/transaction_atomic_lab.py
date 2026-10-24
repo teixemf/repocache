@@ -168,8 +168,8 @@ def _source_directory(root: Path, relative: str):
 def _target_state(directory_fd: int, leaf: str,
                   expected_attrs: tuple[tuple[str, bytes], ...] = ()) -> tuple[bytes, dict]:
     try:
-        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                     dir_fd=directory_fd)
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                     | os.O_NONBLOCK, dir_fd=directory_fd)
     except OSError as exc:
         raise staging.StageError("Repository source missing or replaced") from exc
     try:
@@ -256,6 +256,30 @@ def _replace(directory_fd: int, temp: str, leaf: str,
     os.fsync(directory_fd)
 
 
+def _pending_file(directory_fd: int, ident: str,
+                  expected_identity: tuple[int, int] | None,
+                  expected_payload: bytes,
+                  expected_attrs: tuple[tuple[str, bytes], ...]) -> str | None:
+    """Read a pending temporary file ONLY when a journal proves its identity.
+
+    A missing temp is distinct from a malicious symlink, foreign inode or
+    unknown content. Never delete or overwrite an unverified file.
+    """
+    name = ".repocache-atomic-%s" % ident
+    try:
+        observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if expected_identity is None:
+        raise staging.StageError("Unjournalled source temporary file requires review")
+    contents, metadata = _target_state(directory_fd, name, expected_attrs)
+    if not _matches(contents, metadata, expected_payload, expected_identity):
+        raise staging.StageError("Foreign or modified source temporary file")
+    if (observed.st_dev, observed.st_ino) != expected_identity:
+        raise staging.StageError("Pending source temporary inode changed")
+    return name
+
+
 def _precheck(root: Path, ident: str):
     root = _sandbox(root)
     if not isinstance(ident, str) or not staging.STAGE_ID.fullmatch(ident):
@@ -332,6 +356,8 @@ def recover_sandbox(root: Path, ident: str) -> dict:
         directory, record, expected_attrs = _prepare(root, ident, state)
         journal = _phase(directory)
         if journal is None:
+            with _source_directory(root, record["source"]) as (parent_fd, _):
+                _pending_file(parent_fd, ident, None, b"", expected_attrs)
             return {"status": "no-intent", "id": ident}
         phase = journal["phase"]
         prior = staging._read_private(directory / "original.bin",
@@ -349,24 +375,49 @@ def recover_sandbox(root: Path, ident: str) -> dict:
                 expected = proposed if phase == "installed" else prior
                 if not _matches(current, meta, expected, intended_identity):
                     raise staging.StageError("Committed source changed externally")
+                _pending_file(parent_fd, ident, None, b"", expected_attrs)
                 return {"status": phase, "id": ident}
             if phase == "install-intent":
                 if _matches(current, meta, prior, from_identity):
+                    pending = _pending_file(parent_fd, ident, intended_identity,
+                                            proposed, expected_attrs)
+                    if pending is not None:
+                        # Only remove the still-identical journalled inode.
+                        observed = os.stat(pending, dir_fd=parent_fd,
+                                           follow_symlinks=False)
+                        if (observed.st_dev, observed.st_ino) != intended_identity:
+                            raise staging.StageError("Pending source inode changed")
+                        os.unlink(pending, dir_fd=parent_fd)
+                        os.fsync(parent_fd)
                     _write_phase(directory, "restored", from_identity, from_identity)
                     return {"status": "not-applied", "id": ident}
                 if not _matches(current, meta, proposed, intended_identity):
                     raise staging.StageError("External drift during interrupted apply")
+                # The install temp should have been consumed in this phase.
+                # If it still exists, an unknown actor or crash window has
+                # created an ambiguous state: do not overwrite it.
+                _pending_file(parent_fd, ident, None, b"", expected_attrs)
             elif phase == "restore-intent":
                 if _matches(current, meta, prior, intended_identity):
+                    _pending_file(parent_fd, ident, None, b"", expected_attrs)
                     _write_phase(directory, "restored", intended_identity, from_identity)
                     return {"status": "restored", "id": ident}
                 if not _matches(current, meta, proposed, from_identity):
                     raise staging.StageError("External drift during interrupted rollback")
+                # Resume the verified exact rollback intent rather than
+                # creating a second temp and failing with EEXIST.
+                pending = _pending_file(parent_fd, ident, intended_identity,
+                                        prior, expected_attrs)
+                if pending is None:
+                    raise staging.StageError("Missing journalled rollback temporary file")
+                _replace(parent_fd, pending, leaf, from_identity)
+                _write_phase(directory, "restored", intended_identity, from_identity)
+                return {"status": "restored", "id": ident}
             else:
                 raise staging.StageError("Invalid recovery state")
             temp, new_identity = _write_new(parent_fd, leaf, ident, prior, meta,
                                             expected_attrs)
-            active_identity = ((meta["device"], meta["inode"]))
+            active_identity = (meta["device"], meta["inode"])
             _write_phase(directory, "restore-intent", new_identity, active_identity)
             _replace(parent_fd, temp, leaf, active_identity)
             _write_phase(directory, "restored", new_identity, active_identity)
