@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import hashlib
 import json
 import os
 import re
@@ -89,6 +90,36 @@ def _distro(root: Path) -> dict[str, str]:
     return output
 
 
+def _source_identity_uri(raw: str) -> str:
+    """Ignore credentials and URL parameters in discovery identities."""
+    if raw.startswith("mirror+file:"):
+        uri = urlsplit(raw)
+        return "mirror+file:" + uri.path
+    return _safe_url(raw)
+
+
+def _discovery_id(root: Path, path: Path, kind: str, fields: tuple) -> str:
+    """Deterministic read-only ID, NOT an immutable managed repository ID."""
+    relative_path = path.relative_to(root).as_posix()
+    payload = json.dumps(
+        ["discovery-v1", relative_path, kind, fields],
+        sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")
+    prefix = "dnf" if kind == "dnf" else "apt"
+    return prefix + "-" + hashlib.sha256(payload).hexdigest()[:24]
+
+
+def _mark_identity_conflicts(repositories: list[dict]) -> list[dict]:
+    occurrences: dict[str, int] = {}
+    for repo in repositories:
+        identity = repo.get("id")
+        if identity:
+            occurrences[identity] = occurrences.get(identity, 0) + 1
+    for repo in repositories:
+        repo["identity_conflict"] = occurrences.get(repo.get("id", ""), 0) > 1
+    return repositories
+
+
 def _needs_private_handling(value: str) -> bool:
     """Reject ambiguous URLs from cache planning without exposing credentials."""
     try:
@@ -102,18 +133,21 @@ def _needs_private_handling(value: str) -> bool:
 def _repo(name: str, kind: str, urls: list[str], path: Path,
           server: str, enabled: bool = True, *,
           auth_hint: bool = False, weak_integrity: bool = False,
-          indirect_mirror: bool = False) -> dict:
+          indirect_mirror: bool = False, discovery_id: str | None = None) -> dict:
     safe = list(dict.fromkeys(_safe_url(item) for item in urls if item.strip()))
     via = [_same_https_origin(url, server) for url in safe]
     route = "mixed" if any(via) and not all(via) else (
         "repocache" if via and all(via) else "direct"
     )
-    return {"name": name, "type": kind, "urls": safe,
-            "source": str(path), "enabled": enabled, "route": route,
-            "requires_auth_review": auth_hint or any(
-                _needs_private_handling(url) for url in urls),
-            "weak_integrity": weak_integrity,
-            "indirect_mirror": indirect_mirror}
+    result = {"name": name, "type": kind, "urls": safe,
+              "source": str(path), "enabled": enabled, "route": route,
+              "requires_auth_review": auth_hint or any(
+                  _needs_private_handling(url) for url in urls),
+              "weak_integrity": weak_integrity,
+              "indirect_mirror": indirect_mirror}
+    if discovery_id is not None:
+        result["id"] = discovery_id
+    return result
 
 
 def _expand_mirror(uri: str, root: Path) -> list[str]:
