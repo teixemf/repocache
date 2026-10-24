@@ -37,7 +37,7 @@ case "$(sed -n "s/^ID=//p" /etc/os-release | tr -d "\"")" in
   debian)
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-      bubblewrap python3 python3-venv ca-certificates util-linux passwd
+      bubblewrap python3 python3-pip python3-venv ca-certificates util-linux passwd
     ;;
   almalinux)
     dnf -y -q install bubblewrap python3 python3-pip shadow-utils util-linux ca-certificates
@@ -67,6 +67,11 @@ chmod 0600 /opt/repocache-cli/managed/installed.json \
            /var/lib/repocache/ci-private-secret
 ln -s /opt/repocache-cli/managed/legacy-in-use \
       /opt/repocache-cli/managed/current
-exec runuser -u repocache -- /usr/bin/python3 \
+runuser -u repocache -- /usr/bin/python3 \
      /source/scripts/ci_candidate_sandbox_native.py
+# Second boundary: live PyPI bytes verified against reviewed legacy pins,
+# then ALL wheel installation, pip metadata and CLI/TUI smoke run in bwrap.
+# Unlike this outer disposable test container, the candidate has no network.
+exec runuser -u repocache -- /usr/bin/python3 \
+     /source/scripts/ci_candidate_sandbox_wheels.py
 '
