@@ -85,7 +85,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="rc-acl-mixed-source-") as private:
         root = Path(private)
         root.chmod(0o700)
-        (root / "var/lib").mkdir()
+        (root / "var/lib").mkdir(parents=True)
         marker = root / pre.MARKER
         marker.write_bytes(pre.TEST_MAGIC)
         marker.chmod(0o600)
