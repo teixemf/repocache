@@ -30,6 +30,9 @@ CURRENT = ROOT / "current"
 EXECUTABLE = CURRENT / "bin/repocache"
 LINKS = (Path("/usr/local/bin/repocache"), Path("/usr/bin/repocache"))
 LEGACY = Path("/opt/repocache-cli/venv/bin/repocache")
+# Published v0.4.0 installed manifests have no profile marker. Missing means
+# legacy only: unrecognized profile values must never silently fall back.
+LEGACY_DEPENDENCY_PROFILE = "legacy-offline-wheelhouse"
 VERSION = re.compile(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"\s*$', re.MULTILINE)
 
 
@@ -162,6 +165,8 @@ def _installed() -> Dict[str, Any]:
                 or not isinstance(value.get("source_digest"), str)
                 or not re.fullmatch(r"[a-f0-9]{64}", value["source_digest"])):
             raise UpdateError("Installed manifest has invalid version or digest")
+        if value.get("dependency_profile", LEGACY_DEPENDENCY_PROFILE) != LEGACY_DEPENDENCY_PROFILE:
+            raise UpdateError("Installed dependency profile is not supported by this updater")
         return value
 
     # Never interpret an active installation without a manifest as a clean host.
@@ -390,6 +395,12 @@ def _install_source_locked(source: Path, *, approved_downgrade: bool = False,
     os.umask(0o077)
     source = source.resolve(strict=True)
     version = _project_version(source)
+    # A caller cannot opt into a future profile before its signed downloader
+    # and rollback/security gate have been implemented and approved.
+    if (release_identity is not None and
+            release_identity.get("dependency_profile", LEGACY_DEPENDENCY_PROFILE)
+            != LEGACY_DEPENDENCY_PROFILE):
+        raise UpdateError("Unsupported release dependency profile; online installation is disabled")
     if (release_identity is not None and wheel_lock is None):
         raise UpdateError("Verified publisher releases require hash-pinned offline wheels")
     if (_version_tuple(version) >= (0, 4, 0)

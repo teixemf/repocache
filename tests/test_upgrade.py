@@ -59,7 +59,11 @@ def fake_signed_identity(archive_data, manifest_data, signature_data, version):
     with tarfile.open(fileobj=io.BytesIO(archive_data), mode="r:gz") as tar:
         member = tar.getmember("repocache-v" + version + "/release-policy.json")
         policy_digest = hashlib.sha256(tar.extractfile(member).read()).hexdigest()
-    return {"archive_sha256": hashlib.sha256(archive_data).hexdigest(),
+    # A successful real Ed25519 verifier always returns schema/version.
+    # Keep synthetic test doubles faithful rather than accepting unsigned
+    # or incomplete verification results in production.
+    return {"schema": 1, "version": version,
+            "archive_sha256": hashlib.sha256(archive_data).hexdigest(),
             "policy_sha256": policy_digest,
             "key_id": "fixture-only", "commit": "a" * 40,
             "wheelhouse_sha256": hashlib.sha256(b"ci-wheelhouse").hexdigest()}
