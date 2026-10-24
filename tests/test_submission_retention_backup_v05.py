@@ -35,9 +35,11 @@ def test_retention_requires_operator_approval_and_preserves_pending(tmp_path, mo
     with pytest.raises(SubmissionError):
         queue.maintain(approved=False, now=19000000)
     monkeypatch.setattr(submissions.os, "geteuid", lambda: 0)
-    queue.decide(decided, "reject", expected_version=0)
-    # Force only this synthetic decided row to be older than the policy;
-    # an actual operator still must authorize the retention change.
+    # Authoritative retention time is the root receipt, not SQLite.changed.
+    with monkeypatch.context() as clock:
+        clock.setattr(decisions.time, "time", lambda: 100)
+        queue.decide(decided, "reject", expected_version=0)
+    # An operator may request retention; the trusted receipt is old enough.
     with queue._connect() as db:
         db.execute("UPDATE proposals SET changed=100 WHERE id=?", (decided,))
     result = queue.maintain(approved=True, now=19000000, decided_retention_days=180)
@@ -111,3 +113,65 @@ def test_sqlite_connection_closes_after_transaction(tmp_path):
     # our wrapper must close explicitly to avoid leaking FDs under HTTP load.
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+def _privileged_retention_queue(tmp_path, monkeypatch):
+    """Synthetic root/journal setup; not native permission evidence."""
+    from repocache import submission_decisions as decisions
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    journal_dir = tmp_path / "decisions"
+    journal_dir.mkdir(mode=0o700)
+    journal_dir.chmod(0o700)
+    monkeypatch.setattr(decisions, "_trusted_dir", lambda _path: None)
+    monkeypatch.setattr(decisions, "_verify_lock_fd", lambda _fd: None)
+    monkeypatch.setattr(decisions, "_open_trusted", lambda path: os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)))
+    queue = SubmissionQueue(parent / "state.db", journal_dir=journal_dir)
+    monkeypatch.setattr(submissions.os, "geteuid", lambda: 0)
+    return queue, decisions
+
+
+def _retention_item():
+    return {"os": {"id": "debian", "version": "13"},
+            "repositories": [{"type": "apt-list",
+                              "url": "https://mirror.example.org/debian/",
+                              "insecure_http": False}]}
+
+
+def test_retention_refuses_forged_sqlite_decision_without_root_receipt(
+    tmp_path, monkeypatch
+):
+    queue, _decisions = _privileged_retention_queue(tmp_path, monkeypatch)
+    ident = queue.enqueue("k", "nonce", "digest", _retention_item(), now=100)
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET state='REJECTED',version=1,"
+                   " changed=100 WHERE id=?", (ident,))
+    with pytest.raises(SubmissionError, match="unaudited_decision_state"):
+        queue.maintain(approved=True, now=19_000_000, decided_retention_days=180)
+    with queue._connect() as db:
+        assert db.execute("SELECT state FROM proposals WHERE id=?",
+                          (ident,)).fetchone() == ("REJECTED",)
+        # A failed maintenance transaction must not delete replay history.
+        assert db.execute("SELECT COUNT(*) FROM nonces").fetchone()[0] == 1
+
+
+def test_retention_uses_root_receipt_time_not_intake_backdated_sqlite(
+    tmp_path, monkeypatch
+):
+    queue, decisions = _privileged_retention_queue(tmp_path, monkeypatch)
+    ident = queue.enqueue("k", "nonce", "digest", _retention_item(), now=100)
+    with monkeypatch.context() as clock:
+        clock.setattr(decisions.time, "time", lambda: 19_000_000)
+        queue.decide(ident, "reject", expected_version=0)
+    # Intake may backdate this convenience column but cannot backdate the
+    # already-durable root receipt.
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET changed=100 WHERE id=?", (ident,))
+    result = queue.maintain(approved=True, now=19_000_001,
+                            decided_retention_days=180)
+    assert result["purged_decided"] == 0
+    with queue._connect() as db:
+        assert db.execute("SELECT state FROM proposals WHERE id=?",
+                          (ident,)).fetchone() == ("REJECTED",)
