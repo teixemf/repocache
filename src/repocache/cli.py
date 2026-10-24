@@ -104,8 +104,8 @@ def _require_text_output(ctx: typer.Context) -> None:
 
 
 def _cli_error(ctx: typer.Context, code: str, message: str,
-               status: int = 1) -> None:
-    if _json_enabled(ctx):
+               status: int = 1, local_json: bool = False) -> None:
+    if _json_enabled(ctx, local_json):
         emit_json({"schema_version": 1, "ok": False,
                    "error": {"code": code, "message": message}})
     else:
