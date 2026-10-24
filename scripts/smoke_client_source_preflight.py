@@ -62,6 +62,26 @@ def main() -> None:
         else:
             raise AssertionError("Source symlink incorrectly accepted")
 
+    if os.geteuid() == 0 and hasattr(os, "fork"):
+        # Real UID transition: child cannot inspect the fixed native root.
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.setgroups([])
+                os.setgid(65534)
+                os.setuid(65534)
+                try:
+                    pre.inspect_source("etc/apt/sources.list", root=Path("/"))
+                except pre.PreflightError as exc:
+                    os._exit(0 if "Root authorization" in str(exc) else 2)
+                os._exit(3)
+            except BaseException:
+                os._exit(4)
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (
+            "Unprivileged inspection was not denied")
+        print("PASS: real non-root UID denied for native root inspection")
+
     print("PASS: native Python read-only source trust preflight (APT/DNF fixtures)")
 
 
