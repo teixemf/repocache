@@ -168,8 +168,8 @@ def _source_directory(root: Path, relative: str):
 def _target_state(directory_fd: int, leaf: str,
                   expected_attrs: tuple[tuple[str, bytes], ...] = ()) -> tuple[bytes, dict]:
     try:
-        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                     dir_fd=directory_fd)
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                     | os.O_NONBLOCK, dir_fd=directory_fd)
     except OSError as exc:
         raise staging.StageError("Repository source missing or replaced") from exc
     try:
