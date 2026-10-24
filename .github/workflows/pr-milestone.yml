@@ -1,0 +1,34 @@
+name: Pull request milestone governance
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review, milestoned, demilestoned]
+
+# This privileged metadata-only workflow MUST use code from the protected
+# default branch; never checkout or execute code from a pull request head.
+# Read issue metadata; change only PR milestone metadata through GitHub's
+# Issues API, which requires Pull requests: write for a PR target (issue #148).
+permissions:
+  contents: read
+  issues: read
+  pull-requests: write
+
+concurrency:
+  group: pr-milestone-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  assign-and-check:
+    name: Require milestone or unambiguous primary issue
+    if: github.event.pull_request.state == 'open'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Validate or assign pull request milestone
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/assign_pr_milestone.py
