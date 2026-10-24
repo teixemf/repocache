@@ -1,6 +1,42 @@
 # ADR-0003: Reviewed online Python dependencies without publishing upstream wheels
 
-**Status:** PROPOSED — issue [#80](https://github.com/teixemf/repocache/issues/80), epic [#79](https://github.com/teixemf/repocache/issues/79). Architecture/design only; no runtime change, no approval to merge/publish/enable new services.
+**Status:** ACCEPTED for the v0.5.0 schema-1 compatibility decision and the explicitly non-installable, parser-only future signed-envelope field contract below; the complete v0.6.0 online install/release design remains PROPOSED and NOT RELEASE-ACCEPTED — issue [#80](https://github.com/teixemf/repocache/issues/80), epic [#79](https://github.com/teixemf/repocache/issues/79). Architecture/design only; no runtime change, no approval to merge/publish/enable new services.
+
+## Engineering decision: safe parser boundary (2026-10-24)
+
+The maintainer has delegated architecture and integration decisions. This
+review explicitly **accepts only** the following non-activating compatibility
+contract for the v0.5.0 updater and the reviewed parser implementation in
+[#98](https://github.com/teixemf/repocache/pull/98):
+
+- Published v0.4.0 and transitional v0.5.0 **MUST** continue to use manifest
+  schema `1`, release-policy schema `1`, signed eight-asset wheelhouse,
+  genuine Ed25519 publisher verification, and `compatible_from: ["0.4.0"]`
+  where appropriate. No source-only v0.5.0 release is permitted.
+- The parser MAY cryptographically recognize schema `2` only for future
+  versions `v0.6.0+`, using exactly `dependency_profile` (the two enumerated
+  string profiles), `dependency_lock_sha256` (SHA-256 for online, null for
+  legacy), `asset_inventory_sha256` (64 lowercase hexadecimal) and inherited
+  `wheelhouse_sha256` (SHA-256 for legacy, null for online). Unknown, duplicate,
+  inconsistent or missing fields fail closed.
+- **Every schema-2 installation MUST be refused before extraction, package
+  installation, network contact, activation or persistent-state mutation.**
+  Authentic metadata recognition is explicitly NOT installation permission.
+- The future schema-2 publisher inventory, canonical lock bytes, owned wheel,
+  URL/CA/redirect policy, migration and native acceptance remain under
+  #83/#84/#85. They are **NOT VERIFIED**, not frozen or approved for release
+  by this parser-level decision.
+- This decision does not change the seven original owner-signed v0.5.0
+  acceptance criteria in #76 or the real signed upgrade required by #82.
+  None of the published v0.4.0 assets or original trust anchors may change.
+
+Security review limits: metadata authenticity is rooted in the existing
+independent Ed25519 trust anchor, whereas downloaded upstream wheels and
+runtime activation are separate, unimplemented trust boundaries. No owner
+private key was used or moved. The **code-only** review in #92 and the
+real-owner-signed **parent** acceptance in #82 remain independently tracked.
+This is an architecture decision, not evidence that either implementation
+CI or a genuine candidate passed.
 
 ## Bootstrap compatibility decision — 2026-10-22
 
