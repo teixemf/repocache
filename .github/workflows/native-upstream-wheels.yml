@@ -1,0 +1,83 @@
+name: Native upstream dependency compatibility
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/native-upstream-wheels.yml'
+      - 'scripts/ci_native_upstream_wheels.py'
+      - 'deps/runtime-wheels.lock'
+      - 'src/repocache/**'
+      - 'scripts/smoke_tui.py'
+      - 'client/repocache_client.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-upstream-wheels.yml'
+      - 'scripts/ci_native_upstream_wheels.py'
+      - 'deps/runtime-wheels.lock'
+      - 'src/repocache/**'
+      - 'scripts/smoke_tui.py'
+      - 'client/repocache_client.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-hash-and-venv-smoke:
+    name: Real PyPI pinned wheels (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian13, almalinux10]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch pinned upstream binaries in native userspace as non-root
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          case '${{ matrix.distro }}' in
+            debian13) image=debian:13-slim ;;
+            almalinux10) image=almalinux:10 ;;
+            *) exit 2 ;;
+          esac
+          # Disposable compatibility experiment, NOT sandbox acceptance.
+          # Source read-only; no Actions secrets, privileged container,
+          # host network, global pip install or managed activation.
+          docker run --rm --pull=always \
+            --mount "type=bind,source=$PWD,target=/source,readonly" \
+            "$image" /bin/sh -eu -c '
+          export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+          case "$(sed -n "s/^ID=//p" /etc/os-release | tr -d "\"")" in
+            debian)
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+                --no-install-recommends python3 python3-pip python3-venv \
+                ca-certificates util-linux passwd
+              ;;
+            almalinux)
+              dnf -y -q install python3 python3-pip ca-certificates \
+                util-linux shadow-utils
+              ;;
+            *) exit 1 ;;
+          esac
+          useradd --system --home-dir /work --shell /bin/sh \
+            --no-create-home repocacheci
+          mkdir -m 0700 /work
+          chown repocacheci:repocacheci /work
+          exec runuser -u repocacheci -- env -i \
+            HOME=/work LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            /usr/bin/python3 /source/scripts/ci_native_upstream_wheels.py
+          '
+      - name: Explicitly record acceptance boundary
+        if: always()
+        run: |
+          echo 'These are real upstream downloads in native OS/Python userspaces.'
+          echo 'The legacy wheel lock is NOT a v0.6 signed online lock.'
+          echo 'No signed application candidate, activation or migration tested.'
+          echo 'Ubuntu runner kernel: target SELinux/systemd isolation NOT VERIFIED.'
