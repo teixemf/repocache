@@ -116,7 +116,7 @@ def test_protected_main_push_emits_all_nine_required_contexts() -> None:
     # just a PR-head result. Never trigger release.yml automatically.
     for workflow in ("tests.yml", "offline-wheelhouse.yml", "upgrade-distros.yml"):
         text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
-        assert "push:\n    branches: [main, release/v0.4.0]" in text
+        # Existing legacy checks and both governed integration lanes retain\n        # the same nine unfiltered push contexts.\n        assert ("push:\n    branches: [main, release/v0.4.0, "\n                "integration/v0.5.0, integration/v0.6.0]") in text
     release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch:" in release
     assert "push:" not in release.split("permissions:", 1)[0]
