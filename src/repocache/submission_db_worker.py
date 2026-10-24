@@ -27,6 +27,9 @@ SETPRIV = Path("/usr/bin/setpriv")
 SERVICE_USER = "repocache-intake"
 MAX_MESSAGE = 16 * 1024 * 1024
 MAX_BACKUP = 128 * 1024 * 1024
+BACKUP_CHUNK_SIZE = 65536
+MAX_BACKUP_FRAMES = (MAX_BACKUP + BACKUP_CHUNK_SIZE - 1) // BACKUP_CHUNK_SIZE
+BACKUP_TIMEOUT = 120  # Overall deadline; per-message TIMEOUT alone is insufficient.
 MAX_SQL = 8192
 TIMEOUT = 10
 
@@ -232,15 +235,32 @@ class WorkerConnection:
     def backup_file(self, destination: Path) -> None:
         """Stream a consistent SQLite snapshot to a ROOT-PRIVATE staging inode."""
         path = Path(destination)
-        fd = os.open(path, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
+        # A path can be substituted between the caller's mkstemp and this
+        # reopen. Refuse FIFOs without blocking before the inode is checked.
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK |
+                         getattr(os, "O_NOFOLLOW", 0) |
+                         getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            raise WorkerError("unsafe_backup_staging") from exc
         try:
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
+                    st.st_mode & 0o077 or st.st_nlink != 1 or st.st_size != 0):
                 raise WorkerError("unsafe_backup_staging")
             self._send({"op": "backup"})
             total = 0
+            frames = 0
+            deadline = time.monotonic() + BACKUP_TIMEOUT
             while True:
+                # A compromised or stalled service-UID worker must not keep a
+                # privileged backup open forever by sending tiny/empty frames
+                # just before each per-message timeout expires.
+                if time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
                 reply = self._recv()
+                if time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
                 if reply.get("done") is True:
                     break
                 encoded = reply.get("chunk")
@@ -250,6 +270,14 @@ class WorkerConnection:
                     data = base64.b64decode(encoded, validate=True)
                 except ValueError as exc:
                     raise WorkerError("invalid_backup_chunk") from exc
+                # The child sends 64 KiB chunks (last chunk may be shorter).
+                # Bound frame count as well as byte count to reject a stream
+                # of arbitrarily many one-byte progress messages.
+                frames += 1
+                if not data or len(data) > BACKUP_CHUNK_SIZE:
+                    raise WorkerError("invalid_backup_chunk")
+                if frames > MAX_BACKUP_FRAMES:
+                    raise WorkerError("too_many_worker_backup_chunks")
                 total += len(data)
                 if total > MAX_BACKUP:
                     raise WorkerError("oversized_worker_backup")
