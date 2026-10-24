@@ -1,7 +1,7 @@
 # Client entry-level source boundaries and candidate identity
 
 **Issue:** [#24](https://github.com/teixemf/repocache/issues/24).  
-**Parent:** [PR #140](https://github.com/teixemf/repocache/pull/140) (protected *whole-file* candidate registry), depending on unmerged [#138](https://github.com/teixemf/repocache/pull/138) and [#133](https://github.com/teixemf/repocache/pull/133).  
+**Integration:** [PR #152](https://github.com/teixemf/repocache/pull/152) consolidates the candidate registry and entry boundaries formerly reviewed in #138/#140/#141; source preflight [#133](https://github.com/teixemf/repocache/pull/133) is already merged.  
 **Status:** test-only, **no administrator-approved ownership and no source writer**.
 
 ## Motivation and security invariant
