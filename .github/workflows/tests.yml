@@ -36,6 +36,10 @@ jobs:
             tests/test_cli_interface_contract.py \
             tests/test_cli_error_contract.py \
             tests/test_cli_update_install.py
+      # The real pre-signing verifier must reject any rehashed/well-formed
+      # wheel that is not byte-for-byte the reviewed first-party source.
+      - name: Required pre-signing source/wheel provenance gate (#76)
+        run: python -m pytest -q tests/test_presign_v05_source_wheel.py
       # Explicit required step: missing/renamed defensive test modules fail CI
       # rather than becoming an accidentally omitted pytest discovery case.
       - name: Required release security regression gate (issues 37 38 39)
