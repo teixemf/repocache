@@ -29,12 +29,21 @@ class HTTPBackend:
         self.hits: list[str] = []
 
         class Handler(http.server.SimpleHTTPRequestHandler):
-            def do_GET(handler):
-                self.hits.append(handler.path)
+            def _respond(handler, method: str):
+                self.hits.append(method + " " + handler.path)
                 if self.mode != "healthy":
                     handler.send_error(503, "Synthetic cache unavailable")
                     return
-                super().do_GET()
+                if method == "GET":
+                    super().do_GET()
+                else:
+                    super().do_HEAD()
+
+            def do_GET(handler):
+                handler._respond("GET")
+
+            def do_HEAD(handler):
+                handler._respond("HEAD")
 
             def log_message(handler, _format, *args):
                 pass
