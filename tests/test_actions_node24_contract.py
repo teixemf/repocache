@@ -112,11 +112,12 @@ def test_runner_minimum_and_exception_policy_documented() -> None:
 
 
 def test_protected_main_push_emits_all_nine_required_contexts() -> None:
-    # The #74 parent requires the actual protected integration SHA, not
-    # just a PR-head result. Never trigger release.yml automatically.
+    # The #74 parent requires actual protected integration SHAs,
+    # not just PR-head CI results. Never trigger release.yml automatically.
+    expected = "push:\n    branches: [main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]"
     for workflow in ("tests.yml", "offline-wheelhouse.yml", "upgrade-distros.yml"):
         text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
-        # Existing legacy checks and both governed integration lanes retain\n        # the same nine unfiltered push contexts.\n        assert ("push:\n    branches: [main, release/v0.4.0, "\n                "integration/v0.5.0, integration/v0.6.0]") in text
+        assert expected in text
     release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch:" in release
     assert "push:" not in release.split("permissions:", 1)[0]
