@@ -160,3 +160,29 @@ def test_frozen_public_v04_archive_parser_remains_compatible_with_v05_builder():
     ):
         assert name not in PUBLIC_V04_SOURCE_FILES
         assert (ROOT / name).is_file()
+
+
+@pytest.mark.parametrize("untrusted_path", (
+    "root_init.pth",
+    "repocache_control-0.4.0.data/purelib/repocache/hidden.py",
+    "repocache_control-0.4.0.data/platlib/repocache/extension.so",
+    "another_library/__init__.py",
+    "../escape.py",
+    "/absolute.py",
+))
+def test_wheel_refuses_nonreviewed_external_install_paths(
+    source, tmp_path, untrusted_path
+):
+    modules = {f"repocache/{p.name}": p.read_bytes()
+               for p in (source / "src/repocache").glob("*.py")}
+    modules[untrusted_path] = b"unreviewed wheel payload"
+    with pytest.raises(RuntimeError, match="Unsafe first-party|unreviewed install path"):
+        builder.verify_first_party_modules(source, wheel(tmp_path, modules))
+
+
+def test_wheel_allows_standard_distribution_metadata_only(source, tmp_path):
+    modules = {f"repocache/{p.name}": p.read_bytes()
+               for p in (source / "src/repocache").glob("*.py")}
+    modules["repocache_control-0.4.0.dist-info/METADATA"] = b"Metadata-Version: 2.3\n"
+    modules["repocache_control-0.4.0.dist-info/RECORD"] = b""
+    builder.verify_first_party_modules(source, wheel(tmp_path, modules))
