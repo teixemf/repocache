@@ -362,6 +362,99 @@ def test_cli_routes_ephemerally_signed_candidate_through_real_verifier(
 
 
 
+
+@pytest.mark.parametrize("profile", [
+    "online-hash-locked-wheels", "legacy-offline-wheelhouse",
+])
+def test_signed_schema_two_profile_is_refused_by_exact_cli_before_install(
+        monkeypatch, tmp_path, profile):
+    """A recognized future signed profile is NOT permission to install it.
+
+    Protect the merged #98 fail-closed signed bridge via the real CLI and
+    OpenSSL verifier. No real publisher key, native host or activation used.
+    """
+    import contextlib
+    import hashlib
+    import subprocess
+    import time
+
+    from repocache import signatures, upgrade
+
+    def openssl(*args):
+        subprocess.run(["/usr/bin/openssl", *map(str, args)],
+                       check=True, capture_output=True, timeout=20)
+
+    private = tmp_path / "ephemeral-private.pem"
+    public = tmp_path / "ephemeral-public.pem"
+    openssl("genpkey", "-algorithm", "Ed25519", "-out", private)
+    private.chmod(0o600)
+    openssl("pkey", "-in", private, "-pubout", "-out", public)
+    monkeypatch.setattr(signatures, "_trusted_key", lambda key_id: public)
+
+    version = "0.6.0"
+    name = f"repocache-v{version}.tar.gz"
+    bundle = tmp_path / name
+    payload = b"inert future-profile archive, must never be unpacked"
+    bundle.write_bytes(payload)
+    checksum = tmp_path / (name + ".sha256")
+    checksum.write_text(hashlib.sha256(payload).hexdigest() + "  " + name + "\n")
+    manifest = tmp_path / (name + ".manifest.json")
+    detached = tmp_path / (name + ".manifest.json.sig")
+    wheel = tmp_path / (name + ".wheelhouse.tar.gz")
+    wheel.write_bytes(b"inert unsigned dependency placeholder")
+
+    now = int(time.time())
+    metadata = {
+        "schema": 2, "key_id": "ci-ephemeral",
+        "repository": "teixemf/repocache", "channel": "stable",
+        "version": version, "commit": "a" * 40,
+        "archive": name, "archive_sha256": hashlib.sha256(payload).hexdigest(),
+        "policy_sha256": "b" * 64,
+        "wheelhouse_sha256": None,
+        "issued_at": now - 60, "expires_at": now + 3600,
+        "dependency_profile": profile,
+        "dependency_lock_sha256": "c" * 64,
+        "asset_inventory_sha256": "d" * 64,
+    }
+    if profile == "legacy-offline-wheelhouse":
+        metadata["wheelhouse_sha256"] = "e" * 64
+        metadata["dependency_lock_sha256"] = None
+    raw = (json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    manifest.write_bytes(raw)
+    signed_input = tmp_path / "to-sign"
+    signed_input.write_bytes(raw)
+    openssl("pkeyutl", "-sign", "-inkey", private, "-rawin",
+            "-in", signed_input, "-out", detached)
+
+    monkeypatch.setattr(updater, "update_transaction", contextlib.nullcontext)
+    monkeypatch.setattr(updater, "recover_transaction", lambda: None)
+    monkeypatch.setattr(updater, "_require_service_account", lambda: None)
+    monkeypatch.setattr(updater, "_installed", lambda: {"version": "0.4.0"})
+    monkeypatch.setattr(releases, "discover", lambda *_a, **_kw:
+                        pytest.fail("Offline profile must not query releases"))
+    monkeypatch.setattr(upgrade, "_download_asset", lambda *_a, **_kw:
+                        pytest.fail("Offline profile must not download assets"))
+    monkeypatch.setattr(upgrade, "_extract_verified", lambda *_a, **_kw:
+                        pytest.fail("Unsupported profile reached archive extraction"))
+    monkeypatch.setattr(updater, "install_source", lambda *_a, **_kw:
+                        pytest.fail("Unsupported profile reached installation"))
+
+    result = CliRunner().invoke(cli.app, [
+        "--json", "update", "install", version,
+        "--bundle", str(bundle), "--checksum", str(checksum),
+        "--manifest", str(manifest), "--signature", str(detached),
+        "--wheelhouse", str(wheel),
+    ])
+    assert result.exit_code == 2, result.output
+    response = json.loads(result.stdout)
+    assert response["ok"] is False
+    assert response["status"] == "error"
+    assert response["performed"] is False
+    assert response["retryable"] is False
+    assert "not supported by this updater" in response["error"]
+    assert not result.stderr
+
+
 def test_updater_remains_single_source_for_signature_and_recovery():
     # An architectural guard: CLI must delegate, not bypass, signature
     # verification or implement a second updater pipeline.
