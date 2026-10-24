@@ -4,6 +4,23 @@
 **Tracking issue:** [#107](https://github.com/teixemf/repocache/issues/107)  
 **Status:** Partial implementation under review; not a released public CLI contract.
 
+## Versioned errors and exit statuses
+
+The [CLI error/exit contract v1](CLI_ERROR_CONTRACT_V1.md) defines the
+machine-readable `schema_version=1`, `ok` and stable `error.code/message`
+fields for all three executables, while retaining existing numeric exit
+semantics, including client `check=1/3` and signed updater `busy=75`.
+This is additive for successful JSON results, but intentionally changes
+legacy *string* JSON errors into a versioned structured object. Explicitly
+review script consumers before the first CLI v1 stable release.
+
+`tests/test_cli_error_contract.py` is a required CI gate. It proves parser
+failures are JSON with no host mutation when `--json` is requested; it does
+not validate future planned objects, native release activation or all
+third-party consumers. The server's authenticated `update install VERSION`
+extension in draft PR #114 must be reconciled to this contract before merge,
+including its existing synthetic signed-release tests.
+
 ## Source of truth and test gates
 
 - The approved **design** lives in `docs/architecture/CLI_ARCHITECTURE.md`.
