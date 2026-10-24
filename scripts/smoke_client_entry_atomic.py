@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real #131/#132 atomic shared-file source regression, disposable /tmp ONLY.
 
-Uses pinned integrated transaction sources from _transaction_dependency.
+Uses the integrated transaction engine in this exact checked-out PR head.
 Executes full-root positive path and actual non-root negative path inside
 disposable native Debian 13 / AlmaLinux 10 containers.
 """
@@ -17,11 +17,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MAIN_CLIENT = ROOT / "_transaction_dependency" / "client"
 CLIENT = ROOT / "client"
-if not (MAIN_CLIENT / "transaction_atomic_lab.py").is_file():
-    raise RuntimeError("Pinned merged atomic sandbox dependency unavailable")
-sys.path.insert(0, str(MAIN_CLIENT))
+if not (CLIENT / "transaction_atomic_lab.py").is_file():
+    raise RuntimeError("Integrated sandbox transaction engine unavailable")
 sys.path.insert(0, str(CLIENT))
 
 import source_preflight as pre  # noqa: E402

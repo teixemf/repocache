@@ -15,9 +15,9 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
 CLIENT = PROJECT / "client"
-STAGING = PROJECT / "_transaction_dependency" / "client"
+STAGING = PROJECT / "client"
 if not (STAGING / "transaction_stage.py").is_file():
-    raise RuntimeError("Pinned transaction staging dependency is unavailable")
+    raise RuntimeError("Integrated transaction staging dependency is unavailable")
 sys.path.insert(0, str(STAGING))
 sys.path.insert(0, str(CLIENT))
 
@@ -85,7 +85,7 @@ def main():
                 pass
             else:
                 raise AssertionError("Duplicate source transaction was accepted")
-        print("PASS: pinned protected #131 staging preserves live sources and siblings")
+        print("PASS: current protected staging preserves live sources and siblings")
 
 
 if __name__ == "__main__":
