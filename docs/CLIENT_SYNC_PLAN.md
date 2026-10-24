@@ -25,7 +25,7 @@ The response also contains `dry_run: true`, `planned_changes: 0` and `plan_summa
 | --- | --- |
 | `skipped` | Disabled locally or absent from approved server catalog; leave unchanged. |
 | `blocked` | Known unsafe/ambiguous source (credentials or URL parameters, weak signature/TLS policy, invalid URL, or cache-only source without verified fallback). |
-| `review` | Existing mixed cache/upstream route, but mere presence of both addresses is not evidence that native fallback works. |
+| `review` | Existing mixed cache/upstream route or DNF `mirrorlist`/`metalink` indirection. Merely having mirror URLs does not demonstrate native fallback. |
 | `candidate` | Direct source appears in active catalog. Eligible for further checks **only**, never for mutation. |
 
 Only sanitized URLs are emitted; private source URLs or DNF credentials must not be logged. Other credentials can be stored out of band (e.g., APT auth.conf, DNF shared configuration), so the absence of an explicit credential marker **does not prove** that a source is public. The current parser is advisory, not a trusted full-fidelity source writer.
@@ -44,3 +44,5 @@ The current implementation intentionally does **not**:
 - This PR must pass the exact-head CI parser inventory and all required security/smoke workflows.
 - Before **any** future `--apply`: define stable IDs, independently validate APT/DNF source grammar and configurations, preserve comments/ownership, prove supported fallback combinations on native Debian 13/AlmaLinux 10, and add transactional backups, locking, drift detection, interruption recovery and rollback. Failure means the source stays direct.
 - Coordinate CLI changes with [#107](https://github.com/teixemf/repocache/issues/107) and authenticated submissions with [#22](https://github.com/teixemf/repocache/issues/22)/draft PR #46.
+
+The catalog cache origin is compared against the configured server using HTTPS scheme, host and effective port, rather than just the hostname. A different port or plaintext HTTP is not an equivalent REPOCACHE server.
