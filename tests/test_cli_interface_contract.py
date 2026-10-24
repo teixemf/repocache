@@ -56,7 +56,11 @@ def _client_paths():
 def test_entire_registered_command_surface_has_an_explicit_reviewed_inventory():
     inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
     assert inventory["architecture"] == "docs/architecture/CLI_ARCHITECTURE.md"
-    assert inventory["release_operator"]["status"] == "planned-not-installed"
+    assert inventory["release_operator"]["status"] == "partial-workstation-only"
+    assert set(inventory["release_operator"]["paths"]) == {
+        "environment", "environment check", "candidate", "candidate prepare",
+        "candidate sign", "candidate stage", "candidate status", "candidate publish",
+    }
     assert _server_paths() == set(inventory["server"])
     assert _client_paths() == set(inventory["client"])
     assert len(inventory["server"]) == len(set(inventory["server"]))
@@ -185,7 +189,7 @@ def test_system_status_is_read_only_equivalent_to_original_status(monkeypatch):
                  ["system", "status", "--json"]):
         outcome = runner.invoke(cli.app, argv)
         assert outcome.exit_code == 0, (argv, outcome.output)
-        assert json.loads(outcome.stdout) == report
+        assert json.loads(outcome.stdout) == {"schema_version": 1, **report}
     assert calls == ["snapshot"] * 3
 
 
@@ -198,7 +202,7 @@ def test_system_check_preserves_health_failure_and_deep_probe_opt_in(monkeypatch
                  ["--json", "system", "check", "--deep"]):
         outcome = runner.invoke(cli.app, argv)
         assert outcome.exit_code == 1, (argv, outcome.output)
-        assert json.loads(outcome.stdout) == {"ok": False, "checks": []}
+        assert json.loads(outcome.stdout) == {"schema_version": 1, "ok": False, "checks": [], "error": {"code": "OPERATION_FAILED", "message": "Operation reported a required failure."}}
     assert calls == [False, False, True]
 
 
