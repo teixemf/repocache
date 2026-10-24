@@ -59,7 +59,7 @@ def test_client_explicit_send_preserves_canonical_parser_and_fallback() -> None:
     assert 'if args.output or not args.token_file:' in client
     assert 'result = _send_submission(server, payload, args.token_file)' in client
     assert 'if args.apply:' in client
-    assert '"DRY RUN: no APT/DNF configuration was changed."' in client
+    # Protected main now exposes the advisory repository sync plan.\n    # Preserve that nonapplying path rather than pinning obsolete prose.\n    assert "plan = _sync_plan(repos, catalog)" in client\n    assert "Applying changes is disabled until reviewed" in client\n    assert "No APT/DNF configuration was changed." in client
 
 
 def test_no_public_alias_bypasses_cli_architecture() -> None:
