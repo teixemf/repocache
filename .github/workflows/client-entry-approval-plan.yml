@@ -24,9 +24,9 @@ jobs:
       # Pin unmerged #131 by immutable Git SHA for reproducible integration.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
+          persist-credentials: false
           ref: ddb0ab522e31a91c4026fb9a7c839c86fd25d78b
           path: _transaction_dependency
-          persist-credentials: false
       - name: Test guarded approval and sibling preservation with native Python
         shell: bash
         run: |
