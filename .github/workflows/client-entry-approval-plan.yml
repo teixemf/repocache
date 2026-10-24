@@ -20,13 +20,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The staging implementation is deliberately NOT copied into this PR.
-      # Pin unmerged #131 by immutable Git SHA for reproducible integration.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          ref: ddb0ab522e31a91c4026fb9a7c839c86fd25d78b
-          path: _transaction_dependency
+      # Use the checked-out PR-head transaction staging already in main.
+      # An old pinned checkout would hide integration regressions.
       - name: Test guarded approval and sibling preservation with native Python
         shell: bash
         run: |
