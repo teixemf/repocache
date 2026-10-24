@@ -208,6 +208,11 @@ def command(workspace: Path, argv: list[str], *,
         args.extend(("--dir", str(parent)))
     args.extend((
         "--bind", str(workspace), str(workspace),
+        # The initial synthetic root is a writable tmpfs by default.
+        # Prevent candidate code from writing to synthetic /etc, /opt, etc.
+        # This remount affects ONLY /, not the separate writable workspace
+        # and private /tmp mounts. Never bind the host's real root or /etc.
+        "--remount-ro", "/",
         "--chdir", str(workspace if cwd is None else cwd),
         "--setenv", "HOME", "/tmp",
         "--setenv", "TMPDIR", "/tmp",
