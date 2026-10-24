@@ -238,6 +238,8 @@ class SubmissionQueue:
         # Simulated non-root test identities retain their temporary DB path.
         if os.geteuid() != 0 or _REAL_GETEUID() != 0:
             return False
+        if not self.path.is_absolute():
+            raise SubmissionError("unsafe_store_path", 503)
         # Every ancestor must be root-controlled. A root-owned 0700 queue
         # under an intake-renamable ancestor is NOT a safe root SQLite path.
         # Root-owned sticky directories (e.g. /tmp) protect root-owned child
