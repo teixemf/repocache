@@ -120,7 +120,9 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
             raise SubmissionError("unsafe_restore_source", 403)
         if target.parent.resolve() == source.parent.resolve() and target.name == source.name:
             raise SubmissionError("unsafe_restore_source", 403)
-        with _exclusive_restore_lock(target.parent):
+        # The intake UID can unlink a lock in its own directory. Keep the
+        # serialization lock in the independently root-controlled backup dir.
+        with _exclusive_restore_lock(source.parent):
             # Both paths are opened without following the final symlink.
             flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
             source_fd = os.open(source, flags)
@@ -136,13 +138,14 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
                 finally:
                     os.close(old_fd)
 
+                # Never stage or run SQLite as root inside a directory the
+                # intake UID can rename or replace. The source backup parent
+                # is root-only; cross-filesystem replacement fails closed.
                 staging_fd, staging = tempfile.mkstemp(prefix=".repocache-restore-",
-                                                       dir=target.parent)
+                                                       dir=source.parent)
                 staged = Path(staging)
                 try:
                     os.fchmod(staging_fd, 0o600)
-                    if os.geteuid() == 0 and uid != os.geteuid():
-                        os.fchown(staging_fd, uid, gid)
                     try:
                         with os.fdopen(source_fd, "rb", closefd=False) as stream:
                             with os.fdopen(staging_fd, "wb") as staged_stream:
@@ -177,6 +180,12 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
                         if previous_fd is not None:
                             os.close(previous_fd)
                     _fsync_dir(source.parent)
+                    # The verified file remains inaccessible to the intake
+                    # UID until the final atomic replacement. No root SQLite
+                    # handle or root-writable temporary inode is exposed in
+                    # the intake-owned directory.
+                    if os.geteuid() == 0 and uid != os.geteuid():
+                        os.chown(staged, uid, gid, follow_symlinks=False)
                     os.replace(staged, target)
                     _fsync_dir(target.parent)
                     return rollback
