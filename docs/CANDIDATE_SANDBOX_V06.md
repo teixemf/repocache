@@ -1,6 +1,6 @@
 # Online candidate subprocess isolation: fail-closed prototype (v0.6+)
 
-**Status: DRAFT / NON-ACTIVATING / NATIVE ISOLATION NOT VERIFIED.**
+**Status: DRAFT / NON-ACTIVATING / GitHub Actions Ubuntu-kernel Docker namespace probes PASS; native Debian/AlmaLinux kernel and SELinux NOT VERIFIED.**
 Tracks security issue #112 and blocks #83, #84, #85. Stacked above draft PR #106; no merge or release is authorized.
 
 ## Threat model and native boundary
@@ -31,7 +31,7 @@ No OS packages or root-owned launchers are modified by this draft. No Bubblewrap
 
 Sandboxed code is still untrusted; user namespaces increase kernel attack surface. The current symlink/manifest hash canary remains a secondary accidental-mutation detection check, NOT the isolation boundary. Existing staged environments are disposed of and report activated=false.
 
-**Status: proposal with unit evidence only, not a security audit, not mergeable and not deployable.**
+**Status: prototype with CI container-kernel and unit evidence; native OS security acceptance, independent review and full signed activation remain NOT VERIFIED. Not mergeable or deployable.**
 
 ## Executed GitHub Actions userspace probe — 2026-10-23
 
@@ -50,3 +50,23 @@ The new [Native candidate sandbox probes](https://github.com/teixemf/repocache/a
 Provision reproducible isolated *full VMs* (or dedicated self-hosted GitHub Actions runners) with actual Debian 13 and AlmaLinux 10 kernels, patched native Bubblewrap, unprivileged user namespaces and native SELinux where applicable. Re-run the negative probes and real signed candidate CLI/TUI/venv only after successful namespace setup. Preserve explicit FAIL when missing, not an unsandboxed fallback. No unrestricted Docker privileged container, host-wide AppArmor disabling, host /proc bind or shared network can count as production isolation evidence. Require separate independent security review and full transactional activation/rollback acceptance before merge.
 
 **This workflow proves an operating-system userspace prerequisite and a runner-specific kernel limitation, NOT a working v0.6 sandbox.**
+
+
+## 2026-10-24 — Working GitHub Actions Docker namespace probes; native gate remains separate
+
+After [failed /proc tests #40031400116](https://github.com/teixemf/repocache/actions/runs/40031400116), the CI-only container launcher was adjusted to use `--security-opt systempaths=unconfined`: Docker's default masked/read-only `/proc` paths prevent rootless Bubblewrap from mounting its own separate procfs in a nested user/PID namespace. **This changes the security posture of the disposable outer CI container**, exposing previously masked kernel procfs paths. The CI runner also uses test-only `NET_ADMIN`, `seccomp=unconfined` and `apparmor=unconfined` for nested namespaces. It never uses Docker `--privileged`, host network, host PID or Docker socket; the repository source is mounted read-only, and a memory/PID limit is set. **Do not copy this outer Docker configuration into a deployed server.** A hardened CI runner is not equivalent to the inner sandbox security boundary or to a native target kernel.
+
+The first actual successful sandbox startup exposed another defect: Bubblewrap's synthetic root is a writable anonymous tmpfs by default. An adversarial candidate could create a **sandbox-local** `/etc/repocache-forbidden-write` (not the host's `/etc`). The live negative test properly **FAILED** on both target userspaces in [run #40110678681](https://github.com/teixemf/repocache/actions/runs/40110678681). This is unacceptable under the intended "only workspace plus private temporary mounts writable" contract. The production invocation now applies `--remount-ro /` **after** all the filesystem mounts and the workspace bind, making the synthetic root read-only without remounting the separate candidate workspace or private `/tmp`. A unit regression checks this exact placement. We did not simply weaken the negative test.
+
+The network/PID tests were also improved: compare real namespace identifiers against the outer CI container, test access to an **outer-container-only loopback socket** rather than probe a public Internet IP, reject visibility of an outer process, and check active manifest equality and final cleanup. The hostile code uses the same generated Bubblewrap mount/namespace flags as production, replacing only the allowlisted candidate command under the trusted test harness.
+
+**Actual test results — code head `1ccb075a5814b3db6d376c240085a3ed1910cce1`:**
+
+| Executed evidence | Verdict | Scope |
+| --- | --- | --- |
+| [Native candidate sandbox probes #40110994376](https://github.com/teixemf/repocache/actions/runs/40110994376) | **PASS 2/2** | Debian 13/Python 3.13 and AlmaLinux 10/Python 3.12 userspaces in disposable Docker on Ubuntu GitHub-hosted VM kernel; both logs show patched root-owned non-setuid OS Bubblewrap, real candidate child startup, denied root/secret/state writes and reads, isolated network/PID, staging-only write and cleanup |
+| [Tests #40110994328](https://github.com/teixemf/repocache/actions/runs/40110994328) | **PASS 4/4** | Python 3.12/3.13 unit/security and both source-bundle integrity checks |
+| [Offline wheelchain #40110994339](https://github.com/teixemf/repocache/actions/runs/40110994339) | **PASS 3/3** | Legacy wheelhouse signing/build/install checks, **not** a genuine v0.6 online installation |
+| [Rootless legacy upgrade #40110994335](https://github.com/teixemf/repocache/actions/runs/40110994335) | **PASS 2/2** | Legacy offline repair/rollback in disposable distro containers; **not** source-only v0.6 activation |
+
+**Remaining NOT VERIFIED / mandatory merge and release blockers:** Debian 13 and AlmaLinux 10 *own booted kernels*, kernel/userns policy on those hosts, AlmaLinux SELinux enforcing, fully installed/maintained patched Bubblewrap in supported environments, realistic hostile-wheel execution and resource/DoS tests, native CLI/Textual with an owner-signed eight-asset online release, offline/online migration and real journaled activation/repair/rollback, required independent security review. GitHub-hosted runners are Ubuntu VMs, and their distro Docker containers share that Ubuntu kernel. These 11 passing contexts are meaningful but **do not close #112** or authorize release/merge. Full native-kernel tests may use disposable target-system VMs; GitHub-hosted nested VMs are an experimental possibility with no guarantee of nested-virtualization support. Preserve failure visibility and do not fall back to unsandboxed execution.
