@@ -10,6 +10,8 @@ import configparser
 import re
 from urllib.parse import urlsplit
 
+import source_preflight as pre
+
 MAX_BYTES = 1024 * 1024
 APT_LINE = re.compile(
     r"^(deb|deb-src)\s+(?:\[([^\]\r\n]+)\]\s+)?(\S+)\s+(\S+)(?:\s+(.+))?$"
@@ -74,7 +76,8 @@ def _apt_list(body: str) -> int:
                         r"/usr/share/keyrings/[A-Za-z0-9_.-]+\.gpg|"
                         r"/etc/apt/keyrings/[A-Za-z0-9_.-]+\.gpg", val):
                     raise StructureRefused("Unsupported keyring selector")
-        if not re.fullmatch(r"[A-Za-z0-9._/+:-]+", suite):
+        if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:-]*/?", suite)
+                or suite in (".", "..")):
             raise StructureRefused("Unsupported APT suite")
         if suite.endswith("/"):
             if components:
@@ -120,7 +123,9 @@ def _apt_deb822(body: str) -> int:
         raise StructureRefused("Multiple deb822 URLs require full validation")
     _single_url(urls[0])
     suites = _tokens(fields["Suites"])
-    if len(suites) != 1 or not re.fullmatch(r"[A-Za-z0-9._/+:-]+", suites[0]):
+    if (len(suites) != 1
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:-]*/?", suites[0])
+            or suites[0] in (".", "..")):
         raise StructureRefused("Only one valid deb822 suite is supported")
     if suites[0].endswith("/"):
         if "Components" in fields:
@@ -170,6 +175,8 @@ def _dnf_repo(body: str) -> int:
 
 def inspect_structure(relative: str, data: bytes) -> dict:
     """Check one intentionally small source shape; does not grant ownership."""
+    if not isinstance(relative, str) or not pre.SOURCE_PATH.fullmatch(relative):
+        raise StructureRefused("Source path outside approved allowlist")
     if not isinstance(data, bytes) or len(data) > MAX_BYTES:
         raise StructureRefused("Invalid source content")
     try:
