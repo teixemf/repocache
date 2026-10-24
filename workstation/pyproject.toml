@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repocache-release-operator"
+version = "0.1.0"
+description = "Owner-held offline REPOCACHE release operator for maintainer workstations"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+repocache-release = "repocache_release.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
