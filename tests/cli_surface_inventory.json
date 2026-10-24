@@ -42,6 +42,7 @@
     "system status",
     "update",
     "update check",
+    "update install",
     "update list"
   ],
   "client": [
