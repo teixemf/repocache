@@ -26,7 +26,7 @@ The check is **not a substitute** for the project's functional, regression, secu
 
 `.github/workflows/pr-milestone.yml` uses `pull_request_target` to grant narrowly scoped GitHub issue-metadata updates (`pull-requests: write`, `issues: read` and `contents: read`). It checks out only code from the protected repository **default branch**, pins the reviewed first-party checkout SHA and sets `persist-credentials: false`. It never checks out the PR head or executes PR-supplied code. Untrusted PR title/body are parsed as text and only same-repository numeric issue references are resolved via GitHub's API.
 
-Runs on PR opened/reopened/edited/ready-for-review and milestone-attachment/removal events. It verifies live PR metadata, is idempotent for existing milestones, and checks the GitHub response after assigning a new milestone. Transient GitHub API errors produce a non-passing check rather than an inferred milestone.
+Runs on PR opened/reopened/**synchronize** (new head commits)/edited/ready-for-review and milestone-attachment/removal events. It verifies live PR metadata, is idempotent for existing milestones, and checks the GitHub response after assigning a new milestone. Transient GitHub API errors produce a non-passing check rather than an inferred milestone.
 
 A required status check must be configured separately in branch protection/rulesets by the maintainer. Until that is done, this workflow is advisory despite being able to fail its own job. The workflow is not operationally verified until a **post-merge** GitHub Actions `pull_request_target` run proves its token scope, event behavior, and assignment on the live repository.
 
