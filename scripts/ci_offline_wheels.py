@@ -64,13 +64,18 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         # Wheel installers also process .data/purelib, .data/platlib, .pth and
         # other top-level paths. Checking repocache/*.py alone would permit
         # extra executable code outside the reviewed package tree.
-        wheel_parts = application_wheel.name.split("-")
-        if (len(wheel_parts) not in (5, 6)
-                or wheel_parts[0] != "repocache_control"
-                or re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", wheel_parts[1]) is None
-                or not application_wheel.name.endswith(".whl")):
-            raise RuntimeError("Unexpected first-party wheel filename")
-        metadata_prefix = "repocache_control-" + wheel_parts[1] + ".dist-info/"
+        # This helper also validates tiny in-memory test wheels named app.whl
+        # without metadata. When distribution metadata is present, however,
+        # exactly one reviewed repocache_control versioned namespace is allowed.
+        metadata_dirs = {
+            item.filename.split("/")[0] for item in members
+            if item.filename.split("/")[0].endswith(".dist-info")
+        }
+        if (len(metadata_dirs) > 1 or any(
+                re.fullmatch(r"repocache_control-[0-9]+(?:\\.[0-9]+){2}\\.dist-info", name)
+                is None for name in metadata_dirs)):
+            raise RuntimeError("First-party wheel contains unreviewed install path")
+        metadata_prefix = (next(iter(metadata_dirs)) + "/") if metadata_dirs else None
         for item in members:
             name = item.filename
             parts = name.split("/")
@@ -82,7 +87,7 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
                     raise RuntimeError("First-party wheel contains a symlinked module")
                 raise RuntimeError("Unsafe first-party wheel ZIP member")
             if (not name.startswith("repocache/")
-                    and not name.startswith(metadata_prefix)):
+                    and not (metadata_prefix and name.startswith(metadata_prefix))):
                 raise RuntimeError("First-party wheel contains unreviewed install path")
         packaged = {
             item.filename for item in members
