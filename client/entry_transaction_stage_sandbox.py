@@ -34,6 +34,14 @@ def stage_entry_change_sandbox(root: Path, candidate_id: str,
                                       plan["proposed"])
     if staged.get("status") != "prepared":
         raise approval.ApprovalRefused("Unexpected protected staging result")
+    # Stage-only is allowed for metadata-bearing sources, but *apply* must
+    # NEVER drop ACLs or xattrs. Bind the original metadata to the exact
+    # protected stage before exposing its ID. Snapshot refusal leaves a
+    # protected non-applying stage for explicit operator inspection.
+    candidate = approval._candidate(root, candidate_id)
+    if candidate["xattrs_present"]:
+        from transaction_metadata_sandbox import snapshot_sandbox
+        snapshot_sandbox(root, staged["id"])
     # A process can change a shared file after staging. Never silently
     # rebaseline or continue if source evidence no longer matches.
     try:
