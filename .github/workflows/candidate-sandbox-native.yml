@@ -1,0 +1,59 @@
+name: Native candidate sandbox probes
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/candidate-sandbox-native.yml'
+      - 'scripts/ci_candidate_sandbox_container.sh'
+      - 'scripts/ci_candidate_sandbox_native.py'
+      - 'scripts/ci_candidate_sandbox_wheels.py'
+      - 'deps/runtime-wheels.lock'
+      - 'src/repocache/application_wheel.py'
+      - 'src/repocache/candidate_sandbox.py'
+      - 'src/repocache/online_generation.py'
+      - 'scripts/build_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patched-bubblewrap-escape-probes:
+    name: Rootless namespace and escape probes (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian13, almalinux10]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Provision narrowly scoped Ubuntu AppArmor userns profile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # The GitHub runner uses an Ubuntu kernel even for distro containers.
+          # Never disable kernel.apparmor_restrict_unprivileged_userns globally.
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            apparmor-profiles apparmor-utils
+          profile=/usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          test -f "$profile"
+          sudo install -m 0644 "$profile" /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+          fi
+          sudo aa-status
+      - name: Probe patched OS package, forbidden host access and real hash-locked wheel execution
+        shell: bash
+        run: bash scripts/ci_candidate_sandbox_container.sh '${{ matrix.distro }}'
+      - name: Record kernel coverage limit
+        if: always()
+        shell: bash
+        run: |
+          echo 'CI scope: Debian 13 / AlmaLinux 10 USERSPACE in disposable Docker containers.'
+          echo 'Kernel: Ubuntu GitHub-hosted runner. Native target distro kernel, SELinux and systemd are NOT VERIFIED.'
+          echo 'A failed namespace or package security gate is a FAIL, never an automatic skip or fallback.'

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from repocache import application_wheel, online_deps, online_generation, signed_dependency_staging, updater
+from repocache import application_wheel, candidate_sandbox, online_deps, online_generation, signed_dependency_staging, updater
 
 
 WHEEL = online_deps.Wheel(
@@ -88,6 +88,8 @@ def rootless_staging(tmp_path, monkeypatch):
         observations.append("run-" + action)
         if "venv" in argv:
             new_venv = Path(argv[-1])
+            assert new_venv.is_dir()
+            assert new_venv.stat().st_mode & 0o077 == 0
             (new_venv / "bin").mkdir(parents=True, mode=0o700)
             interpreter = new_venv / "bin" / "python"
             interpreter.write_text("# synthetic native Python executable\n")
@@ -133,6 +135,21 @@ def rootless_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(signed_dependency_staging, "verified_candidate_wheels", verified)
     monkeypatch.setattr(signed_dependency_staging, "stage_signed_candidate", stage)
     monkeypatch.setattr(updater, "_run", run)
+
+    def sandbox_ready():
+        assert active["yes"]
+        observations.append("isolation-verified")
+
+    def simulated_isolated_run(argv, *, workspace, cwd=None, timeout=90):
+        assert workspace.name.startswith(".online-v6-")
+        assert workspace.parent == root / "online-preparations"
+        assert "isolation-verified" in observations
+        return updater._run(argv, cwd=cwd, timeout=timeout)
+
+    # Mock only the secure executor boundary: subprocess handling itself
+    # remains under test by existing failure-injection fixtures.
+    monkeypatch.setattr(candidate_sandbox, "require_executor", sandbox_ready)
+    monkeypatch.setattr(candidate_sandbox, "run_isolated", simulated_isolated_run)
     return root, observations, active
 
 
@@ -157,7 +174,7 @@ def test_signed_stage_uses_exclusive_rootless_transaction_and_never_activates(
         "activated": False,
     }
     assert events == ["lock-acquire", "recover", "signed-lock-verified",
-                      "owned-wheel-verified", "download", "run-venv",
+                      "owned-wheel-verified", "isolation-verified", "download", "run-venv",
                       "run-install-deps", "owned-wheel-verified", "run-install-app",
                       "run-check", "run-list", "run-cli-version", "run-cli-help",
                       "run-cli-help", "run-tui-import", "lock-release"]
@@ -475,3 +492,38 @@ def test_headless_smoke_invocation_has_no_shell_and_requires_installed_cli(
     assert cmds[2][-2:] == ["update", "--help"]
     assert cmds[3][:3] == [str(interpreter), "-I", "-c"]
     assert "run_test" in cmds[3][-1]
+
+
+
+def test_missing_namespace_executor_refuses_before_upstream_network(
+        rootless_staging, monkeypatch):
+    root, events, _ = rootless_staging
+    def unavailable():
+        raise candidate_sandbox.SandboxError("Namespace unavailable")
+    monkeypatch.setattr(candidate_sandbox, "require_executor", unavailable)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="isolation is unavailable"):
+        _rehearse()
+    assert "download" not in events
+    assert "run-venv" not in events
+    assert "run-install-deps" not in events
+    assert not (root / "online-preparations").exists()
+    assert events[-1] == "lock-release"
+
+
+def test_candidate_subprocesses_never_fall_back_to_updater_run_on_sandbox_failure(
+        rootless_staging, monkeypatch):
+    root, events, _ = rootless_staging
+    def isolation_error(argv, *, workspace, cwd=None, timeout=90):
+        assert "download" in events
+        events.append("sandbox-rejected")
+        raise candidate_sandbox.SandboxError("Unprivileged namespace denied")
+    monkeypatch.setattr(candidate_sandbox, "run_isolated", isolation_error)
+    with pytest.raises(online_generation.PreparationInstallError,
+                       match="rehearsal failed"):
+        _rehearse()
+    assert "sandbox-rejected" in events
+    assert "run-install-deps" not in events
+    assert "run-install-app" not in events
+    assert not list((root / "online-preparations").iterdir())
+    assert events[-1] == "lock-release"

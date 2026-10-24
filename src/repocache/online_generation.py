@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from repocache import application_wheel, online_deps, signed_dependency_staging, updater
+from repocache import application_wheel, candidate_sandbox, online_deps, signed_dependency_staging, updater
 
 
 class PreparationInstallError(RuntimeError):
@@ -287,6 +287,13 @@ def rehearse_signed_install(
             application_wheel.verify(assets.get("application_wheel"), archive, version)
         except application_wheel.ApplicationWheelError as exc:
             raise PreparationInstallError("Signed first-party wheel is invalid") from exc
+        # Fail closed BEFORE contacting PyPI or creating installable state.
+        # A missing/unsafe namespace executor must not mean host execution.
+        try:
+            candidate_sandbox.require_executor()
+        except (candidate_sandbox.SandboxError, updater.UpdateError) as exc:
+            raise PreparationInstallError(
+                "Candidate isolation is unavailable; online staging is refused") from exc
         try:
             parent = _managed_parent()
             with tempfile.TemporaryDirectory(prefix=".online-v6-", dir=parent) as work:
@@ -295,7 +302,12 @@ def rehearse_signed_install(
                 lock = signed_dependency_staging.stage_signed_candidate(
                     archive, manifest, signature, version, inventory, assets,
                     target, workdir / "download", cafile=cafile)
-                interpreter = workdir / "venv" / "bin" / "python"
+                venv_root = workdir / "venv"
+                # Never rely on a process-global umask or the behavior of
+                # Python venv creation to make the managed staging root private.
+                venv_root.mkdir(mode=0o700)
+                _private_directory(venv_root)
+                interpreter = venv_root / "bin" / "python"
                 # Only the native Python/venv module bootstraps the environment.
                 # Downloaded wheels are never processed by root or system pip.
                 updater._run([
@@ -306,25 +318,33 @@ def rehearse_signed_install(
                 if not interpreter.exists() or not interpreter.is_file():
                     raise PreparationInstallError("Native isolated Python venv was not created")
                 install, check, package_list = _install_commands(interpreter, lock)
-                updater._run(install, cwd=lock.parent, timeout=300)
+                candidate_sandbox.run_isolated(
+                    install, workspace=workdir, cwd=lock.parent, timeout=300)
                 app_lock = _stage_owned_application(
                     workdir / "owned-app", archive, version, assets)
-                updater._run(_application_install_command(interpreter, app_lock),
-                             cwd=app_lock.parent, timeout=180)
-                updater._run(check, timeout=90)
-                installed_json = updater._run(package_list, timeout=90)
+                candidate_sandbox.run_isolated(
+                    _application_install_command(interpreter, app_lock),
+                    workspace=workdir, cwd=app_lock.parent, timeout=180)
+                candidate_sandbox.run_isolated(
+                    check, workspace=workdir, timeout=90)
+                installed_json = candidate_sandbox.run_isolated(
+                    package_list, workspace=workdir, timeout=90)
                 _check_installed(installed_json, wheels, application_version=version)
                 cli_version, cli_help, cli_update_help, tui_headless = _smoke_commands(interpreter)
-                version_output = updater._run(cli_version, timeout=30)
+                version_output = candidate_sandbox.run_isolated(
+                    cli_version, workspace=workdir, timeout=30)
                 if version_output.strip() != f"REPOCACHE Control Center {version}":
                     raise PreparationInstallError("Staged CLI reports unexpected version")
-                help_output = updater._run(cli_help, timeout=30)
+                help_output = candidate_sandbox.run_isolated(
+                    cli_help, workspace=workdir, timeout=30)
                 if "Usage:" not in help_output or "update" not in help_output:
                     raise PreparationInstallError("Staged CLI help is invalid")
-                update_help = updater._run(cli_update_help, timeout=30)
+                update_help = candidate_sandbox.run_isolated(
+                    cli_update_help, workspace=workdir, timeout=30)
                 if "Usage:" not in update_help or "list" not in update_help:
                     raise PreparationInstallError("Staged update subcommands missing")
-                updater._run(tui_headless, timeout=75)
+                candidate_sandbox.run_isolated(
+                    tui_headless, workspace=workdir, timeout=75)
                 if _active_marker() != original_active_marker:
                     raise PreparationInstallError(
                         "Active generation changed during online preactivation checks")
@@ -341,6 +361,6 @@ def rehearse_signed_install(
                     "activated": False,
                 }
         except (online_deps.DependencyError, signed_dependency_staging.PreparationError,
-                updater.UpdateError, OSError) as exc:
+                candidate_sandbox.SandboxError, updater.UpdateError, OSError) as exc:
             raise PreparationInstallError(
                 "Verified online environment rehearsal failed without activation") from exc
