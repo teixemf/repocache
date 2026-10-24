@@ -1,7 +1,8 @@
 # Release integration lanes — v0.5.0 and v0.6.0
 
-**Status:** branch baseline established; workflow changes are proposed in a
-separate CI pull request and are NOT effective on `main` until merged.
+**Status (2026-10-24):** both integration branches exist, but the CI extension
+is still under review in PR #158. Its `push` triggers are NOT active on
+`main` until merged; a green PR check is NOT a live integration-branch push.
 Tracking issue: #157. Do not interpret an integration branch as a signed or
 production-ready release.
 
@@ -50,16 +51,20 @@ version assertions.
 
 | Work / issue | Release lane | Status / next action |
 | --- | --- | --- |
-| Signed legacy bootstrap #76 / PR #77; compatibility bridge #82 / PR #98; CLI #107 / PR #114 | Already in `main` | **Merged**; compare against current main before any forward-port; do not re-merge |
-| Metrics #14 / governed submission #15/#16/#17/#22/#23/#57 and integration/security #125/#127 | v0.5.0 candidates | Multiple partially overlapping stacked DRAFT series; reconcile against main and enforce individual security/acceptance gates before retargeting |
-| Client repository sync #24, per-entry approval, ACL/xattr and rollback | Check target milestone and dependency | Overlapping clean/replacement branches and test-only sandbox work; decide supported scope and avoid inadvertent 0.5/0.6 cross-version mixing |
-| Online source-only release #84 and install #83 / PRs #99–#104 | v0.6.0 candidates | Stacked DRAFT series; trust, native sign/activation and independent review NOT VERIFIED |
-| CLI/TUI regression #85 / PR #106; sandbox #112 / PR #113; signed external candidate preflight #84 / PR #151 | v0.6.0 candidates | Stacked DRAFT security chain; no mass retarget or merge before criteria PASS |
-| Real PyPI compatibility #83/#85 / PR #143 | Already in `main` | **Merged**; CI compatibility evidence is not v0.6 release approval |
-| PR milestone policy #145 / PR #147 and live gate #148 | Shared repo governance | Keep independent; do not bypass or silently supersede their default-branch privilege model |
+| Signed-candidate infrastructure PR #77 (parent #76); bridge #82 / PR #98; CLI #107 / PR #114 | Already in `main` | **Those PRs merged**; parent signed v0.5.0 candidate acceptance #76 remains OPEN. Compare against current main; do not re-merge or infer release acceptance |
+| Metrics #14 / governed submission #15/#16/#17/#22/#23/#57, with integration/security #125/#127 | v0.5.0 candidates | #125 and #127 are already CLOSED; remaining issues and overlapping draft series require reconciliation with main and individual security/acceptance gates before retargeting |
+| Client repository sync #24, per-entry approval, ACL/xattr and rollback | v0.6.0 issue milestone; candidate only after dependency review | Overlapping clean/replacement branches and test-only sandbox work; confirm each PR's actual milestone and dependency before any retargeting |
+| Online source-only release #84 and installer #83 / PRs #99–#104 | **v0.7.0** issue milestones (NOT v0.6.0) | Stacked DRAFT series; DO NOT route to `integration/v0.6.0` by historical version assumptions. Resolve roadmap/milestone discrepancy with maintainer first; trust, signing, activation and review still NOT VERIFIED |
+| CLI/TUI regression #85 / PR #106; sandbox #112 / PR #113; signed candidate preflight #84 / PR #151 | **v0.7.0** issue milestones (NOT v0.6.0) | Stacked DRAFT security chain; do not change milestone or target branch without an explicit roadmap decision and verified dependent acceptance |
+| Real PyPI compatibility PR #143 (related #83/#85) | Already in `main` | **PR merged**, parent issues #83/#85 are OPEN at **v0.7.0**; upstream-wheel CI evidence is not full installer/release acceptance |
+| PR milestone policy #145 / PR #147 and live gate #148 / PR #163 | Shared repo governance | **Completed and merged where applicable**; keep the current trusted-default-branch privilege model; milestone check remains advisory until a separately approved ruleset change |
 
 This table is a **routing shortlist**, not an authorization or a complete
-inventory of open PRs. Recheck GitHub immediately before each change.
+inventory of open PRs. GitHub currently assigns #83/#84/#85/#112 to v0.7.0,
+while earlier design descriptions call parts of the profile "v0.6". The
+**current issue milestone takes precedence for routing**, and any proposed
+change to that roadmap needs a separate explicit maintainer decision. Recheck
+GitHub immediately before each change; never infer the release from a PR title.
 
 ## Continuous integration
 
