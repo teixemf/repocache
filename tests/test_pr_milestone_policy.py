@@ -177,6 +177,8 @@ def test_workflow_uses_trusted_default_branch_and_no_pr_head_code():
         Path(__file__).resolve().parents[1] / ".github/workflows/pr-milestone.yml"
     ).read_text(encoding="utf-8")
     assert "pull_request_target:" in workflow
+    # Required checks must be freshly reported after every PR head update.
+    assert "synchronize" in workflow.split("types: [", 1)[1].split("]", 1)[0]
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "github.event.pull_request.head" not in workflow
