@@ -50,6 +50,14 @@ def load_keyring(path: Path) -> dict[str, bytes]:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
         fd = os.open(path, flags)
         with os.fdopen(fd, "rb") as file:
+            actual = os.fstat(file.fileno())
+            # The pathname may be replaced between lstat and open. Trust
+            # only the verified inode actually supplying HMAC credentials.
+            if (not stat.S_ISREG(actual.st_mode) or actual.st_mode & 0o077
+                    or actual.st_uid not in {0, os.geteuid()}
+                    or actual.st_size > 8192
+                    or (actual.st_dev, actual.st_ino) != (st.st_dev, st.st_ino)):
+                raise SubmissionError("invalid_credentials", 503)
             data = file.read(8193)
         doc = json.loads(data.decode("utf-8"))
         if not isinstance(doc, dict) or set(doc) != {"keys"} or not isinstance(doc["keys"], list):
