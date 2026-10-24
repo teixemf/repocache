@@ -101,3 +101,12 @@ docker run --rm --network none --user 0:0 \
   --mount "type=bind,source=$work/ephemeral-public.pem,target=/tmp/ci-publisher.pem,readonly" \
   --mount "type=bind,source=$repo/scripts/upgrade_e2e.py,target=/tmp/upgrade_e2e.py,readonly" \
   "$tag" /usr/bin/python3 /tmp/upgrade_e2e.py
+
+# Gate A: exercise actual service-UID SQLite privilege separation on the
+# disposable target userspace. This is not a booted native SELinux/systemd
+# acceptance and does not activate any endpoint or touch production.
+echo "Running disposable real-UID submission SQLite boundary in $image"
+docker run --rm --network none --user 0:0 \
+  --mount "type=bind,source=$repo/src/repocache,target=/src/repocache,readonly" \
+  --mount "type=bind,source=$repo/scripts/ci_submission_privsep_native.py,target=/tmp/ci_submission_privsep_native.py,readonly" \
+  "$tag" /usr/bin/python3 /tmp/ci_submission_privsep_native.py
