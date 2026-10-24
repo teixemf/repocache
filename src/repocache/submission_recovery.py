@@ -169,7 +169,10 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
         # serialization lock in the independently root-controlled backup dir.
         with _exclusive_restore_lock(source.parent):
             # Both paths are opened without following the final symlink.
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            # O_NONBLOCK prevents an intake UID from hanging privileged
+            # restore forever by swapping the queue path for a FIFO.
+            flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                     getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0))
             source_fd = os.open(source, flags)
             try:
                 _check_backup_stat(os.fstat(source_fd))
