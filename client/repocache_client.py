@@ -62,6 +62,18 @@ def _url_host(url: str) -> str:
         return ""
 
 
+def _same_https_origin(url: str, server: str) -> bool:
+    """Require the same HTTPS scheme, hostname and effective port."""
+    try:
+        candidate, trusted = urlsplit(url), urlsplit(server)
+        return bool(candidate.scheme == trusted.scheme == "https"
+                    and candidate.hostname and candidate.hostname == trusted.hostname
+                    and (candidate.port or 443) == (trusted.port or 443)
+                    and candidate.username is None and candidate.password is None)
+    except ValueError:
+        return False
+
+
 def _distro(root: Path) -> dict[str, str]:
     try:
         lines = (root / "etc/os-release").read_text(encoding="utf-8").splitlines()
@@ -88,9 +100,10 @@ def _needs_private_handling(value: str) -> bool:
 
 def _repo(name: str, kind: str, urls: list[str], path: Path,
           server: str, enabled: bool = True, *,
-          auth_hint: bool = False, weak_integrity: bool = False) -> dict:
+          auth_hint: bool = False, weak_integrity: bool = False,
+          indirect_mirror: bool = False) -> dict:
     safe = list(dict.fromkeys(_safe_url(item) for item in urls if item.strip()))
-    via = [_url_host(url) == _url_host(server) for url in safe]
+    via = [_same_https_origin(url, server) for url in safe]
     route = "mixed" if any(via) and not all(via) else (
         "repocache" if via and all(via) else "direct"
     )
@@ -98,7 +111,8 @@ def _repo(name: str, kind: str, urls: list[str], path: Path,
             "source": str(path), "enabled": enabled, "route": route,
             "requires_auth_review": auth_hint or any(
                 _needs_private_handling(url) for url in urls),
-            "weak_integrity": weak_integrity}
+            "weak_integrity": weak_integrity,
+            "indirect_mirror": indirect_mirror}
 
 
 def _expand_mirror(uri: str, root: Path) -> list[str]:
@@ -194,9 +208,12 @@ def _dnf_sources(root: Path, server: str) -> list[dict]:
             auth_hint = any(val.get(key, "").strip() for key in auth_keys)
             weak = (val.get("gpgcheck", "1").lower() in ("0", "no", "false")
                     or val.get("sslverify", "1").lower() in ("0", "no", "false"))
+            indirect = bool(val.get("mirrorlist", "").strip()
+                            or val.get("metalink", "").strip())
             repos.append(_repo(section, "dnf", urls, path, server,
                                val.get("enabled", "1").lower() not in ("0", "no", "false"),
-                               auth_hint=auth_hint, weak_integrity=weak))
+                               auth_hint=auth_hint, weak_integrity=weak,
+                               indirect_mirror=indirect))
     return repos
 
 
@@ -238,7 +255,7 @@ def _catalog(server: str) -> dict:
         if (not source.startswith("https://") or not cache.startswith("https://")
                 or _safe_url(source) != source or _safe_url(cache) != cache
                 or not source.endswith("/") or not cache.endswith("/")
-                or _url_host(cache) != _url_host(server)):
+                or not _same_https_origin(cache, server)):
             raise ClientError("Invalid catalog URL")
         verified.append({"upstream": source, "cache": cache})
     return {"schema": 1, "repositories": verified}
@@ -287,6 +304,8 @@ def _sync_plan(repos: list[dict], catalog: dict) -> dict:
             status, reason = "blocked", "weak-package-or-transport-verification"
         elif _classify_repository(repo, catalog) == "invalid":
             status, reason = "blocked", "invalid-or-unsupported-source"
+        elif repo.get("indirect_mirror"):
+            status, reason = "review", "native-mirror-indirection-not-verified"
         elif repo.get("route") == "repocache":
             status, reason = "blocked", "cache-only-no-fallback-evidence"
         elif repo.get("route") == "mixed":
