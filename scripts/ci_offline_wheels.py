@@ -63,8 +63,11 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
             name = item.filename
             parts = name.split("/")
             if (not name or "\\" in name or "\x00" in name
-                    or name.startswith("/") or any(part in {".", ".."} for part in parts)
-                    or stat.S_ISLNK(item.external_attr >> 16)):
+                    or name.startswith("/") or any(part in {".", ".."} for part in parts)):
+                raise RuntimeError("Unsafe first-party wheel ZIP member")
+            if stat.S_ISLNK(item.external_attr >> 16):
+                if name.startswith("repocache/") and name.endswith(".py"):
+                    raise RuntimeError("First-party wheel contains a symlinked module")
                 raise RuntimeError("Unsafe first-party wheel ZIP member")
             if (not item.is_dir() and not name.startswith("repocache/")
                     and not metadata.match(name)):
@@ -86,9 +89,6 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         }
         if additional_payload:
             raise RuntimeError("First-party wheel contains unreviewed package payload")
-        for item in members:
-            if item.filename in packaged and stat.S_ISLNK(item.external_attr >> 16):
-                raise RuntimeError("First-party wheel contains a symlinked module")
         for name, expected in expected_modules.items():
             if application.read(name) != expected:
                 raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
