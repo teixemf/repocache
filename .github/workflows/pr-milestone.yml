@@ -2,7 +2,7 @@ name: Pull request milestone governance
 
 on:
   pull_request_target:
-    types: [opened, reopened, edited, ready_for_review, milestoned, demilestoned]
+    types: [opened, reopened, synchronize, edited, ready_for_review, milestoned, demilestoned]
 
 # This privileged metadata-only workflow MUST use code from the protected
 # default branch; never checkout or execute code from a pull request head.
