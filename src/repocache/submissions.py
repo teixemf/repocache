@@ -448,20 +448,47 @@ class SubmissionQueue:
             raise SubmissionError("invalid_retention_policy", 400)
         current = int(time.time()) if now is None else int(now)
         cutoff = current - decided_retention_days * 86400
-        with self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            expired = [row[0] for row in db.execute(
-                "SELECT id FROM proposals WHERE state!='PENDING' AND changed < ?",
-                (cutoff,)).fetchall()]
-            # All replay windows are shorter than one day (30 seconds of
-            # timestamp skew); retain nonces at least 24 hours.
-            dropped_nonces = db.execute(
-                "DELETE FROM nonces WHERE created < ?",
-                (current - 86400,)).rowcount
-            for ident in expired:
-                db.execute("DELETE FROM audit WHERE proposal_id=?", (ident,))
-                db.execute("DELETE FROM proposals WHERE id=?", (ident,))
-            return {"purged_decided": len(expired), "purged_nonces": dropped_nonces}
+        try:
+            # Intake can edit SQLite state, timestamps and audit rows. Never
+            # let a forged REVIEWED/REJECTED flag or backdated 'changed'
+            # delete an undecided or recently decided proposal. Serialize
+            # with privileged decisions and use the root receipt's time.
+            with self._journal().locked() as journal:
+                with self._connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    candidates = db.execute(
+                        "SELECT id,os_id,os_version,items,created,state,version "
+                        "FROM proposals WHERE state!='PENDING' AND changed < ?",
+                        (cutoff,)).fetchall()
+                    expired = []
+                    for row in candidates:
+                        ident = row[0]
+                        if (not isinstance(ident, str) or
+                                not re.fullmatch(r"[a-f0-9]{32}", ident)):
+                            raise SubmissionError("invalid_stored_proposal", 503)
+                        chain = journal.read(ident)
+                        self._verify_state(row[5], row[6],
+                                           self._proposal_digest(row), chain)
+                        if not chain:
+                            raise SubmissionError("unaudited_decision_state", 503)
+                        # The SQLite timestamp is untrusted; an intake writer
+                        # cannot shorten retention of root-authorized decisions.
+                        if chain[-1]["at"] < cutoff:
+                            expired.append(ident)
+                    # All replay windows are shorter than one day (30 seconds
+                    # timestamp skew); retain nonces at least 24 hours.
+                    dropped_nonces = db.execute(
+                        "DELETE FROM nonces WHERE created < ?",
+                        (current - 86400,)).rowcount
+                    for ident in expired:
+                        db.execute("DELETE FROM audit WHERE proposal_id=?", (ident,))
+                        db.execute("DELETE FROM proposals WHERE id=?", (ident,))
+                    return {"purged_decided": len(expired),
+                            "purged_nonces": dropped_nonces}
+        except DecisionError as exc:
+            raise SubmissionError(exc.code, exc.status) from exc
+        except sqlite3.Error as exc:
+            raise SubmissionError("retention_unavailable", 503) from exc
 
     def backup(self, destination: Path) -> None:
         """Atomic operator-only backup of the committed database state.
