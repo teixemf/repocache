@@ -67,7 +67,7 @@ def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
         wheel_parts = application_wheel.name.split("-")
         if (len(wheel_parts) not in (5, 6)
                 or wheel_parts[0] != "repocache_control"
-                or re.fullmatch(r"[0-9]+(?:\\.[0-9]+){2}", wheel_parts[1]) is None
+                or re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", wheel_parts[1]) is None
                 or not application_wheel.name.endswith(".whl")):
             raise RuntimeError("Unexpected first-party wheel filename")
         metadata_prefix = "repocache_control-" + wheel_parts[1] + ".dist-info/"
