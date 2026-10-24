@@ -68,7 +68,8 @@ def _same_https_origin(url: str, server: str) -> bool:
         candidate, trusted = urlsplit(url), urlsplit(server)
         return bool(candidate.scheme == trusted.scheme == "https"
                     and candidate.hostname and candidate.hostname == trusted.hostname
-                    and (candidate.port or 443) == (trusted.port or 443)
+                    and (443 if candidate.port is None else candidate.port)
+                    == (443 if trusted.port is None else trusted.port)
                     and candidate.username is None and candidate.password is None)
     except ValueError:
         return False
