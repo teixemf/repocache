@@ -64,9 +64,9 @@ def checked_source(tmp_path, monkeypatch):
 
 
 def file_zip(modules: dict[str, bytes], *, duplicate=False,
-             symlink=False) -> bytes:
+             symlink=False, oversized_metadata=False) -> bytes:
     stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w") as z:
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as z:
         for name, data in modules.items():
             if name == "repocache/submissions.py" and symlink:
                 info = zipfile.ZipInfo(name)
@@ -78,6 +78,11 @@ def file_zip(modules: dict[str, bytes], *, duplicate=False,
         z.writestr("repocache_control-0.5.0.dist-info/METADATA",
                    "Metadata-Version: 2.3\nName: repocache-control\n"
                    "Version: 0.5.0\n\n")
+        if oversized_metadata:
+            # A tiny compressed ZIP member can expand beyond safe pre-signing
+            # memory bounds even though the outer wheelhouse is hash-locked.
+            z.writestr("repocache_control-0.5.0.dist-info/UNREVIEWED",
+                       b"X" * 50_000_001)
         if duplicate:
             with pytest.warns(UserWarning, match="Duplicate name"):
                 z.writestr("repocache/submissions.py", b"shadowed")
@@ -96,12 +101,15 @@ def build_fixture(tmp_path, checked_source, *, attack=None) -> Path:
         del candidate["repocache/submissions.py"]
     if attack == "modified":
         candidate["repocache/submissions.py"] = b"def intake(): return 'modified'\n"
+    if attack == "oversized-module":
+        candidate["repocache/submissions.py"] = b"X" * 1_000_000
     if attack == "extra":
         candidate["repocache/unreviewed.py"] = b"print('unreviewed')\n"
     if attack == "extra-path":
         candidate["evil.pth"] = b"import unreviewed\n"
     app = file_zip(candidate, duplicate=attack == "duplicate",
-                   symlink=attack == "symlink")
+                   symlink=attack == "symlink",
+                   oversized_metadata=attack == "oversized-metadata")
     app_name = "repocache_control-0.5.0-py3-none-any.whl"
     dep_name = "typer-1.0.0-py3-none-any.whl"
     dep = b"inert dependency fixture"
@@ -153,6 +161,7 @@ def test_real_verifier_accepts_exact_reviewed_first_party_wheel(
 
 @pytest.mark.parametrize("attack", [
     "missing", "modified", "extra", "extra-path", "duplicate", "symlink",
+    "oversized-module", "oversized-metadata",
 ])
 def test_real_verifier_rejects_rehashed_unreviewed_wheel(
         tmp_path, checked_source, attack):
