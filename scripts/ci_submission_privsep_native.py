@@ -125,7 +125,8 @@ def main() -> int:
             assert sentinel.read_bytes() == b"ROOT_SECRET_SENTINEL"
         finally:
             _run_as_intake(account.pw_uid, account.pw_gid,
-                           "import os; os.unlink(" + repr(str(sidecar)) + ")")
+                           "import os; p=" + repr(str(sidecar)) +
+                           "; os.unlink(p) if os.path.lexists(p) else None")
     finally:
         sqlite3.connect = native_connect
     print("PASS: real dropped UID, no root SQLite, decision journal, backup and hostile sidecar")
