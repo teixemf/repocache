@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 class MilestonePolicyError(Exception):
@@ -86,6 +86,13 @@ def choose_milestone(
     return next(iter(distinct))
 
 
+class RejectRedirects(HTTPRedirectHandler):
+    """Never forward a GitHub Actions token to a redirected origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def api_request(url: str, token: str, method: str = "GET", payload: dict | None = None) -> dict:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = Request(
@@ -101,7 +108,7 @@ def api_request(url: str, token: str, method: str = "GET", payload: dict | None 
         },
     )
     try:
-        with urlopen(req, timeout=15) as response:
+        with build_opener(RejectRedirects).open(req, timeout=15) as response:
             result = json.load(response)
     except HTTPError as exc:
         raise MilestonePolicyError(f"GitHub API returned HTTP {exc.code} on {method}") from None
@@ -130,14 +137,17 @@ def reconcile(repo: str, pr_number: int, token: str, requester=api_request) -> s
         return "Skipped closed PR"
     current = pr.get("milestone")
     if current is not None:
-        if not isinstance(current, dict) or type(current.get("number")) is not int:
+        if (not isinstance(current, dict) or type(current.get("number")) is not int
+                or current["number"] <= 0):
             raise MilestonePolicyError("Invalid existing PR milestone metadata")
         return f"Preserved manually assigned milestone #{current['number']}"
 
     primary, linked = references(pr.get("title") or "", pr.get("body") or "")
     milestone = choose_milestone(primary, linked, get_issue)
     patched = requester(f"{root}/{pr_number}", token, "PATCH", {"milestone": milestone})
-    if patched.get("milestone", {}).get("number") != milestone:
+    confirmed = patched.get("milestone")
+    if (not isinstance(confirmed, dict) or type(confirmed.get("number")) is not int
+            or confirmed["number"] != milestone):
         raise MilestonePolicyError("GitHub API did not confirm milestone assignment")
     return f"Assigned milestone #{milestone} to PR #{pr_number}"
 
