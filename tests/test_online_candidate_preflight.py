@@ -149,6 +149,26 @@ def test_abnormal_rehearsal_activation_is_never_reported_as_success(candidate, m
                          "--rehearse", "--ca-file", "/etc/ssl/certs/ca-certificates.crt"]) == 1
 
 
+
+def test_rootless_native_preflight_failure_is_script_friendly(candidate, monkeypatch,
+                                                            capsys):
+    checker = _checker()
+    from repocache import updater
+    monkeypatch.setattr(online_generation, "_current_host_target",
+                        lambda: "debian13-py313")
+
+    def refuse(*args, **kwargs):
+        raise updater.UpdateError("Missing protected transaction lock")
+
+    monkeypatch.setattr(online_generation, "rehearse_signed_install", refuse)
+    assert checker.main(["--assets-dir", str(candidate), "--version", "0.6.0",
+                         "--rehearse", "--ca-file",
+                         "/etc/ssl/certs/ca-certificates.crt"]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == "Candidate refused: UpdateError\n"
+
+
 def test_rehearsal_cli_requires_explicit_ca_bundle(candidate):
     checker = _checker()
     with pytest.raises(SystemExit):
