@@ -51,6 +51,13 @@ def test_candidate_has_only_private_writable_root_and_no_network(workspace):
         assert protection in command
     writable = [command[i+1:i+3] for i, arg in enumerate(command) if arg == "--bind"]
     assert writable == [[str(work), str(work)]]
+    # Root tmpfs is writable unless explicitly remounted read-only.
+    # The remount must come AFTER the allowed writable workspace bind,
+    # and it must not remount that separate bind filesystem.
+    assert command.count("--remount-ro") == 1
+    remount = command.index("--remount-ro")
+    assert command[remount + 1] == "/"
+    assert command.index("--bind") < remount < command.index("--chdir")
     assert str(root / "current") not in command
     assert str(root / "installed.json") not in command
     assert "/var/lib/repocache" not in command
