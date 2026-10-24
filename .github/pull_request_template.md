@@ -2,7 +2,11 @@
 
 Explain the change and the user-facing impact in English.
 
-## Linked Issue
+## Linked Issue and milestone
+
+Replace `#N` with the primary **same-repository issue** for this PR. If multiple issues belong to different milestones, request maintainer review and assign the PR milestone manually.
+
+Primary issue: #N
 
 Closes #
 
@@ -16,6 +20,7 @@ Describe design choices, API/CLI compatibility, and any changes to NGINX, reposi
 - [ ] Tested on supported Python versions or documented what could not be tested.
 - [ ] Release-bundle/installer tests were run where applicable.
 - [ ] English documentation and user-facing text were updated as needed.
+- [ ] PR milestone matches the primary issue's planned release (not an acceptance claim).
 
 **Test evidence:**
 
