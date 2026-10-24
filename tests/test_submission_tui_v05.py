@@ -65,6 +65,7 @@ def test_tui_two_step_review_and_audited_undo(tmp_path, monkeypatch):
             await pilot.pause(0.1)
             assert app._selected_proposal == ident
             assert app._proposal_versions[ident] == 0
+            assert app._proposal_digests[ident] == queue.pending()[0]["metadata_digest"]
             await pilot.press("y")
             await pilot.pause(0.1)
             assert len(queue.pending()) == 1  # first keypress only confirms intent
