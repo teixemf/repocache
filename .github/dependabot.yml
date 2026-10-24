@@ -1,0 +1,26 @@
+# Proposal for #81: observe upstream updates; never auto-merge or publish.
+# Dependency security alerts / security-update PRs are enabled separately
+# under GitHub Settings > Security & analysis (see docs/DEPENDENCY_MONITORING.md).
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "area:security"
+      - "type:maintenance"
+    # Preserve the reviewed dependency ranges while the signed release lock
+    # and complete transitive graph are designed under #80.
+    versioning-strategy: "increase-if-necessary"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels:
+      - "area:release"
+      - "type:maintenance"
+    # #74 owns any replacement of pinned Actions SHAs / Node.js runtimes.

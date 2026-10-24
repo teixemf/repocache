@@ -2,7 +2,7 @@
   "schema_version": 1,
   "architecture": "docs/architecture/CLI_ARCHITECTURE.md",
   "status": "transitional-current-parser-inventory",
-  "note": "Every registered root/object/action path must be reviewed; this inventory is not a list of implemented future architecture features.",
+  "note": "Every registered root/object/action path must be reviewed; planned names are not assertions of implementation. Transitional root commands remain until a separately approved migration.",
   "server": [
     "cache",
     "cache stats",
@@ -20,6 +20,7 @@
     "logs follow",
     "logs tail",
     "metrics",
+    "metrics show",
     "repo",
     "repo info",
     "repo list",
@@ -36,6 +37,9 @@
     "service reload",
     "service status",
     "status",
+    "system",
+    "system check",
+    "system status",
     "update",
     "update check",
     "update list"
