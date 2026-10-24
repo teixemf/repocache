@@ -111,9 +111,10 @@ def inspect_source(relative: str, *, root: Path = Path("/")) -> dict:
         try:
             before = os.fstat(source_fd)
             if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner
-                    or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o022
-                    or before.st_size > MAX_SOURCE_BYTES):
+                    or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o022):
                 raise PreflightError("Unsafe repository source inode or permissions")
+            if before.st_size > MAX_SOURCE_BYTES:
+                raise PreflightError("Repository source exceeds inspection size limit")
             linked = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
             if (before.st_dev, before.st_ino) != (linked.st_dev, linked.st_ino):
                 raise PreflightError("Repository source pathname changed")
