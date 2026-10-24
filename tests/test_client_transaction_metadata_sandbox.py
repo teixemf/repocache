@@ -185,3 +185,31 @@ def test_security_selinux_attribute_is_refused_before_snapshot(sandbox, monkeypa
     with pytest.raises(pre.PreflightError, match="Security label"):
         bridge.snapshot_sandbox(sandbox, ident)
     assert (sandbox / SOURCE).read_bytes() == ORIGINAL
+
+
+def test_read_only_preflight_never_authorizes_staged_or_installed_sources(sandbox):
+    """#133 preflight remains advisory across #131/#132/#134 integration."""
+    marker = sandbox / pre.MARKER
+    marker.write_bytes(pre.TEST_MAGIC)
+    marker.chmod(0o600)
+    initial = pre.inspect_source(SOURCE, root=sandbox)
+    assert initial["write_eligible"] is False
+    assert initial["extended_attributes_present"] is False
+
+    ident, _, _ = prepare(sandbox, attrs=True)
+    staged = pre.inspect_source(SOURCE, root=sandbox)
+    assert staged["write_eligible"] is False
+    assert staged["extended_attributes_present"] is True
+    assert staged["write_blocker"] == "security-metadata-preservation-not-implemented"
+
+    assert atomic.apply_sandbox(sandbox, ident)["status"] == "installed"
+    installed = pre.inspect_source(SOURCE, root=sandbox)
+    assert installed["write_eligible"] is False
+    assert installed["extended_attributes_present"] is True
+    assert installed["sha256"] == hashlib.sha256(REPLACEMENT).hexdigest()
+
+    assert atomic.rollback_sandbox(sandbox, ident)["status"] == "restored"
+    restored = pre.inspect_source(SOURCE, root=sandbox)
+    assert restored["write_eligible"] is False
+    assert restored["sha256"] == initial["sha256"]
+    assert (sandbox / SOURCE).read_bytes() == ORIGINAL

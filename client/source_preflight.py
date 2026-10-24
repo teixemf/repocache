@@ -44,9 +44,13 @@ def _checked_directory(fd: int, owner: int, *, private: bool = False) -> None:
 def _fixture(root: Path, fd: int, owner: int) -> None:
     # Test-only override is unambiguously restricted; never treat the marker
     # as sufficient authorization for real filesystem changes.
+    try:
+        resolved = root.resolve(strict=True)
+    except OSError as exc:
+        raise PreflightError("Unable to verify private test root") from exc
     if (root in (Path("/"), Path("/tmp"), Path("/var/tmp"))
             or not any(p in (Path("/tmp"), Path("/var/tmp")) for p in root.parents)
-            or root.resolve(strict=True) != root):
+            or resolved != root):
         raise PreflightError("Non-production inspection root must be private under /tmp")
     _checked_directory(fd, owner, private=True)
     try:
@@ -61,7 +65,10 @@ def _fixture(root: Path, fd: int, owner: int) -> None:
             raise PreflightError("Invalid private test marker")
         if os.read(marker_fd, len(TEST_MAGIC) + 1) != TEST_MAGIC:
             raise PreflightError("Invalid private test marker")
-        observed = os.stat(MARKER, dir_fd=fd, follow_symlinks=False)
+        try:
+            observed = os.stat(MARKER, dir_fd=fd, follow_symlinks=False)
+        except OSError as exc:
+            raise PreflightError("Test marker pathname changed during inspection") from exc
         if (info.st_dev, info.st_ino) != (observed.st_dev, observed.st_ino):
             raise PreflightError("Test marker inode changed during inspection")
     finally:
@@ -115,13 +122,19 @@ def inspect_source(relative: str, *, root: Path = Path("/")) -> dict:
                 raise PreflightError("Unsafe repository source inode or permissions")
             if before.st_size > MAX_SOURCE_BYTES:
                 raise PreflightError("Repository source exceeds inspection size limit")
-            linked = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+            try:
+                linked = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+            except OSError as exc:
+                raise PreflightError("Repository source pathname changed") from exc
             if (before.st_dev, before.st_ino) != (linked.st_dev, linked.st_ino):
                 raise PreflightError("Repository source pathname changed")
             digest = hashlib.sha256()
             size = 0
             while True:
-                data = os.read(source_fd, min(65536, MAX_SOURCE_BYTES + 1 - size))
+                try:
+                    data = os.read(source_fd, min(65536, MAX_SOURCE_BYTES + 1 - size))
+                except OSError as exc:
+                    raise PreflightError("Repository source read failed") from exc
                 if not data:
                     break
                 size += len(data)
@@ -133,7 +146,10 @@ def inspect_source(relative: str, *, root: Path = Path("/")) -> dict:
             except OSError as exc:
                 raise PreflightError("Cannot inspect repository security attributes") from exc
             after = os.fstat(source_fd)
-            relinked = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+            try:
+                relinked = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+            except OSError as exc:
+                raise PreflightError("Repository source drift during inspection") from exc
             before_identity = (
                 before.st_dev, before.st_ino, before.st_uid, before.st_gid,
                 before.st_mode, before.st_nlink, before.st_size, before.st_mtime_ns,
