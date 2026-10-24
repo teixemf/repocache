@@ -1,6 +1,6 @@
 # Online dependency lock v1 — proposed implementation contract
 
-**Status: PROPOSED / NOT RELEASE-ACCEPTED.** Owner: [#80](https://github.com/teixemf/repocache/issues/80), implementation [#83](https://github.com/teixemf/repocache/issues/83), publisher/release schema [#84](https://github.com/teixemf/repocache/issues/84), monitoring [#81](https://github.com/teixemf/repocache/issues/81). This defines the minimal auditable dependency interface before implementing network-dependent production upgrades. It is not a signed release manifest itself.
+**Status: Parser-only signed-envelope identifiers reviewed for v0.5.0 bootstrap; all online dependency lock, asset-layout and native installation details remain PROPOSED / NOT RELEASE-ACCEPTED.** Owner: [#80](https://github.com/teixemf/repocache/issues/80), implementation [#83](https://github.com/teixemf/repocache/issues/83), publisher/release schema [#84](https://github.com/teixemf/repocache/issues/84), monitoring [#81](https://github.com/teixemf/repocache/issues/81). This defines the minimal auditable dependency interface before implementing network-dependent production upgrades. It is not a signed release manifest itself.
 
 ## Provisional signed envelope interface — integration review 2026-10-22
 
