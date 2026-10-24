@@ -156,14 +156,14 @@ print('SANDBOX_ESCAPE_PROBES_PASS')
             f"pathlib.Path({str(escaped)!r}).write_text('escaped')"
         )
         console.write_text(
-            "#!/usr/bin/python3\\n"
-            "import pathlib,subprocess,sys,time\\n"
-            f"pathlib.Path({str(started)!r}).write_text('started')\\n"
+            "#!/usr/bin/python3\n"
+            "import pathlib,subprocess,sys,time\n"
+            f"pathlib.Path({str(started)!r}).write_text('started')\n"
             f"subprocess.Popen([sys.executable, '-I', '-c', {child_code!r}], "
             "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
             "stderr=subprocess.DEVNULL, close_fds=True, "
-            "start_new_session=True)\\n"
-            "time.sleep(30)\\n", encoding="utf-8")
+            "start_new_session=True)\n"
+            "time.sleep(30)\n", encoding="utf-8")
         console.chmod(0o700)
         try:
             candidate_sandbox.run_isolated(
