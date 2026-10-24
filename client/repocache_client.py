@@ -346,7 +346,10 @@ def _output(data: dict, json_mode: bool) -> None:
     for item in data.get("checks", []):
         print(("OK" if item["ok"] else "WARN") + " " + item["name"] + ": " + item["detail"])
     for repo in data.get("repositories", []):
-        print(repo["name"] + " " + repo.get("support", repo["route"]) +
+        plan = repo.get("plan")
+        detail = (plan["status"] + " (" + plan["reason"] + ")"
+                  if plan else repo.get("support", repo["route"]))
+        print(repo["name"] + " " + detail +
               " " + ", ".join(repo.get("urls", [])))
     if "note" in data:
         print(data["note"])
