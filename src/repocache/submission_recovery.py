@@ -71,6 +71,37 @@ def _verify_sqlite(path: Path) -> None:
         raise SubmissionError("corrupt_restore_backup", 422) from exc
 
 
+def _copy_verified_regular(source_fd: int, destination_fd: int,
+                           expected: os.stat_result) -> None:
+    """Bound a privileged copy of an untrusted SQLite inode.
+
+    A service UID may grow or replace its database while intake is stopped.
+    Never follow a second path unchecked or copy until an attacker-chosen EOF.
+    """
+    def identity(st: os.stat_result) -> tuple:
+        return (st.st_dev, st.st_ino, st.st_uid, st.st_gid, st.st_mode,
+                st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+    if (not stat.S_ISREG(expected.st_mode) or
+            not 0 < expected.st_size <= MAX_RESTORE_BYTES or
+            identity(os.fstat(source_fd)) != identity(expected)):
+        raise SubmissionError("restore_source_changed", 409)
+    remaining = expected.st_size
+    while remaining:
+        data = os.read(source_fd, min(1024 * 1024, remaining))
+        if not data:
+            raise SubmissionError("restore_source_changed", 409)
+        remaining -= len(data)
+        view = memoryview(data)
+        while view:
+            count = os.write(destination_fd, view)
+            if count <= 0:
+                raise SubmissionError("restore_copy_failed", 503)
+            view = view[count:]
+    if os.read(source_fd, 1) or identity(os.fstat(source_fd)) != identity(expected):
+        raise SubmissionError("restore_source_changed", 409)
+
+
 def _fsync_dir(directory: Path) -> None:
     fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -146,15 +177,9 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
                 staged = Path(staging)
                 try:
                     os.fchmod(staging_fd, 0o600)
-                    try:
-                        with os.fdopen(source_fd, "rb", closefd=False) as stream:
-                            with os.fdopen(staging_fd, "wb") as staged_stream:
-                                shutil.copyfileobj(stream, staged_stream, 1024 * 1024)
-                                staged_stream.flush()
-                                os.fsync(staged_stream.fileno())
-                    finally:
-                        # fdopen owns the descriptor after opening in the loop.
-                        pass
+                    _copy_verified_regular(source_fd, staging_fd, os.fstat(source_fd))
+                    os.fsync(staging_fd)
+                    os.close(staging_fd)
                     _verify_sqlite(staged)
                     rollback = source.parent / ("repocache-before-restore-" +
                                                 os.urandom(12).hex() + ".sqlite3")
@@ -167,11 +192,8 @@ def restore_offline(queue_path: Path, backup_path: Path, *,
                         previous_fd = os.open(
                             rollback, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
                             getattr(os, "O_NOFOLLOW", 0), 0o600)
-                        with os.fdopen(old_fd, "rb", closefd=False) as old_stream:
-                            with os.fdopen(previous_fd, "wb", closefd=False) as previous_stream:
-                                shutil.copyfileobj(old_stream, previous_stream, 1024 * 1024)
-                                previous_stream.flush()
-                                os.fsync(previous_stream.fileno())
+                        _copy_verified_regular(old_fd, previous_fd, old_stat)
+                        os.fsync(previous_fd)
                     except BaseException:
                         rollback.unlink(missing_ok=True)
                         raise
