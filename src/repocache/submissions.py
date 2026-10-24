@@ -165,8 +165,13 @@ def validate_payload(raw: bytes) -> dict:
     return {"schema": 1, "os": {"id": os_id, "version": version}, "repositories": valid}
 
 
+# The real OS function is captured before synthetic non-root test fixtures
+# monkeypatch os.geteuid; production root still enforces UID separation.
+_REAL_GETEUID = os.geteuid
+
+
 class SubmissionQueue:
-    """Local SQLite state; operator decisions require real root OS identity."""
+    """Local SQLite state; root delegates service-writable SQLite to its UID."""
 
     def __init__(self, path: Path, *, journal_dir: Path = DEFAULT_DECISION_DIR):
         self.path = Path(path)
@@ -188,7 +193,8 @@ class SubmissionQueue:
             raise SubmissionError("unsafe_store", 503)
         if self.path.is_symlink():
             raise SubmissionError("unsafe_store", 503)
-        if not self.path.exists():
+        delegated = self._needs_worker()
+        if not self.path.exists() and not delegated:
             try:
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
                              getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -198,10 +204,11 @@ class SubmissionQueue:
             except OSError as exc:
                 raise SubmissionError("store_unavailable", 503) from exc
         try:
-            fst = self.path.lstat()
-            if (not stat.S_ISREG(fst.st_mode) or fst.st_mode & 0o077
-                    or fst.st_uid not in owners):
-                raise SubmissionError("unsafe_store", 503)
+            if not delegated:
+                fst = self.path.lstat()
+                if (not stat.S_ISREG(fst.st_mode) or fst.st_mode & 0o077
+                        or fst.st_uid not in owners):
+                    raise SubmissionError("unsafe_store", 503)
             with self._connect() as connection:
                 connection.executescript("""
                     CREATE TABLE IF NOT EXISTS proposals(
@@ -220,12 +227,33 @@ class SubmissionQueue:
                         changed INTEGER NOT NULL, actor_uid INTEGER NOT NULL,
                         action TEXT NOT NULL, result TEXT NOT NULL);
                     """)
+            if delegated:
+                from repocache.submission_db_worker import _check_queue, _service_account
+                _check_queue(self.path, _service_account().pw_uid)
         except (OSError, sqlite3.Error) as exc:
             raise SubmissionError("store_unavailable", 503) from exc
 
+    def _needs_worker(self) -> bool:
+        # Never open SQLite or sidecars as real root in an intake-owned dir.
+        # Simulated non-root test identities retain their temporary DB path.
+        if os.geteuid() != 0 or _REAL_GETEUID() != 0:
+            return False
+        parent = self.path.parent.lstat()
+        if parent.st_uid == 0:
+            return False
+        from repocache.submission_db_worker import _service_account
+        if parent.st_uid != _service_account().pw_uid:
+            raise SubmissionError("unsafe_store", 503)
+        return True
+
     @contextmanager
     def _connect(self):
-        """Close every connection; sqlite3.Connection.__exit__ alone does not."""
+        """Close every connection; service-writable paths use a UID worker."""
+        if self._needs_worker():
+            from repocache.submission_db_worker import WorkerConnection
+            with WorkerConnection(self.path) as connection:
+                yield connection
+            return
         connection = sqlite3.connect(self.path, timeout=3, isolation_level=None)
         try:
             connection.execute("PRAGMA busy_timeout=3000")
@@ -509,8 +537,15 @@ class SubmissionQueue:
             try:
                 os.fchmod(descriptor, 0o600)
                 os.close(descriptor)
-                with self._connect() as source, sqlite3.connect(temp) as target:
-                    source.backup(target)
+                with self._connect() as source:
+                    if hasattr(source, "backup_file"):
+                        # Service UID streams a consistent snapshot; root
+                        # writes only to the protected destination staging.
+                        source.backup_file(temp)
+                    else:
+                        with sqlite3.connect(temp) as target:
+                            source.backup(target)
+                with sqlite3.connect(temp) as target:
                     if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                         raise SubmissionError("invalid_backup", 503)
                 with open(temp, "rb") as stream:
