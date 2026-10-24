@@ -174,6 +174,37 @@ def clone_sandbox_source(root: Path, relative: str) -> dict:
                         cloned["gid"] != before["gid"] or
                         cloned["size"] != before["size"]):
                     raise pre.PreflightError("Cloned metadata does not match the source")
+                # Verify the actual bytes from a new read-only FD. Merely
+                # verifying write length or metadata does not prove a clone.
+                try:
+                    verify_fd = os.open(target_name, FLAGS_FILE, dir_fd=parent)
+                except OSError as exc:
+                    raise pre.PreflightError("Cannot reopen cloned source") from exc
+                try:
+                    verify_stat = os.fstat(verify_fd)
+                    if (verify_stat.st_dev, verify_stat.st_ino) != (
+                            cloned["device"], cloned["inode"]):
+                        raise pre.PreflightError("Cloned inode changed before verification")
+                    check = hashlib.sha256()
+                    read_size = 0
+                    while read_size <= pre.MAX_SOURCE_BYTES:
+                        block = os.read(verify_fd, min(
+                            65536, pre.MAX_SOURCE_BYTES + 1 - read_size))
+                        if not block:
+                            break
+                        read_size += len(block)
+                        check.update(block)
+                    verify_after = os.fstat(verify_fd)
+                    if (read_size != len(data) or
+                            check.digest() != hashlib.sha256(data).digest()
+                            or verify_stat.st_size != read_size
+                            or (verify_stat.st_dev, verify_stat.st_ino,
+                                verify_stat.st_ctime_ns, verify_stat.st_mtime_ns) !=
+                               (verify_after.st_dev, verify_after.st_ino,
+                                verify_after.st_ctime_ns, verify_after.st_mtime_ns)):
+                        raise pre.PreflightError("Cloned source content verification failed")
+                finally:
+                    os.close(verify_fd)
             except OSError as exc:
                 raise pre.PreflightError("Metadata copying not supported on test filesystem") from exc
             finally:
