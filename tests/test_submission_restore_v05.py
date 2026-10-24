@@ -195,20 +195,23 @@ def test_privileged_copy_refuses_concurrent_service_file_growth(tmp_path, monkey
     original.write_bytes(b"old database contents")
     original_read = recovery.os.read
     touched = []
+    source_fd = None
 
     def grow_after_read(fd, length):
         data = original_read(fd, length)
-        if data and not touched:
+        if fd == source_fd and data and not touched:
             touched.append(True)
             with original.open("ab") as writer:
                 writer.write(b"attacker append after stat")
         return data
 
     with original.open("rb") as source, output.open("wb") as destination:
-        expected = os.fstat(source.fileno())
-        monkeypatch.setattr(recovery.os, "read", grow_after_read)
-        with pytest.raises(SubmissionError, match="restore_source_changed"):
-            recovery._copy_verified_regular(source.fileno(), destination.fileno(), expected)
+        source_fd = source.fileno()
+        expected = os.fstat(source_fd)
+        with monkeypatch.context() as patch:
+            patch.setattr(recovery.os, "read", grow_after_read)
+            with pytest.raises(SubmissionError, match="restore_source_changed"):
+                recovery._copy_verified_regular(source_fd, destination.fileno(), expected)
     assert touched
 
 
