@@ -158,7 +158,12 @@ def main() -> None:
     matching = next(line for line in offline if original.name in line)
     (tamper / "requirements.lock").write_text(
         matching + "\n", encoding="ascii")
-    rejected = run(pip_base + [
+    # Force hash verification by installing in a fresh environment: an
+    # already-installed requirement must not cause a false positive.
+    rejected_venv = WORK / "tampered-venv"
+    run([sys.executable, "-I", "-m", "venv", str(rejected_venv)], env=env)
+    rejected_python = str(rejected_venv / "bin/python")
+    rejected = run([rejected_python, "-I", "-m", "pip", "--isolated",
         "install", "--no-index", "--no-deps", "--only-binary=:all:",
         "--require-hashes", "--no-input", "--no-cache-dir",
         "-r", str(tamper / "requirements.lock"),
