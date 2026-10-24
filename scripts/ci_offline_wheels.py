@@ -35,6 +35,27 @@ def platform():
 def checksum(data):
     return hashlib.sha256(data).hexdigest()
 
+def verify_first_party_modules(source: Path, application_wheel: Path) -> None:
+    """Require exact source-byte identity for all shipped first-party modules."""
+    expected_modules = {
+        "repocache/" + p.name: p.read_bytes()
+        for p in (source / "src/repocache").glob("*.py")
+    }
+    if not expected_modules or "repocache/__init__.py" not in expected_modules:
+        raise RuntimeError("Missing reviewed first-party Python source")
+    with zipfile.ZipFile(application_wheel) as application:
+        packaged = {
+            name for name in application.namelist()
+            if name.startswith("repocache/") and name.endswith(".py")
+            and name.count("/") == 1
+        }
+        if packaged != set(expected_modules):
+            raise RuntimeError("First-party wheel module inventory differs from reviewed source")
+        for name, expected in expected_modules.items():
+            if application.read(name) != expected:
+                raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
+
+
 def build(out, release=False, poison_backend=False):
     native = platform()
     # Fixed wheel ZIP timestamps (>= 1980) and deterministic tar/gzip headers.
@@ -128,21 +149,7 @@ def build(out, release=False, poison_backend=False):
     app_wheels = [p for p in items if p.name.startswith("repocache_control-")]
     if len(app_wheels) != 1:
         raise RuntimeError("Missing or ambiguous first-party wheel")
-    expected_modules = {
-        "repocache/" + p.name: p.read_bytes()
-        for p in (source / "src/repocache").glob("*.py")
-    }
-    with zipfile.ZipFile(app_wheels[0]) as application:
-        packaged = {
-            name for name in application.namelist()
-            if name.startswith("repocache/") and name.endswith(".py")
-            and name.count("/") == 1
-        }
-        if packaged != set(expected_modules):
-            raise RuntimeError("First-party wheel module inventory differs from reviewed source")
-        for name, expected in expected_modules.items():
-            if application.read(name) != expected:
-                raise RuntimeError("First-party wheel bytes differ from reviewed source: " + name)
+    verify_first_party_modules(source, app_wheels[0])
     print("PASS: first-party wheel modules exactly match reviewed source bytes",
           flush=True)
     lock = "".join("./wheels/" + p.name + " --hash=sha256:" +
