@@ -112,3 +112,47 @@ def test_invalid_issue_response_or_repository_are_blocked():
         mod.reconcile("teixemf/bad/other", 123, "fake")
     with pytest.raises(mod.MilestonePolicyError, match="Unexpected issue response"):
         mod.reconcile("teixemf/repocache", 123, "fake", lambda *args: issue(999, 4, pr=True))
+
+
+def test_reconcile_rejects_missing_or_invalid_patch_confirmation():
+    def request(url, token, method="GET", payload=None):
+        if method == "PATCH":
+            return {"milestone": None}
+        return issue(110, None, pr=True, title="fix (#24)") if url.endswith("/110") else issue(24, 4)
+
+    with pytest.raises(mod.MilestonePolicyError, match="did not confirm"):
+        mod.reconcile("teixemf/repocache", 110, "fake", request)
+
+
+def test_reconcile_rejects_invalid_existing_milestone():
+    def request(url, token, method="GET", payload=None):
+        return issue(110, 0, pr=True)
+
+    with pytest.raises(mod.MilestonePolicyError, match="Invalid existing"):
+        mod.reconcile("teixemf/repocache", 110, "fake", request)
+
+
+def test_authorization_is_not_forwarded_on_redirects():
+    from urllib.request import Request
+
+    req = Request(
+        "https://api.github.com/repos/teixemf/repocache/issues/24",
+        headers={"Authorization": "Bearer fake-token"},
+    )
+    assert mod.RejectRedirects().redirect_request(
+        req, None, 302, "Found", {"location": "https://example.org/"}, "https://example.org/"
+    ) is None
+
+
+def test_api_redirect_response_fails_closed(monkeypatch):
+    from urllib.error import HTTPError
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            assert timeout == 15
+            assert request.get_header("Authorization") == "Bearer fake-token"
+            raise HTTPError(request.full_url, 302, "Found", {}, None)
+
+    monkeypatch.setattr(mod, "build_opener", lambda klass: FakeOpener())
+    with pytest.raises(mod.MilestonePolicyError, match="HTTP 302"):
+        mod.api_request("https://api.github.com/repos/teixemf/repocache/issues/24", "fake-token")
