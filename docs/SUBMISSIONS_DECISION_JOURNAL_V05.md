@@ -1,9 +1,10 @@
 # v0.5.0: Privileged decision journal and recovery contract (#57)
 
 **Development design; disabled-by-default; no production activation.**
-This change implements Gate A's missing **root-authoritative** administrative
-decision evidence. It does not modify the still-unmerged v0.4.0 candidate,
-install a systemd service, change NGINX, or publish any submitted repository.
+This candidate implements Gate A's missing **root-authoritative** administrative
+decision evidence on top of the already published, immutable v0.4.0 baseline.
+It does not install a systemd service, change NGINX, activate a live endpoint,
+or publish any submitted repository.
 
 ## Trust separation
 
@@ -15,9 +16,16 @@ install a systemd service, change NGINX, or publish any submitted repository.
 | \`.decision.lock\` | UID 0; mode 0600, exclusive flock | Serializes root review and backup |
 
 Root-only directory provisioning is a **precondition**, never performed on
-import, install or service startup. Its parent must also be root-owned and not
-writable by other identities. The ordinary intake process may not read,
-create, unlink or replace any file in the decision directory.
+import, install or service startup. The journal and its immediate parent must
+be root-owned and protected against group/other writes, with mode 0700 on
+the journal itself. **Every higher ancestor must also be root-owned and
+non-renamable by an unprivileged identity**; only higher-level root-owned
+sticky directories (such as /tmp in disposable tests) may be group/other
+writable. A root-owned immediate parent under an attacker-controlled
+grandparent is unsafe and refused before journal access. The ordinary intake
+process may not read, create, unlink or replace any journal file.
+Synthetic ownership/race regressions cover this path-trust boundary; actual
+host ownership and SELinux labels remain a separate #49 activation gate.
 
 Receipts contain a random proposal ID, monotonically increasing revision,
 review/reject/reopen, resulting state, local operator UID, Unix timestamp,
