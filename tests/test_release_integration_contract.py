@@ -12,7 +12,11 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 
 def test_test_workflow_covers_release_branch_main_and_untrusted_prs():
     workflow = (WORKFLOWS / "tests.yml").read_text(encoding="utf-8")
-    assert ("on:\n  push:\n    branches: [main, release/v0.4.0, "\n            "integration/v0.5.0, integration/v0.6.0]\n  pull_request:") in workflow
+    assert (
+        "on:\n  push:\n    branches: "
+        "[main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]"
+        "\n  pull_request:"
+    ) in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "persist-credentials: false" in workflow
     assert "'3.12'" in workflow and "'3.13'" in workflow
@@ -99,10 +103,13 @@ def test_native_public_transport_security_gate_cannot_be_omitted():
 
 
 def test_rootless_rollback_checks_run_for_every_pr_main_and_release_branch_commit():
-    # Required status contexts must not silently disappear when a PR changes
-    # only tests, documentation or CI, as happens with path-filtered triggers.
+    # Required status contexts must not silently disappear for docs-only PRs.
     workflow = (WORKFLOWS / "upgrade-distros.yml").read_text(encoding="utf-8")
-    assert ("  pull_request:\n  push:\n    branches: [main, release/v0.4.0, "\n            "integration/v0.5.0, integration/v0.6.0]\n  workflow_dispatch:") in workflow
+    assert (
+        "  pull_request:\n  push:\n    branches: "
+        "[main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]"
+        "\n  workflow_dispatch:"
+    ) in workflow
     trigger = workflow.partition("  pull_request:")[2].partition("permissions:")[0]
     assert "paths:" not in trigger
     assert "Synthetic rootless update and rollback" in workflow
@@ -110,19 +117,19 @@ def test_rootless_rollback_checks_run_for_every_pr_main_and_release_branch_commi
 
 
 def test_governed_integration_push_retains_complete_offline_and_upstream_gates():
-    """Release branches must not silently omit mandatory signed/offline checks."""
+    """Preserve nine mandatory unfiltered push contexts across all four lanes."""
     exact = "branches: [main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]"
     for name in ("tests.yml", "offline-wheelhouse.yml", "upgrade-distros.yml"):
         text = (WORKFLOWS / name).read_text(encoding="utf-8")
         assert exact in text, name
         assert "  pull_request:" in text
-        assert "permissions:\\n  contents: read" in text
+        assert "permissions:\n  contents: read" in text
     upstream = (WORKFLOWS / "native-upstream-wheels.yml").read_text(encoding="utf-8")
     assert "branches: [main, integration/v0.5.0, integration/v0.6.0]" in upstream
     assert "  pull_request:" in upstream
     assert "      - 'deps/runtime-wheels.lock'" in upstream
     assert 'target=/source,readonly' in upstream
     assert "runuser -u repocacheci" in upstream
-    assert "permissions:\\n  contents: read" in upstream
+    assert "permissions:\n  contents: read" in upstream
     release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
-    assert "\\n  push:" not in release
+    assert "\n  push:" not in release
