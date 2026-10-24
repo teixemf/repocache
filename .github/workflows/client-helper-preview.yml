@@ -1,0 +1,38 @@
+name: Client Helper Preview Native
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  read-only-helper:
+    name: Read-only helper scope + real UID denial (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:trixie-slim', 'almalinux:10']
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - name: Execute isolated read-only prototype with OS Python
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace '${{ matrix.image }}' \
+            sh -ec '
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq
+                apt-get install -y --no-install-recommends python3 >/dev/null
+              else
+                dnf install -y python3 >/dev/null
+              fi
+              python3 scripts/smoke_client_helper_preview.py
+            '
