@@ -103,6 +103,10 @@ def _parse_approval(name: str, data: bytes) -> dict:
 
 
 def _read_approval(root: Path, ident: str) -> dict:
+    # Root-only issuance is insufficient if an unprivileged actor can forge
+    # test-state JSON and later have it consumed as an approved decision.
+    if os.geteuid() != 0:
+        raise ApprovalRefused("Root required to consume sandbox entry approval")
     with registry._registry_fd(root, create=False, subdir=APPROVAL_DIR) as fd:
         with registry._lock(fd):
             found = []
