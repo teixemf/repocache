@@ -2,8 +2,8 @@
 
 **Tracking:** [#24](https://github.com/teixemf/repocache/issues/24).  
 **Status:** experiment; **no production APT/DNF source-writing capability**.  
-**Base:** unmerged atomic staging [PR #132](https://github.com/teixemf/repocache/pull/132), depending on [PR #131](https://github.com/teixemf/repocache/pull/131).  
-**Additional prerequisites:** source preflight [#133](https://github.com/teixemf/repocache/pull/133) and metadata cloning [#134](https://github.com/teixemf/repocache/pull/134). Code for the latter two is temporarily copied into this integration branch; reconcile branches before eventual mainline integration, without separately merging PRs as part of this work.
+**Base:** metadata copier [PR #134](https://github.com/teixemf/repocache/pull/134), pending scoped integration.  
+**Already merged on main:** protected staging [#131](https://github.com/teixemf/repocache/pull/131), atomic sandbox [#132](https://github.com/teixemf/repocache/pull/132) and read-only preflight [#133](https://github.com/teixemf/repocache/pull/133). No duplicated modules are carried by this PR; real source writes remain disabled.
 
 ## Implemented laboratory flow
 

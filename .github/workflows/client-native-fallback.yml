@@ -1,0 +1,46 @@
+name: Native Client Fallback Probe
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debian13-apt-metadata:
+    name: Signed APT metadata preference/fallback (debian:trixie-slim)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run isolated signed APT metadata probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace debian:trixie-slim \
+            sh -ec 'apt-get update -qq && \
+                    apt-get install -y --no-install-recommends python3 gnupg >/dev/null && \
+                    python3 scripts/ci_client_native_fallback.py apt'
+
+  almalinux10-dnf-metadata:
+    name: DNF metadata preference/fallback (almalinux:10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run isolated DNF metadata probe
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace almalinux:10 \
+            sh -ec 'dnf install -y python3 createrepo_c >/dev/null && \
+                    python3 scripts/ci_client_native_fallback.py dnf'
