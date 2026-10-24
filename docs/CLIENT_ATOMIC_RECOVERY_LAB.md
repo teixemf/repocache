@@ -37,3 +37,9 @@ Execute `pytest -q tests/test_client_transaction_atomic_lab.py` on the exact PR 
 Before production apply, independently build a trusted fixed-path minimal-privilege helper, full source parser and bounded atomic changes, a complete safe recovery journal, exact native APT/DNF signature/TLS/fallback tests under authentic package installation, OS filesystem attributes/SELinux checks, root/non-root privilege tests and protected long-lived ownership/ID state. Mark any unavailable evidence **NOT VERIFIED**, not PASS.
 
 No merge unless scoped acceptance criteria and security gates PASS and the maintainer explicitly approves.
+
+## Native distro-container regression (sandbox files only)
+
+A separate [GitHub Actions workflow](../.github/workflows/client-atomic-sandbox.yml) runs [the standalone smoke script](../scripts/smoke_client_atomic_sandbox.py) inside disposable `debian:trixie-slim` and `almalinux:10` images, using the operating system's Python 3 and isolated `/tmp` fixtures. It exercises the same atomic library with APT-like and DNF-like source bytes, explicit rollback, missing sandbox-marker refusal and a real SIGKILL immediately following the replacement syscall. The repository checkout is mounted read-only in each container.
+
+**Limitations:** These containers do **not** modify live `/etc`, do not invoke APT/DNF against staged sources, do not exercise SELinux, non-root privileged boundary, host power loss, package signatures or HTTPS. Even if all CI jobs PASS, the full #24 production-apply acceptance remains NOT VERIFIED.
