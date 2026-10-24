@@ -38,12 +38,12 @@ def require(condition: bool, message: str) -> None:
 def run(argv: list[str], *, env: dict[str, str] | None = None,
         timeout: int = 180, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
     p = subprocess.run(argv, cwd=WORK, env=env, text=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=timeout, check=False)
     if p.returncode and not allow_failure:
         raise RuntimeError(
             f"Command failed ({p.returncode}): {argv[0]} "
-            f"{' '.join(argv[1:4])}\n{p.stdout[-1800:]}")
+            f"{' '.join(argv[1:4])}\nstdout: {p.stdout[-900:]}\nstderr: {p.stderr[-900:]}")
     return p
 
 
