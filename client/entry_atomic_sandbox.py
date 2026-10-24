@@ -38,8 +38,7 @@ def _verify(root: Path, candidate_id: str, stage_id: str,
     candidate = approval._candidate(root, candidate_id)
     approved = approval._read_approval(root, candidate_id)
     if (approved["source_file_sha256"] != candidate["file_sha256"]
-            or approved["source_entry_sha256"] != candidate["entry_sha256"]
-            or candidate["xattrs_present"]):
+            or approved["source_entry_sha256"] != candidate["entry_sha256"]):
         raise approval.ApprovalRefused("Approval or metadata policy changed")
 
     # Revalidate the transaction snapshot against one exact candidate before
@@ -49,6 +48,15 @@ def _verify(root: Path, candidate_id: str, stage_id: str,
     record = records.get(stage_id)
     if record is None or record["source"] != candidate["source"]:
         raise approval.ApprovalRefused("Stage is not bound to approved source")
+    # An xattr-bearing candidate must have an explicit protected original
+    # metadata snapshot. Simply permitting an attribute-bearing inode here
+    # would permit the lab writer to erase ACL/security context on rename.
+    # The protected parser independently refuses security.*, trusted.*,
+    # unbounded or unsupported metadata, including security.selinux.
+    if candidate["xattrs_present"]:
+        protected = atomic._protected_attributes(state / stage_id, record)
+        if not protected:
+            raise approval.ApprovalRefused("Missing approved source ACL/xattr snapshot")
     original = stage._read_private(state / stage_id / "original.bin",
                                    max_size=stage.MAX_SOURCE_BYTES)
     proposal = stage._read_private(state / stage_id / "proposed.bin",
