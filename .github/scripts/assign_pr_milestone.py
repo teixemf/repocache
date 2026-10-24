@@ -93,6 +93,31 @@ class RejectRedirects(HTTPRedirectHandler):
         return None
 
 
+def safe_http_diagnostics(exc: HTTPError) -> str:
+    """Log only allowlisted GitHub diagnostic headers, never response bodies."""
+    headers = exc.headers
+    if headers is None:
+        return ""
+    details = []
+    request_id = headers.get("X-GitHub-Request-Id")
+    if isinstance(request_id, str) and re.fullmatch(
+        r"[A-Fa-f0-9]+(?::[A-Fa-f0-9]+){1,6}", request_id
+    ):
+        details.append(f"request_id={request_id}")
+    accepted = headers.get("X-Accepted-GitHub-Permissions")
+    if (
+        isinstance(accepted, str)
+        and len(accepted) <= 160
+        and re.fullmatch(
+            r"[a-z_]+=(?:read|write|none)"
+            r"(?:;\s*[a-z_]+=(?:read|write|none))*",
+            accepted,
+        )
+    ):
+        details.append(f"accepted_permissions={accepted}")
+    return f" ({'; '.join(details)})" if details else ""
+
+
 def api_request(url: str, token: str, method: str = "GET", payload: dict | None = None) -> dict:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = Request(
@@ -111,7 +136,9 @@ def api_request(url: str, token: str, method: str = "GET", payload: dict | None 
         with build_opener(RejectRedirects).open(req, timeout=15) as response:
             result = json.load(response)
     except HTTPError as exc:
-        raise MilestonePolicyError(f"GitHub API returned HTTP {exc.code} on {method}") from None
+        raise MilestonePolicyError(
+            f"GitHub API returned HTTP {exc.code} on {method}{safe_http_diagnostics(exc)}"
+        ) from None
     except (URLError, TimeoutError, ValueError) as exc:
         raise MilestonePolicyError(f"GitHub API request failed ({type(exc).__name__})") from None
     if not isinstance(result, dict):
