@@ -154,6 +154,7 @@ def test_explicitly_disabled_sources_precede_other_plan_checks(tmp_path):
     ("https://cache.example.org:443/debian/", True),
     ("http://cache.example.org/debian/", False),
     ("https://cache.example.org:8443/debian/", False),
+    ("https://cache.example.org:0/debian/", False),
     ("https://user:pass@cache.example.org/debian/", False),
     ("https://other.example.org/debian/", False),
     ("https://cache.example.org:65536/debian/", False),
