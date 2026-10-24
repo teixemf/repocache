@@ -155,9 +155,15 @@ def main() -> None:
     shutil.copyfile(original, wrong)
     with wrong.open("ab") as stream:
         stream.write(b"tampered")
-    matching = next(line for line in offline if original.name in line)
+    # Use the absolute corrupted file path. Relative wheel paths in pip
+    # requirements resolve against cwd, NOT the requirements file location.
+    # Otherwise this probe can accidentally re-install the valid /work/wheels
+    # original and report a false "hash test passed" result.
+    original_sha = hashlib.sha256(original.read_bytes()).hexdigest()
+    require(hashlib.sha256(wrong.read_bytes()).hexdigest() != original_sha,
+            "Negative fixture was not corrupted")
     (tamper / "requirements.lock").write_text(
-        matching + "\n", encoding="ascii")
+        f"{wrong} --hash=sha256:{original_sha}\n", encoding="ascii")
     # Force hash verification by installing in a fresh environment: an
     # already-installed requirement must not cause a false positive.
     rejected_venv = WORK / "tampered-venv"
@@ -168,7 +174,8 @@ def main() -> None:
         "--require-hashes", "--no-input", "--no-cache-dir",
         "-r", str(tamper / "requirements.lock"),
     ], env=env, allow_failure=True)
-    require(rejected.returncode != 0, "Corrupt wheel passed hash verification")
+    require(rejected.returncode != 0 and "hash" in rejected.stdout.lower(),
+            "Corrupt wheel did not trigger an explicit pip hash failure")
     print(f"PASS: {target}: tampered wheel refused", flush=True)
 
     # REPOCACHE source is read-only for this experiment. The v0.6 first-party
