@@ -80,10 +80,12 @@ repocache-release candidate status v0.5.0 --acceptance-run-id 123456789 --json
 repocache-release candidate publish v0.5.0 --acceptance-run-id 123456789 --approve-sha256 EXACT_CANDIDATE_FINGERPRINT
 ```
 
-The local operator will refuse to load a `draft_release_gate.py` that is not
-present, unchanged and tracked on **exact protected main**, so the current draft
-[#77](https://github.com/teixemf/repocache/pull/77) cannot authorize staging
-or publication yet. `stage` is a separately requested **remote write**: it
+The local operator refuses to load `draft_release_gate.py` unless it is
+present, unchanged and tracked on **exact protected main**. The gate
+infrastructure [PR #77](https://github.com/teixemf/repocache/pull/77)
+is now merged, but **no actual owner-signed v0.5.0 Draft candidate has been
+accepted** under [#76](https://github.com/teixemf/repocache/issues/76).
+A merged verifier does not authorize staging or publication. `stage` is a separately requested **remote write**: it
 uploads all eight owner-signed files once into a Draft Release, never publishes,
 then reads back the complete remote inventory and stores its ID. It refuses
 existing versions unless it is resuming a previously recorded exact-matching
@@ -130,6 +132,21 @@ at the relevant time. This implementation PR does not perform any of them.
   JSON schema are still cross-program integration dependencies.
 - A GH account token is used locally for read-only candidate retrieval.
   Never share it. No production release is created.
+
+## Verified scope versus real-signature gate
+
+The workstation package is separately installable and tested through disposable
+unit/security/CLI scenarios on both supported Python versions, but those tests
+do **not** demonstrate using the owner's actual encrypted Ed25519 PEM,
+staging eight owner-signed candidate assets, running the genuine native
+candidate-acceptance workflow or publishing an immutable release.
+
+Only the source code, tests and documentation can be integrated before the
+proprietor uses the private key on their local development workstation.
+The parent acceptance criteria in #88 and #76 remain **NOT VERIFIED** until
+those real operations and their exact returned hashes/run IDs are recorded.
+Integration of this infrastructure must never set either issue to PASS by
+itself. No release tag or Draft is created by importing/installing the package.
 
 ## Operational constraints
 
