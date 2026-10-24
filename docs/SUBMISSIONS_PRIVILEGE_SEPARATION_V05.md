@@ -108,3 +108,39 @@ native reboot/power-loss behavior and explicit endpoint activation approval.
 Nothing in this PR creates a tag, release, signer key, public endpoint or
 production installation. Do not enable the example service until Gate B
 has independently passed.
+
+
+## 2026-10-24 privileged offline-restore adversarial hardening
+
+**Candidate only; Gate A is not accepted.** A service-controlled SQLite inode
+may grow, be replaced with another regular inode, or become a FIFO between
+root's initial metadata check and the rollback copy. A private backup
+directory alone does not prevent root from copying until attacker-chosen EOF,
+opening a blocking FIFO, or following an attacker-renamable ancestor during
+the final privileged `os.replace`.
+
+- Restore copies now have an exact byte cap of 128 MiB, check source device,
+  inode, ownership, mode, size, ctime and mtime both before and after copying,
+  and reject extra bytes or a changed inode. The old service-owned queue
+  must match the inode inspected before the source backup was verified.
+- Root opens the service queue with `O_NOFOLLOW | O_NONBLOCK`, so a malicious
+  named pipe is refused rather than hanging the privileged operator.
+- Backup and service-owned queue directory ancestors must be root-controlled;
+  a service-owned queue directly under a sticky, service-renamable parent is
+  refused even though that parent belongs to root. A root-owned private
+  directory beneath an attacker-controlled ancestor is also refused.
+- New synthetic tests cover inode substitution, concurrent file growth,
+  bounded-copy refusal, sticky-parent/ancestor swaps and nonblocking FIFO
+  refusal. The disposable Debian 13/AlmaLinux 10 real-UID probe now also
+  exercises actual offline restore/rollback and FIFO refusal, without enabling
+  the intake service.
+
+**PASS (source review and negative test coverage):** the intended fail-closed
+boundaries are represented in the implementation and tests.
+
+**NOT VERIFIED:** the new tests and native probes on the final exact GitHub
+SHA, real host SELinux/systemd and power-loss behavior, independent adversarial
+review, source/wheel compatibility with the immutable public v0.4.0 updater,
+and full original #17 acceptance. Do not merge, enable intake, sign or publish
+on this checkpoint. Previous successful CI runs apply only to their exact
+historical commits.
