@@ -12,7 +12,7 @@ User=repocache-intake
 Group=repocache-intake
 UMask=0077
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/usr/bin/repocache-intake --enable-local-only
+ExecStart=/opt/repocache-cli/managed/current/bin/python -m repocache.intake_service --enable-local-only
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
