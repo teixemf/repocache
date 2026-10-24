@@ -121,7 +121,7 @@ atomic._replace = kill_after_replace
 tool.apply_entry_sandbox(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
 """
     proc = subprocess.run([sys.executable, "-c", worker, str(CLIENT),
-                           str(CLIENT), str(root), ident, stage_id, URL],
+                           str(root), ident, stage_id, URL],
                           capture_output=True, timeout=20, check=False)
     assert proc.returncode == -signal.SIGKILL, proc.stderr
 
