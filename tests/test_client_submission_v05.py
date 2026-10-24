@@ -185,9 +185,9 @@ def test_remote_submission_cli_v1_exit_json_contract(
 ):
     root = tmp_path / "host"
     (root / "etc/apt").mkdir(parents=True)
-    (root / "etc/os-release").write_text('ID=debian\\nVERSION_ID="13"\\n')
+    (root / "etc/os-release").write_text('ID=debian\nVERSION_ID="13"\n')
     (root / "etc/apt/sources.list").write_text(
-        "deb https://mirror.example.org/debian trixie main\\n"
+        "deb https://mirror.example.org/debian trixie main\n"
     )
 
     def rejected(*_args):
