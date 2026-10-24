@@ -1,0 +1,45 @@
+name: Client Shared Source Atomic Sandbox
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shared-entry-atomic:
+    name: Multi-entry APT DNF atomic rollback (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:trixie-slim', 'almalinux:10']
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      # #131 and #132 are on main; pin a commit that contains both labs.
+      # Do not copy the writer into the still-unmerged #142 child branch.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+          ref: ff7c7a4e20d716f3d67c145de6dde0bcbeb7f269
+          path: _transaction_dependency
+      - name: Native OS sandbox atomic shared-file regression
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace '${{ matrix.image }}' \
+            sh -ec '
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq
+                apt-get install -y --no-install-recommends python3 >/dev/null
+              else
+                dnf install -y python3 >/dev/null
+              fi
+              python3 scripts/smoke_client_entry_atomic.py
+            '
