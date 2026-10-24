@@ -137,10 +137,16 @@ def register_entry_candidate_sandbox(root: Path, relative: str,
             or not isinstance(chosen_entry_sha256, str)
             or not registry.DIGEST.fullmatch(chosen_entry_sha256)):
         raise registry.RegistryRefused("Invalid entry candidate request")
-    # Gate before opening even a native /etc filename.
-    with registry._registry_fd(root, create=False,
-                               subdir="managed-candidates-lab") as _:
-        pass
+    # Gate before opening even a native /etc filename, without requiring an
+    # unrelated whole-file candidate registry to exist.
+    try:
+        root_fd = os.open(root, pre.DIR_FLAGS)
+        try:
+            pre._fixture(Path(root), root_fd, os.geteuid())
+        finally:
+            os.close(root_fd)
+    except (OSError, pre.PreflightError) as exc:
+        raise registry.RegistryRefused("Invalid private entry candidate fixture") from exc
     observed, items = _read_entries(Path(root), relative)
     if observed["sha256"] != expected_file_sha256:
         raise registry.RegistryRefused("File baseline mismatch")
