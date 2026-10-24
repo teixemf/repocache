@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real #131/#132 atomic shared-file source regression, disposable /tmp ONLY.
 
-Uses the integrated transaction engine in this exact checked-out PR head.
+Uses pinned integrated transaction sources from _transaction_dependency.
 Executes full-root positive path and actual non-root negative path inside
 disposable native Debian 13 / AlmaLinux 10 containers.
 """
@@ -18,8 +18,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CLIENT = ROOT / "client"
+# Integration tests MUST import the local reconciled transaction engine,
+# not an older checked-out dependency that would bypass ACL/xattr changes.
 if not (CLIENT / "transaction_atomic_lab.py").is_file():
-    raise RuntimeError("Integrated sandbox transaction engine unavailable")
+    raise RuntimeError("Reconciled sandbox transaction engine unavailable")
 sys.path.insert(0, str(CLIENT))
 
 import source_preflight as pre  # noqa: E402
@@ -108,7 +110,7 @@ sys.exit(4)
 def interrupted_install(root, ident, stage_id):
     worker = r"""
 import os, signal, sys
-sys.path[:0] = [sys.argv[1], sys.argv[2]]
+sys.path.insert(0, sys.argv[1])
 import transaction_atomic_lab as atomic
 import entry_atomic_sandbox as tool
 original = atomic._replace
@@ -116,10 +118,10 @@ def kill_after_replace(*args):
     original(*args)
     os.kill(os.getpid(), signal.SIGKILL)
 atomic._replace = kill_after_replace
-tool.apply_entry_sandbox(sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6])
+tool.apply_entry_sandbox(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
 """
     proc = subprocess.run([sys.executable, "-c", worker, str(CLIENT),
-                           str(MAIN_CLIENT), str(root), ident, stage_id, URL],
+                           str(root), ident, stage_id, URL],
                           capture_output=True, timeout=20, check=False)
     assert proc.returncode == -signal.SIGKILL, proc.stderr
 
