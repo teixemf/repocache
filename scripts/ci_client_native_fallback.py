@@ -16,7 +16,6 @@ import gzip
 import hashlib
 import http.server
 import lzma
-import os
 import shutil
 import subprocess
 import tempfile
@@ -102,8 +101,7 @@ def apt_repository(base: Path) -> Path:
                    "REPOCACHE Fixture <ci@repocache.invalid>",
                    "ed25519", "sign", "1d"])
     keyring = base / "fixture-keyring.gpg"
-    keyring.write_bytes(checked(gpg + ["--export"]).stdout.encode("latin-1"))
-    # gpg --export is binary: rewrite it with a byte-safe subprocess.
+    # Binary GPG output must never pass through text decoding.
     with keyring.open("wb") as sink:
         subprocess.run(gpg + ["--export"], stdout=sink, check=True, timeout=20)
     keyring.chmod(0o644)
