@@ -11,6 +11,8 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -234,3 +236,36 @@ def test_private_original_snapshot_is_never_exposed_through_cli(host):
     assert client.run(["--server", "https://cache.example.org",
                        "repos", "sync", "--apply"], root=host) == 2
     assert not (host / "var/lib/repocache-client").exists()
+
+
+
+def test_sigkill_mid_stage_preserves_source_and_fails_closed(host):
+    """A killed worker leaves a detectable partial stage, not silent recovery."""
+    before = snapshot_source(host)
+    child = r"""
+import hashlib, importlib.util, os, signal, sys
+from pathlib import Path
+root, module = Path(sys.argv[1]), Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("killed_client_stage", module)
+staging = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(staging)
+original = staging._write_private
+def interrupt(path, data):
+    original(path, data)
+    if path.name == "original.bin":
+        os.kill(os.getpid(), signal.SIGKILL)
+staging._write_private = interrupt
+staging.stage(root, "etc/apt/sources.list.d/repocache.list",
+              hashlib.sha256(b"deb https://deb.debian.org/debian trixie main\n").hexdigest(),
+              b"deb https://cache.example.org/debian trixie main\n")
+"""
+    proc = subprocess.run([sys.executable, "-c", child, str(host), str(MODULE)],
+                          check=False, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=10)
+    assert proc.returncode == -9, proc.stderr.decode(errors="replace")
+    assert snapshot_source(host) == before
+    staging = host / "var/lib/repocache-client/staging"
+    assert any(path.name.endswith(".partial") for path in staging.iterdir())
+    with pytest.raises(stage.StageError, match="Incomplete"):
+        stage.stage(host, SOURCE, digest(BEFORE), PROPOSED)
+    assert snapshot_source(host) == before
