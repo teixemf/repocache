@@ -282,9 +282,12 @@ def _payload(distro: dict, repos: list[dict], server: str) -> dict:
 
 
 class RemoteSubmissionError(ClientError):
-    def __init__(self, message: str, code: int):
+    """Submission refusal: stable symbolic reason, CLI v1 numeric status 2."""
+
+    def __init__(self, message: str, code: str):
         super().__init__(message)
-        self.exit_code = code
+        self.error_code = code
+        self.exit_code = 2
 
 
 def _submission_credential(path: Path) -> tuple[str, bytes]:
@@ -361,27 +364,27 @@ def _send_submission(server: str, payload: dict, credential: Path) -> dict:
     try:
         with opener.open(request, timeout=8) as response:
             if response.status != 202:
-                raise RemoteSubmissionError("Submission not accepted", 6)
+                raise RemoteSubmissionError("Submission not accepted", "SUBMISSION_REJECTED")
             answer = response.read(2049)
             if len(answer) > 2048:
-                raise RemoteSubmissionError("Oversized submission response", 6)
+                raise RemoteSubmissionError("Oversized submission response", "SUBMISSION_REJECTED")
             doc = json.loads(answer.decode("utf-8"))
             ident = doc.get("proposal_id") if isinstance(doc, dict) else None
             if (not isinstance(ident, str) or
                     not re.fullmatch(r"[a-f0-9]{32}", ident)):
-                raise RemoteSubmissionError("Invalid submission response", 6)
+                raise RemoteSubmissionError("Invalid submission response", "SUBMISSION_REJECTED")
             return {"ok": True, "status": "pending", "proposal_id": ident}
     except HTTPError as exc:
         # Ignore untrusted response text and headers; 3xx cannot be followed.
         if exc.code in (401, 403):
-            raise RemoteSubmissionError("Submission authentication failed", 4) from None
+            raise RemoteSubmissionError("Submission authentication failed", "AUTHENTICATION_REQUIRED") from None
         if exc.code == 429:
-            raise RemoteSubmissionError("Submission rate limit exceeded", 5) from None
-        raise RemoteSubmissionError("Submission endpoint rejected request", 6) from None
+            raise RemoteSubmissionError("Submission rate limit exceeded", "RATE_LIMITED") from None
+        raise RemoteSubmissionError("Submission endpoint rejected request", "SUBMISSION_REJECTED") from None
     except (URLError, TimeoutError, OSError):
-        raise RemoteSubmissionError("Submission endpoint unavailable or TLS failed", 6) from None
+        raise RemoteSubmissionError("Submission endpoint unavailable or TLS failed", "OFFLINE") from None
     except (UnicodeError, ValueError, TypeError):
-        raise RemoteSubmissionError("Invalid submission response", 6) from None
+        raise RemoteSubmissionError("Invalid submission response", "SUBMISSION_REJECTED") from None
 
 
 def _output(data: dict, json_mode: bool) -> None:
@@ -546,7 +549,7 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
         raise ClientError("Unknown command")
     except RemoteSubmissionError as exc:
         if args.json:
-            _json_failure("OPERATION_FAILED", str(exc), exit_code=exc.exit_code)
+            _json_failure(exc.error_code, str(exc), exit_code=exc.exit_code)
         else:
             print("ERROR: " + str(exc), file=sys.stderr)
         return exc.exit_code
