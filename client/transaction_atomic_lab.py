@@ -51,15 +51,19 @@ def _phase(directory: Path) -> dict | None:
     except (UnicodeError, ValueError) as exc:
         raise staging.StageError("Invalid atomic intent journal") from exc
     if (type(data) is not dict or set(data) !=
-            {"schema", "phase", "device", "inode"} or data.get("schema") != 1
+            {"schema", "phase", "device", "inode",
+             "from_device", "from_inode"} or data.get("schema") != 1
             or data.get("phase") not in PHASES
             or type(data.get("device")) is not int or data["device"] < 0
-            or type(data.get("inode")) is not int or data["inode"] < 1):
+            or type(data.get("inode")) is not int or data["inode"] < 1
+            or type(data.get("from_device")) is not int or data["from_device"] < 0
+            or type(data.get("from_inode")) is not int or data["from_inode"] < 1):
         raise staging.StageError("Invalid atomic intent journal")
     return data
 
 
-def _write_phase(directory: Path, phase: str, identity: tuple[int, int]) -> None:
+def _write_phase(directory: Path, phase: str, identity: tuple[int, int],
+                 from_identity: tuple[int, int]) -> None:
     if phase not in PHASES:
         raise staging.StageError("Unsupported transaction phase")
     path = directory / JOURNAL
@@ -69,6 +73,7 @@ def _write_phase(directory: Path, phase: str, identity: tuple[int, int]) -> None
     payload = json.dumps({
         "schema": 1, "phase": phase,
         "device": identity[0], "inode": identity[1],
+        "from_device": from_identity[0], "from_inode": from_identity[1],
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
     temp = directory / ".atomic-lab-journal.tmp"
     staging._write_private(temp, payload)
@@ -232,9 +237,9 @@ def _change(root: Path, ident: str, *, rollback: bool):
             if not _matches(current, meta, expected_payload, expected_identity):
                 raise staging.StageError("External source drift; no replacement attempted")
             temp, new_identity = _write_new(parent_fd, leaf, ident, target, meta)
-            _write_phase(directory, intent, new_identity)
+            _write_phase(directory, intent, new_identity, expected_identity)
             _replace(parent_fd, temp, leaf, expected_identity)
-            _write_phase(directory, completed, new_identity)
+            _write_phase(directory, completed, new_identity, expected_identity)
             return {"status": completed, "source": record["source"], "id": ident}
 
 
@@ -257,38 +262,36 @@ def recover_sandbox(root: Path, ident: str) -> dict:
         if journal is None:
             return {"status": "no-intent", "id": ident}
         phase = journal["phase"]
-        if phase in ("installed", "restored"):
-            # No automatic reapply and no surprise rollback of committed state.
-            return {"status": phase, "id": ident}
         prior = staging._read_private(directory / "original.bin",
                                       max_size=staging.MAX_SOURCE_BYTES)
         proposed = staging._read_private(directory / "proposed.bin",
                                          max_size=staging.MAX_SOURCE_BYTES)
         with _source_directory(root, record["source"]) as (parent_fd, leaf):
             current, meta = _target_state(parent_fd, leaf)
-            original_identity = (record["metadata"]["device"],
-                                 record["metadata"]["inode"])
             intended_identity = (journal["device"], journal["inode"])
+            from_identity = (journal["from_device"], journal["from_inode"])
+            if phase in ("installed", "restored"):
+                expected = proposed if phase == "installed" else prior
+                if not _matches(current, meta, expected, intended_identity):
+                    raise staging.StageError("Committed source changed externally")
+                return {"status": phase, "id": ident}
             if phase == "install-intent":
-                if _matches(current, meta, prior, original_identity):
-                    _write_phase(directory, "restored", original_identity)
+                if _matches(current, meta, prior, from_identity):
+                    _write_phase(directory, "restored", from_identity, from_identity)
                     return {"status": "not-applied", "id": ident}
                 if not _matches(current, meta, proposed, intended_identity):
                     raise staging.StageError("External drift during interrupted apply")
             elif phase == "restore-intent":
                 if _matches(current, meta, prior, intended_identity):
-                    _write_phase(directory, "restored", intended_identity)
+                    _write_phase(directory, "restored", intended_identity, from_identity)
                     return {"status": "restored", "id": ident}
-                if not _matches(current, meta, proposed,
-                                (record["metadata"]["device"], record["metadata"]["inode"])):
-                    # The old inode was replaced by the committed stage. We do
-                    # not retain its identity in a restore-intent record yet.
-                    raise staging.StageError("Cannot prove interrupted rollback source")
-                raise staging.StageError("Uncertain interrupted rollback")
+                if not _matches(current, meta, proposed, from_identity):
+                    raise staging.StageError("External drift during interrupted rollback")
             else:
                 raise staging.StageError("Invalid recovery state")
             temp, new_identity = _write_new(parent_fd, leaf, ident, prior, meta)
-            _write_phase(directory, "restore-intent", new_identity)
-            _replace(parent_fd, temp, leaf, intended_identity)
-            _write_phase(directory, "restored", new_identity)
+            active_identity = ((meta["device"], meta["inode"]))
+            _write_phase(directory, "restore-intent", new_identity, active_identity)
+            _replace(parent_fd, temp, leaf, active_identity)
+            _write_phase(directory, "restored", new_identity, active_identity)
             return {"status": "restored", "id": ident}
