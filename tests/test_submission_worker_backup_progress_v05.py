@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import base64
 import os
-import stat
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +42,7 @@ def _connection(responses):
 
 def test_backup_ipc_accepts_bounded_chunk_and_terminal_frame(tmp_path, monkeypatch):
     stage = _staging(tmp_path, monkeypatch)
-    payload = b"SQLite format 3\\0" + b"x" * 16
+    payload = b"SQLite format 3\x00" + b"x" * 16
     connection, requests = _connection([
         {"ok": True, "chunk": base64.b64encode(payload).decode("ascii")},
         {"ok": True, "done": True},
