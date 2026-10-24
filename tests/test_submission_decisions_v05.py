@@ -83,6 +83,38 @@ def test_attacker_cannot_forge_approved_state_using_sqlite(setup):
         queue.decide(ident, "reopen", expected_version=1)
 
 
+def test_forged_review_cannot_hide_a_pending_proposal_from_root(setup):
+    queue, ident, _ = setup
+    # A compromised intake SQLite writer must not hide an undecided row
+    # from an administrator by fabricating a decision without a root receipt.
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET state='REVIEWED',version=1 WHERE id=?",
+                   (ident,))
+    with pytest.raises(SubmissionError, match="unaudited_decision_state"):
+        queue.pending()
+
+
+def test_forged_rejection_cannot_hide_an_authoritatively_reviewed_row(setup):
+    queue, ident, _ = setup
+    queue.decide(ident, "review", expected_version=0)
+    with queue._connect() as db:
+        db.execute("UPDATE proposals SET state='REJECTED' WHERE id=?", (ident,))
+    with pytest.raises(SubmissionError, match="unaudited_decision_state"):
+        queue.pending()
+
+
+def test_receipt_name_index_rejects_missing_or_extra_chain_member(setup):
+    queue, ident, directory = setup
+    queue.decide(ident, "review", expected_version=0)
+    journal = DecisionJournal(directory)
+    correct = {f"{ident}.0001.json"}
+    assert journal.read(ident, known_names=correct)[-1]["state"] == "REVIEWED"
+    with pytest.raises(DecisionError, match="decision_journal_gap"):
+        journal.read(ident, known_names=set())
+    with pytest.raises(DecisionError, match="decision_journal_gap"):
+        journal.read(ident, known_names=correct | {f"{ident}.0009.json"})
+
+
 def test_restored_old_state_cannot_erase_valid_receipt(setup):
     queue, ident, _ = setup
     queue.decide(ident, "reject", expected_version=0)
