@@ -339,3 +339,27 @@ def test_state_maps_json_decoder_recursion_to_invalid_state(monkeypatch, tmp_pat
     with pytest.raises(release.OperatorError) as caught:
         release.read_state("v0.5.0")
     assert caught.value.code == "INVALID_STATE"
+
+
+
+def test_gh_json_refuses_excessively_nested_remote_json(monkeypatch):
+    """A small but deeply nested remote response must fail as INVALID_RESPONSE."""
+    payload = b"[" * 12000 + b"0" + b"]" * 12000
+    monkeypatch.setattr(release, "command", lambda argv, **kwargs: payload)
+    with pytest.raises(release.OperatorError) as caught:
+        release.gh_json("repos/teixemf/repocache/actions/runs/123")
+    assert caught.value.code == "INVALID_RESPONSE"
+
+
+def test_gh_json_maps_decoder_recursion_to_invalid_response(monkeypatch):
+    """Decoder recursion faults must not escape the CLI's finite error contract."""
+    monkeypatch.setattr(release, "command",
+                        lambda argv, **kwargs: b'{"ok": true}')
+
+    def recurse(_raw):
+        raise RecursionError("nested remote metadata")
+
+    monkeypatch.setattr(release.json, "loads", recurse)
+    with pytest.raises(release.OperatorError) as caught:
+        release.gh_json("repos/teixemf/repocache/actions/runs/123")
+    assert caught.value.code == "INVALID_RESPONSE"

@@ -85,7 +85,8 @@ def gh_json(endpoint: str) -> dict[str, Any]:
         raise OperatorError("OVERSIZED_RESPONSE", "GitHub API response is too large")
     try:
         data = json.loads(raw)
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        # Even a size-bounded GitHub response may exceed JSON decoder depth.
         raise OperatorError("INVALID_RESPONSE", "GitHub API response is invalid") from exc
     if not isinstance(data, dict):
         raise OperatorError("INVALID_RESPONSE", "GitHub API returned a nonobject")
