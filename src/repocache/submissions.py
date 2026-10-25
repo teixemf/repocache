@@ -313,6 +313,48 @@ class SubmissionQueue:
             raise SubmissionError("store_unavailable", 503) from exc
 
     @staticmethod
+    def _checked_proposal_row(row: tuple, *, requested_id: str | None = None,
+                              expected_state: str | None = None) -> tuple:
+        """Validate fixed SQL projections before any privileged decision.
+
+        A service-UID worker can return a scalar-only row with the wrong
+        number, order or meaning of fields. The generic cursor cannot know
+        this schema. Refuse malformed rows before hashing or journal writes.
+        """
+        if type(row) is not tuple or len(row) != 7:
+            raise SubmissionError("invalid_stored_proposal", 503)
+        ident, os_id, os_version, items, created, state, version = row
+        if (type(ident) is not str or
+                not re.fullmatch(r"[a-f0-9]{32}", ident) or
+                (requested_id is not None and ident != requested_id) or
+                type(os_id) is not str or type(os_version) is not str or
+                not ((os_id == "debian" and
+                      re.fullmatch(r"13(?:\\.[0-9]{1,4})?", os_version)) or
+                     (os_id == "almalinux" and
+                      re.fullmatch(r"10(?:\\.[0-9]{1,4})?", os_version))) or
+                type(items) is not str or not 0 < len(items) <= 131072 or
+                type(created) is not int or
+                type(state) is not str or
+                state not in {"PENDING", "REVIEWED", "REJECTED"} or
+                (expected_state is not None and state != expected_state) or
+                type(version) is not int or version < 0):
+            raise SubmissionError("invalid_stored_proposal", 503)
+        return row
+
+    @staticmethod
+    def _checked_decided_row(row: tuple) -> tuple:
+        """The decided-row preflight has an exact three-column projection."""
+        if type(row) is not tuple or len(row) != 3:
+            raise SubmissionError("unaudited_decision_state", 503)
+        ident, state, version = row
+        if (type(ident) is not str or
+                not re.fullmatch(r"[a-f0-9]{32}", ident) or
+                type(state) is not str or state not in {"REVIEWED", "REJECTED"} or
+                type(version) is not int or version < 1):
+            raise SubmissionError("unaudited_decision_state", 503)
+        return row
+
+    @staticmethod
     def _proposal_digest(row: tuple) -> str:
         # Bind administrator receipt to the exact persisted proposal metadata,
         # not to a mutable state/version/audit field controlled by intake.
@@ -363,11 +405,8 @@ class SubmissionQueue:
                             name = entry.name
                             if name.endswith(".json"):
                                 known.setdefault(name.split(".", 1)[0], set()).add(name)
-                        for ident, state, version in decided:
-                            if (not isinstance(ident, str) or
-                                    not re.fullmatch(r"[a-f0-9]{32}", ident) or
-                                    type(version) is not int or version < 1):
-                                raise SubmissionError("unaudited_decision_state", 503)
+                        for result in decided:
+                            ident, state, version = self._checked_decided_row(result)
                             chain = journal.read(ident, known_names=known.get(ident, set()))
                             if (not chain or chain[-1]["state"] != state or
                                     chain[-1]["version"] != version):
@@ -378,11 +417,12 @@ class SubmissionQueue:
                         "SELECT id,os_id,os_version,items,created,state,version "
                         "FROM proposals WHERE state='PENDING' ORDER BY created,id LIMIT ?",
                         (limit,)).fetchall()
-                    for ident, os_id, os_version, items, created, state, version in rows:
-                        if (not isinstance(items, str) or len(items) > 131072 or
-                                not isinstance(ident, str) or
-                                not re.fullmatch(r"[a-f0-9]{32}", ident)):
-                            raise SubmissionError("invalid_stored_proposal", 503)
+                    if type(rows) is not list or len(rows) > limit:
+                        raise SubmissionError("invalid_stored_proposal", 503)
+                    for result in rows:
+                        (ident, os_id, os_version, items, created, state,
+                         version) = self._checked_proposal_row(
+                             result, expected_state="PENDING")
                         _check_json_depth(items.encode("utf-8"),
                                           code="invalid_stored_proposal", status=503)
                         try:
@@ -447,8 +487,9 @@ class SubmissionQueue:
                     row = db.execute(
                         "SELECT id,os_id,os_version,items,created,state,version "
                         "FROM proposals WHERE id=?", (ident,)).fetchone()
-                    if not row:
+                    if row is None:
                         raise SubmissionError("proposal_missing", 404)
+                    row = self._checked_proposal_row(row, requested_id=ident)
                     proposal_digest = self._proposal_digest(row)
                     # The root UI binds the approval to the exact metadata
                     # displayed earlier, not merely its mutable SQLite version.
@@ -513,8 +554,9 @@ class SubmissionQueue:
                     row = db.execute(
                         "SELECT id,os_id,os_version,items,created,state,version "
                         "FROM proposals WHERE id=?", (ident,)).fetchone()
-                    if not row:
+                    if row is None:
                         raise SubmissionError("proposal_missing", 404)
+                    row = self._checked_proposal_row(row, requested_id=ident)
                     chain = journal.read(ident)
                     if not chain:
                         raise SubmissionError("no_authoritative_decision", 409)
@@ -562,11 +604,13 @@ class SubmissionQueue:
                         "FROM proposals WHERE state!='PENDING' AND changed < ?",
                         (cutoff,)).fetchall()
                     expired = []
-                    for row in candidates:
-                        ident = row[0]
-                        if (not isinstance(ident, str) or
-                                not re.fullmatch(r"[a-f0-9]{32}", ident)):
+                    if type(candidates) is not list:
+                        raise SubmissionError("invalid_stored_proposal", 503)
+                    for result in candidates:
+                        row = self._checked_proposal_row(result)
+                        if row[5] == "PENDING":
                             raise SubmissionError("invalid_stored_proposal", 503)
+                        ident = row[0]
                         chain = journal.read(ident)
                         self._verify_state(row[5], row[6],
                                            self._proposal_digest(row), chain)
