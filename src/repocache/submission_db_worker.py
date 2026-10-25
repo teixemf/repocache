@@ -188,7 +188,7 @@ class WorkerConnection:
             raise WorkerError("worker_operation_failed")
         return response
 
-    def _send(self, request: dict) -> None:
+    def _send(self, request: dict, *, deadline: float | None = None) -> None:
         """Write a bounded request without blocking on an unresponsive child."""
         try:
             raw = json.dumps(request, sort_keys=True, separators=(",", ":"),
@@ -199,13 +199,19 @@ class WorkerConnection:
             raise WorkerError("oversized_worker_request")
         fd = self.process.stdin.fileno()
         view = memoryview(raw)
-        deadline = time.monotonic() + TIMEOUT
+        message_deadline = time.monotonic() + TIMEOUT
+        if deadline is not None:
+            message_deadline = min(message_deadline, deadline)
         while view:
-            remaining = deadline - time.monotonic()
+            remaining = message_deadline - time.monotonic()
             if remaining <= 0:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
                 raise WorkerError("worker_send_timeout")
             try:
                 if not select.select([], [fd], [], remaining)[1]:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise WorkerError("worker_backup_timeout")
                     raise WorkerError("worker_send_timeout")
                 count = os.write(fd, view)
                 if count <= 0:
@@ -255,7 +261,7 @@ class WorkerConnection:
             # Include request sending in the absolute backup time budget.
             # A stalled child cannot gain a fresh deadline after _send().
             deadline = time.monotonic() + BACKUP_TIMEOUT
-            self._send({"op": "backup"})
+            self._send({"op": "backup"}, deadline=deadline)
             total = 0
             frames = 0
             while True:
