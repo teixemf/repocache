@@ -268,7 +268,13 @@ class WorkerConnection:
                 if time.monotonic() >= deadline:
                     raise WorkerError("worker_backup_timeout")
                 if reply.get("done") is True:
+                    # The unprivileged worker must not smuggle an ignored
+                    # payload or status into an apparently final frame.
+                    if set(reply) != {"ok", "done"}:
+                        raise WorkerError("invalid_backup_terminal")
                     break
+                if set(reply) != {"ok", "chunk"}:
+                    raise WorkerError("invalid_backup_frame")
                 encoded = reply.get("chunk")
                 if not isinstance(encoded, str) or len(encoded) > 131072:
                     raise WorkerError("invalid_backup_chunk")

@@ -204,3 +204,21 @@ that every backup frame uses the same absolute deadline.
 privilege configuration changes. **NOT VERIFIED:** exact-new-HEAD nine GitHub
 Actions jobs, independent security review, original #17/#57 acceptance and
 native host gates; earlier SHA results cannot be reused after this change.
+
+
+### 2026-10-25 strict backup IPC frame and symlink regressions
+
+The root-side backup parser now accepts exactly two documented worker
+response shapes: a nonempty base64 data frame (`ok`, `chunk`) or a
+terminal frame (`ok`, `done`). Mixed, unexpected or extra fields fail
+closed before any bytes are accepted. An isolated negative test also checks
+that a swapped symlink to an otherwise safe-looking staging file is refused
+by the existing no-follow open. These tests strengthen the same scoped
+privileged-backup IPC boundary; they do not claim a native hostile-UID,
+power-loss, SELinux or production backup-custody acceptance.
+
+**PASS (source-level review):** the frame allowlist is consistent with the
+worker's existing reply emitter and does not change ordinary SQL requests.
+**NOT VERIFIED:** exact-new-HEAD GitHub Actions 9/9 and Python test results
+until they finish; independent review/merge approval and original #17/#57,
+#76 and #49 criteria remain separate. No endpoint, release or host mutation.

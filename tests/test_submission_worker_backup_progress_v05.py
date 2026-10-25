@@ -232,3 +232,33 @@ def test_backup_refuses_send_that_exhausted_global_deadline(tmp_path, monkeypatc
         connection.backup_file(stage)
     assert requests == [{"op": "backup"}]
     assert stage.stat().st_size == 0
+
+
+
+@pytest.mark.parametrize("frame, error", [
+    ({"ok": True, "done": True, "chunk": "aWdub3JlZA=="}, "invalid_backup_terminal"),
+    ({"ok": True, "done": True, "error": "hidden"}, "invalid_backup_terminal"),
+    ({"ok": True, "chunk": "ZGF0YQ==", "done": False}, "invalid_backup_frame"),
+    ({"ok": True, "chunk": "ZGF0YQ==", "extra": 1}, "invalid_backup_frame"),
+])
+def test_backup_ipc_refuses_ambiguous_worker_frames(tmp_path, monkeypatch, frame, error):
+    """Only the worker's documented chunk or terminal frame is accepted."""
+    stage = _staging(tmp_path, monkeypatch)
+    connection, requests = _connection([frame])
+    with pytest.raises(worker.WorkerError, match=error):
+        connection.backup_file(stage)
+    assert requests == [{"op": "backup"}]
+    assert stage.stat().st_size == 0
+
+
+def test_backup_ipc_refuses_symlinked_root_stage(tmp_path, monkeypatch):
+    """Never follow a swapped stage pathname, even into a 0600 regular file."""
+    stage = _staging(tmp_path, monkeypatch)
+    target = stage.with_name("real-stage")
+    stage.rename(target)
+    stage.symlink_to(target)
+    connection, requests = _connection([{"ok": True, "done": True}])
+    with pytest.raises(worker.WorkerError, match="unsafe_backup_staging"):
+        connection.backup_file(stage)
+    assert requests == []
+    assert target.read_bytes() == b""
