@@ -38,7 +38,7 @@ Describe design choices, API/CLI compatibility, and any changes to NGINX, reposi
 ## Independent review and acceptance record
 
 Review policy proposal: [#176](https://github.com/teixemf/repocache/issues/176);
-[proposed process](../docs/PR_INDEPENDENT_REVIEW_POLICY.md).
+[proposed process](https://github.com/teixemf/repocache/blob/main/docs/PR_INDEPENDENT_REVIEW_POLICY.md).
 This template does **not** authorize a standing exception.
 
 - **Exact HEAD/base SHAs and tested merge revision:**
