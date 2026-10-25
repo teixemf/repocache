@@ -17,6 +17,7 @@ import json
 import zipfile
 import os
 import re
+import select
 import shutil
 import stat
 import ssl
@@ -26,6 +27,7 @@ import urllib.parse
 import urllib.request
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -58,22 +60,60 @@ class SafeParser(argparse.ArgumentParser):
 
 
 def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> bytes:
-    """Trusted binary/arguments only; never disclose gh stderr or credentials."""
+    """Run trusted tools with bounded stdout, a deadline and no secret stderr."""
     if not argv or argv[0] not in ("git", "gh", "/usr/bin/openssl"):
         raise OperatorError("INVALID_COMMAND", "Unapproved external executable")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
+               GH_PROMPT_DISABLED="1", GCM_INTERACTIVE="Never")
+    process = None
     try:
-        env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
-                   GH_PROMPT_DISABLED="1", GCM_INTERACTIVE="Never")
-        result = subprocess.run(argv, cwd=cwd, capture_output=True,
-                                stdin=subprocess.DEVNULL, env=env,
-                                timeout=timeout, check=False)
+        # subprocess.run(capture_output=True) buffers arbitrarily large output
+        # before the old MAX_METADATA check. A malformed API/tool response
+        # must not exhaust the owner workstation while preparing a release.
+        process = subprocess.Popen(
+            argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=env, close_fds=True)
+        if process.stdout is None:
+            raise OSError("missing command stdout")
+        fd = process.stdout.fileno()
+        chunks: list[bytes] = []
+        total = 0
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            # Read at most one byte beyond the cap, then terminate the child.
+            chunk = os.read(fd, min(65536, MAX_METADATA + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_METADATA:
+                raise OperatorError("OVERSIZED_RESPONSE",
+                                    "Tool output exceeded supported size")
+            chunks.append(chunk)
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+        if process.returncode:
+            raise OperatorError("OPERATION_FAILED",
+                                "Git, GitHub or OpenSSL validation failed")
+        return b"".join(chunks)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise OperatorError("TOOL_UNAVAILABLE", "Required local tool unavailable") from exc
-    if result.returncode:
-        raise OperatorError("OPERATION_FAILED", "Git, GitHub or OpenSSL validation failed")
-    if len(result.stdout) > MAX_METADATA:
-        raise OperatorError("OVERSIZED_RESPONSE", "Tool output exceeded supported size")
-    return result.stdout
+        raise OperatorError("TOOL_UNAVAILABLE",
+                            "Required local tool unavailable") from exc
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                # SIGKILL was already sent; do not block a release CLI forever.
+                pass
+            if process.stdout is not None:
+                process.stdout.close()
 
 
 def gh_json(endpoint: str) -> dict[str, Any]:
