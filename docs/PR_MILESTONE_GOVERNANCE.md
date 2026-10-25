@@ -28,7 +28,7 @@ The check is **not a substitute** for the project's functional, regression, secu
 
 Runs on PR opened/reopened/**synchronize** (new head commits)/edited/ready-for-review and milestone-attachment/removal events. It verifies live PR metadata, is idempotent for existing milestones, and checks the GitHub response after assigning a new milestone. Transient GitHub API errors produce a non-passing check rather than an inferred milestone.
 
-A required status check must be configured separately in branch protection/rulesets by the maintainer. Until that is done, this workflow is advisory despite being able to fail its own job. The workflow is not operationally verified until a **post-merge** GitHub Actions `pull_request_target` run proves its token scope, event behavior, and assignment on the live repository.
+Status-check enforcement is configured separately from the workflow in branch protection/rulesets by the maintainer. **Current observed policy (2026-10-25):** the active [main-only milestone ruleset #25791816](https://github.com/teixemf/repocache/rules/25791816) requires the GitHub Actions context `Require milestone or unambiguous primary issue` on `main`; it is **not** a required milestone context for `release/*` or `integration/*`. The earlier advisory-only state and initial live pilot were superseded by an explicitly authorized required-check activation and negative test documented in [issue #148](https://github.com/teixemf/repocache/issues/148#issuecomment-6387956306). The nine existing strict mandatory contexts remain separate and unchanged. Always recheck the actual effective rulesets and live milestone behavior rather than treating this snapshot as permanent.
 
 ## GitHub token permissions: live integration finding (#148)
 
@@ -45,12 +45,14 @@ into a shell command. The workflow uses pinned checkout, disabled credential
 persistence, the trusted default branch and fixed GitHub API URLs. A static
 permission test protects this configuration against accidental changes.
 
-**Do not make the check required in `main` rulesets until a new live pilot
-proves automatic assignment and negative cases.** The existing nine mandatory
-status contexts are separate and must not be removed or weakened. The token
-fix itself requires the ordinary PR review and exact-head CI acceptance before
-integration, and a subsequent live `pull_request_target` run is required
-before issue #148 can be accepted.
+**Historical pilot guidance (superseded for `main`):** before the live assignment
+and negative-case pilot, the owner required the milestone check to remain
+advisory. The [#148 live pilot](https://github.com/teixemf/repocache/issues/148#issuecomment-6387751895)
+and subsequent [main-only enforcement decision](https://github.com/teixemf/repocache/issues/148#issuecomment-6387956306)
+completed those prerequisites. Ruleset #25791816 is now active for `main` only.
+Preserve the original nine mandatory contexts on `main` and `release/*`; do not
+extend the milestone rule to other protected branches or modify rulesets without
+separate, explicit maintainer approval.
 
 ## Testing
 

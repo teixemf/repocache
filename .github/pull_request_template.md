@@ -37,13 +37,13 @@ Describe design choices, API/CLI compatibility, and any changes to NGINX, reposi
 
 ## Independent review and acceptance (required)
 
-Follow [PR review and acceptance policy](../blob/main/docs/PR_REVIEW_GOVERNANCE.md). Do not call an AI-assisted report a human GitHub approval.
+Follow [PR review and acceptance policy](https://github.com/teixemf/repocache/blob/main/docs/PR_REVIEW_GOVERNANCE.md) (effective only after separately authorized merge into protected `main`). Do not call an AI-assisted report a human GitHub approval.
 
 - [ ] Every applicable primary-issue/PR acceptance criterion is PASS with a reproducible executed test or verified review/manual procedure.
 - [ ] Exact PR HEAD, protected target SHA, ancestry, merge method, milestone, and all nine required GitHub Actions contexts checked.
 - [ ] Security/compatibility/install/upgrade/rollback/documentation impacts reviewed and outstanding FAIL/NOT VERIFIED gates classified.
 - [ ] Independent review evidence recorded with the actual reviewer type, scope and exact SHA.
-- [ ] If substituting a technical second opinion for a required human review, **explicit single-PR maintainer approval of that criterion amendment** is linked (or NOT VERIFIED).
+- [ ] If an AI-assisted technical second opinion is accepted as an allowed alternative to the **project-level review evidence criterion**, authenticated **PR-/exact-HEAD-specific maintainer approval** of that amendment is linked (or NOT VERIFIED); separately required human reviews are not waived.
 - [ ] GitHub human review count, blocking discussions, and current protection/mergeability checked without bypass.
 - [ ] **Separate explicit maintainer authorization for this merge** recorded after all applicable gates PASS.
 
