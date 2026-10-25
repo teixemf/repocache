@@ -21,6 +21,37 @@ GitHub does not prove that an external independent assessment occurred. A
 an AI report nor a maintainer-written comment constitutes a GitHub human
 `APPROVED` review.
 
+## Choice C decision and conflicting repository decision (2026-10-25)
+
+The maintainer expressly selected **Choice C, the risk-tiered hybrid**, in
+this workstream for protected `main`, `release/*` and `integration/*`.
+The repository issue also records an explicit **Choice B** approval in
+[a separate maintenance workstream](https://github.com/teixemf/repocache/issues/176#issuecomment-6396617313),
+with [draft PR #178](https://github.com/teixemf/repocache/pull/178).
+**CONFLICT: these two selections are incompatible as normative policy.**
+The choice here must not silently supersede the other owner decision.
+This PR #177 is a Choice C candidate only; both drafts remain unmerged.
+The maintainer must explicitly reconcile the two decisions and select one
+single implementation PR before marking any policy ACTIVE.
+
+**Choice C contract if confirmed:** classify each PR before review. Changes
+to signing, trust anchors, authentication, credentials, privileged helpers,
+installer/updater authority, persistent sensitive state, APT/DNF sources,
+required CI contexts, GitHub rulesets or release publication are ELEVATED.
+An eligible independent HUMAN GitHub approval is REQUIRED for ELEVATED
+changes. An external AI-assisted technical assessment cannot replace this
+human review under the standing Choice C policy; when no eligible human
+reviewer is available, the merge is BLOCKED (NOT VERIFIED).
+
+ROUTINE / LOWER RISK changes may use external independent technical
+assessment only after the maintainer has explicitly approved a PR-specific
+review-criterion substitution on the exact HEAD, separately from explicit
+merge authorization. UNCERTAIN or mixed-risk changes default to ELEVATED.
+Filename-only classification is prohibited. This is a manual project-level
+gate; the existing GitHub rulesets remain unchanged and currently require
+zero formal approvals. No AI report may be represented as a human GitHub
+APPROVED review.
+
 ## Decision required from the maintainer
 
 Choose and record ONE enforceable policy, specifying whether it applies to
@@ -32,7 +63,7 @@ main, release and integration branches equally, and how exceptional PRs work:
 | B — evidence-based solo-maintainer procedure | Keep zero required GitHub approvals, but require an independently prepared technical assessment, a traceable PR-specific acceptance record and explicit owner approval for each merge | Works with a sole maintainer and existing rules without spoofed reviews | **Process-only enforcement**: GitHub may show mergeable before project acceptance; cannot claim formal human scrutiny |
 | C — risk-tiered hybrid (**proposal**) | Prefer eligible human approval for all; require eligible human review for trust-root/signing, credentials, privileged installation, APT/DNF source writes, critical security or branch-protection changes; use B for other scoped changes **only** after an explicit PR-specific owner decision | Stronger assurance for sensitive boundaries, realistic routine maintenance | Sensitive PRs may remain blocked until another eligible reviewer is available; judgment and manual process remain necessary |
 
-**Proposed choice C is not authorized simply because this document is merged.**
+**The specific Choice C decision is documented above, but conflicting Choice B remains unresolved; this PR is not ACTIVE merely because it exists or is merged.**
 Issue #176 requires an explicit maintainer decision identifying the selected
 model, applicable branch families, exceptional review eligibility and exact
 policy effective date. Changing a ruleset requires its own authorization,
@@ -73,10 +104,9 @@ ignored failing checks or lowered security acceptance criteria.
   provenance, update authority, privilege/root helpers, sandbox escapes,
   network credential handling, persistence or package-manager configuration,
   release publishing, and changing required CI/rulesets/reviewer requirements.
-  Independent eligible human security review is the **recommended default**.
-  Without such a reviewer, mark that review gate `NOT VERIFIED` and keep
-  the PR unmerged unless the maintainer explicitly approves a separately
-  documented policy change for that specific scope after reviewing risks.
+  Independent eligible human security review is **REQUIRED** under Choice C.
+  Without an eligible human approval, mark that gate `NOT VERIFIED` and keep
+  the PR unmerged. A routine review-substitution cannot satisfy this gate.
 - **Routine scoped review:** documentation, non-privileged tests and narrow
   CI trigger maintenance may qualify for an explicitly approved PR-specific
   external technical-assessment substitute when there is no material trust
@@ -135,7 +165,9 @@ enforced** until an explicitly reviewed enforcement mechanism exists.
 An optional future evidence-only check must not execute untrusted PR code with
 write permissions or convert AI output into a fabricated `APPROVED` event.
 
-To adopt: obtain the #176 maintainer decision; revise this document to
+To adopt: first reconcile the contradictory B/C decisions in #176,
+identify a single authoritative implementation PR (#177 or #178), and obtain
+an explicit owner decision confirming the final policy; then revise to
 `ACTIVE` with effective date, chosen policy per branch family and its limits;
 verify current ruleset state; apply only separately approved ruleset changes;
 test a real PR/approval or documented solo path; record actual CI results and
