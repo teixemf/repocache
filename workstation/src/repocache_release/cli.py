@@ -523,6 +523,33 @@ def verify_checkout(version: str, record: dict[str, Any]) -> Path:
     return checkout
 
 
+def read_checksum(path: Path) -> str:
+    """Read a downloaded checksum from one validated, size-bounded inode.
+
+    The earlier digest() precheck cannot protect a later path-based read from
+    a same-user replacement with a symlink, FIFO or oversized file.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise OperatorError("UNSAFE_ASSET", "Checksum cannot be safely opened") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_size > 512):
+            raise OperatorError("UNSAFE_ASSET", "Checksum inode is unsafe or oversized")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(513)
+        if len(raw) > 512:
+            raise OperatorError("UNSAFE_ASSET", "Checksum exceeded the size limit")
+        return raw.decode("ascii")
+    except (OSError, UnicodeError) as exc:
+        raise OperatorError("UNSAFE_ASSET", "Checksum could not be read safely") from exc
+    finally:
+        os.close(fd)
+
+
 def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     expected = set(files_for(version))
     actual = {f.name for f in assets.iterdir()}
@@ -534,7 +561,7 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     for suffix in ("", ".wheelhouse.tar.gz"):
         name = base + suffix
         sha_path = assets / (name + ".sha256")
-        claimed = sha_path.read_text("ascii")
+        claimed = read_checksum(sha_path)
         if claimed != digest(assets / name) + "  " + name + "\n":
             raise OperatorError("ASSET_DRIFT", "Unsigned checksum differs from downloaded asset")
     script = worktree / "scripts/verify_release_candidate.py"
