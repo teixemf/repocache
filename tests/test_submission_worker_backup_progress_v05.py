@@ -32,7 +32,7 @@ def _staging(tmp_path, monkeypatch):
 def _connection(responses):
     connection = object.__new__(worker.WorkerConnection)
     requests = []
-    connection._send = lambda request: requests.append(request)
+    connection._send = lambda request, *, deadline=None: requests.append(request)
     if callable(responses):
         connection._recv = lambda *, deadline=None: responses()
     else:
@@ -162,6 +162,27 @@ def test_backup_pipe_read_respects_remaining_overall_deadline(monkeypatch):
     assert observed == [2.0]
 
 
+def test_backup_pipe_send_respects_remaining_overall_deadline(monkeypatch):
+    """A stalled request write must share the backup's absolute deadline."""
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(stdin=SimpleNamespace(fileno=lambda: 77))
+    clock = {"now": 100.0}
+    monkeypatch.setattr(worker, "time",
+                        SimpleNamespace(monotonic=lambda: clock["now"]))
+    observed = []
+
+    def stalled_pipe(readers, writers, errors, timeout):
+        assert not readers and writers == [77] and not errors
+        observed.append(timeout)
+        clock["now"] = 102.0
+        return [], [], []
+
+    monkeypatch.setattr(worker.select, "select", stalled_pipe)
+    with pytest.raises(worker.WorkerError, match="worker_backup_timeout"):
+        connection._send({"op": "backup"}, deadline=102.0)
+    assert observed == [2.0]
+
+
 def test_backup_ipc_reuses_one_deadline_across_all_frames(tmp_path, monkeypatch):
     stage = _staging(tmp_path, monkeypatch)
     connection, _ = _connection([
@@ -196,8 +217,11 @@ def test_backup_deadline_includes_request_send_time(tmp_path, monkeypatch):
     original_recv = connection._recv
     deadlines = []
 
-    def delayed_send(request):
-        original_send(request)
+    send_deadlines = []
+
+    def delayed_send(request, *, deadline=None):
+        send_deadlines.append(deadline)
+        original_send(request, deadline=deadline)
         clock["now"] += 9.0
 
     def inspect_recv(*, deadline=None):
@@ -209,6 +233,7 @@ def test_backup_deadline_includes_request_send_time(tmp_path, monkeypatch):
     connection.backup_file(stage)
     assert requests == [{"op": "backup"}]
     assert deadlines == [220.0, 220.0]
+    assert send_deadlines == [220.0]
     assert stage.read_bytes() == b"valid"
 
 
@@ -221,8 +246,8 @@ def test_backup_refuses_send_that_exhausted_global_deadline(tmp_path, monkeypatc
     connection, requests = _connection([])
     original_send = connection._send
 
-    def stalled_send(request):
-        original_send(request)
+    def stalled_send(request, *, deadline=None):
+        original_send(request, deadline=deadline)
         clock["now"] += worker.BACKUP_TIMEOUT + 1
 
     connection._send = stalled_send
