@@ -14,7 +14,7 @@ def test_test_workflow_covers_release_branch_main_and_untrusted_prs():
     workflow = (WORKFLOWS / "tests.yml").read_text(encoding="utf-8")
     assert (
         "on:\n  push:\n    branches: "
-        "[main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]"
+        "[main, release/v0.4.0, 'integration/**']"
         "\n  pull_request:"
     ) in workflow
     assert "permissions:\n  contents: read" in workflow
@@ -107,7 +107,7 @@ def test_rootless_rollback_checks_run_for_every_pr_main_and_release_branch_commi
     workflow = (WORKFLOWS / "upgrade-distros.yml").read_text(encoding="utf-8")
     assert (
         "  pull_request:\n  push:\n    branches: "
-        "[main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]"
+        "[main, release/v0.4.0, 'integration/**']"
         "\n  workflow_dispatch:"
     ) in workflow
     trigger = workflow.partition("  pull_request:")[2].partition("permissions:")[0]
@@ -118,14 +118,14 @@ def test_rootless_rollback_checks_run_for_every_pr_main_and_release_branch_commi
 
 def test_governed_integration_push_retains_complete_offline_and_upstream_gates():
     """Preserve nine mandatory unfiltered push contexts across all four lanes."""
-    exact = "branches: [main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]"
+    exact = "branches: [main, release/v0.4.0, 'integration/**']"
     for name in ("tests.yml", "offline-wheelhouse.yml", "upgrade-distros.yml"):
         text = (WORKFLOWS / name).read_text(encoding="utf-8")
         assert exact in text, name
         assert "  pull_request:" in text
         assert "permissions:\n  contents: read" in text
     upstream = (WORKFLOWS / "native-upstream-wheels.yml").read_text(encoding="utf-8")
-    assert "branches: [main, integration/v0.5.0, integration/v0.6.0]" in upstream
+    assert "branches: [main, 'integration/**']" in upstream
     assert "  pull_request:" in upstream
     assert "      - 'deps/runtime-wheels.lock'" in upstream
     assert 'target=/source,readonly' in upstream
