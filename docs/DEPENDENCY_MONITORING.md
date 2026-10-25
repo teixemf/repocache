@@ -54,3 +54,60 @@ After the config is merged, inspect **Insights > Dependency graph**, **Security 
 | Safe controlled security-alert test | NOT VERIFIED | Not executed |
 | No auto-merge / Actions release authority | PARTIAL | No auto-merge configured; requires branch-policy and live-PR verification |
 | Required CI / exact-head reviews / owner approval | NOT VERIFIED | Inspect after PR checks; no merge approved |
+
+## 2026-10-25 checkpoint: legacy inventory guard and remaining owner gates
+
+The historical "initial PR" table above records the first proposal, not the
+current default-branch result. [PR #87](https://github.com/teixemf/repocache/pull/87)
+has since merged, and [issue #81](https://github.com/teixemf/repocache/issues/81)
+records successful **real** GitHub Dependabot pip and Actions update jobs.
+These are update-job observations, **not** proof of vulnerability-alert coverage.
+
+The read-only regression in `tests/test_dependency_inventory_v05.py`
+checks the current **legacy** source-controlled inventory without changing
+release assets or the signed lock format:
+
+- 12 exactly named and SHA-256-pinned runtime distributions, including all
+  three directly declared PEP 621 requirements (Typer, Rich, Textual);
+- 2 separately pinned build distributions (setuptools and wheel), with the
+  declared build backend represented;
+- normalized-name uniqueness, strict legacy record syntax, and hostile /
+  ambiguous record refusal. Any added or removed legacy package requires
+  review and an explicit inventory-test update.
+
+Reproduce this scoped check with
+`python -m pytest -q tests/test_dependency_inventory_v05.py`.
+An executed test result is evidence of **source-level lock consistency only**.
+It cannot prove current PyPI wheel hashes, complete transitive metadata,
+cross-platform resolutions, or GitHub dependency-graph ingestion. Existing
+native wheelhouse CI separately executes `pip check` and compares installed
+wheel versions, but it also does not prove GitHub ingested those distributions.
+
+**Still NOT VERIFIED / blocking #81 closure:**
+
+1. Maintainer-recorded effective GitHub Dependency Graph, Dependabot Alerts,
+   Dependabot Security Updates and alert-notification settings. Record actual
+   Settings / Insights / Security UI evidence, not merely YAML presence.
+2. Complete observed GitHub direct **and transitive** graph for each approved
+   Debian 13 / Python 3.13 and AlmaLinux 10 / Python 3.12 runtime **and build**
+   lock profile, tied to reviewed exact distribution names, versions and hashes.
+   The legacy `deps/*.lock` files are not Dependabot-recognized pip
+   requirement manifests, and `pyproject.toml` supplies ranges, not pins.
+   Do not silently generate unreviewed OS-target pins from the legacy locks.
+3. A controlled, nonproduction vulnerability advisory/alert and remediation
+   workflow test, with evidence of any proposed security-update PR.
+4. Independent review of any future static manifest or dependency-submission
+   integration, especially token permissions, trusted push-only execution and
+   no release/signing access. Keep #74 action-pin approvals independent.
+5. Final criterion-by-criterion exact-head CI, reviewer and maintainer
+   acceptance before closing the parent. No unsigned or test-only artifact
+   may be described as a published signed release.
+
+**Owner action:** Inspect GitHub Settings > Security & analysis, Insights >
+Dependency graph, Security > Dependabot alerts and account/repository
+notifications. Record a sanitized evidence link or dated observation for all
+four effective settings and one safe advisory workflow; do not post any
+credential or security token. If GitHub cannot recognize the complete
+per-platform locks, explicitly retain NOT VERIFIED and design a separately
+reviewed trusted-commit dependency-submission workflow rather than granting
+write rights to untrusted PR code.
