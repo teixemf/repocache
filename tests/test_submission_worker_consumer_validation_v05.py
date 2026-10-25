@@ -6,7 +6,6 @@ worker process termination, booted systemd or SELinux (issue #49).
 """
 from __future__ import annotations
 
-import json
 import os
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -206,7 +205,7 @@ def test_maintain_rejects_bad_worker_row_without_purge(
         response=[poisoned], operation="fetchall",
     )
     with pytest.raises(SubmissionError) as exc:
-        queue.maintain(approved=True, now=20_000_000, decided_retention_days=180)
+        queue.maintain(approved=True, now=2_000_000_000, decided_retention_days=180)
     assert (exc.value.code, exc.value.status) == ("invalid_stored_proposal", 503)
     assert cleanup == [True]
     assert len(queue.audit(ident)) == 1

@@ -329,9 +329,9 @@ class SubmissionQueue:
                 (requested_id is not None and ident != requested_id) or
                 type(os_id) is not str or type(os_version) is not str or
                 not ((os_id == "debian" and
-                      re.fullmatch(r"13(?:\\.[0-9]{1,4})?", os_version)) or
+                      re.fullmatch(r"13(?:\.[0-9]{1,4})?", os_version)) or
                      (os_id == "almalinux" and
-                      re.fullmatch(r"10(?:\\.[0-9]{1,4})?", os_version))) or
+                      re.fullmatch(r"10(?:\.[0-9]{1,4})?", os_version))) or
                 type(items) is not str or not 0 < len(items) <= 131072 or
                 type(created) is not int or
                 type(state) is not str or
