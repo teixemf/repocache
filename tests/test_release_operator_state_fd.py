@@ -215,3 +215,106 @@ def test_asset_digest_rechecks_limit_during_read(monkeypatch, tmp_path):
     with pytest.raises(release.OperatorError) as caught:
         release.digest(asset)
     assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_checksum_read_accepts_small_ascii_and_opened_inode(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    original = "a" * 64 + "  candidate.tar.gz\n"
+    path.write_text(original, encoding="ascii")
+    real_open = os.open
+    swapped = False
+
+    def replace_after_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        fd = (real_open(file, flags, mode) if dir_fd is None
+              else real_open(file, flags, mode, dir_fd=dir_fd))
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            path.rename(tmp_path / "original.sha256")
+            path.write_text("untrusted replacement", encoding="ascii")
+        return fd
+
+    monkeypatch.setattr(release.os, "open", replace_after_open)
+    assert release.read_checksum(path) == original
+    assert swapped
+    assert path.read_text() == "untrusted replacement"
+
+
+def test_checksum_read_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_text("a" * 64, encoding="ascii")
+    private = tmp_path / "private-data"
+    private.write_text("not a checksum")
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            assert flags & os.O_NOFOLLOW
+            path.unlink()
+            path.symlink_to(private)
+        return (real_open(file, flags, mode) if dir_fd is None
+                else real_open(file, flags, mode, dir_fd=dir_fd))
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert private.read_text() == "not a checksum"
+
+
+def test_checksum_read_refuses_fifo_swapped_at_open(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_text("a" * 64, encoding="ascii")
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            assert flags & os.O_NONBLOCK, "FIFO checksum must never block"
+            path.unlink()
+            os.mkfifo(path, 0o600)
+        return (real_open(file, flags, mode) if dir_fd is None
+                else real_open(file, flags, mode, dir_fd=dir_fd))
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert path.is_fifo()
+
+
+def test_checksum_read_refuses_hardlink_and_oversized_inode(tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_text("a" * 64, encoding="ascii")
+    second = tmp_path / "second-link"
+    os.link(path, second)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
+    second.unlink()
+    path.write_bytes(b"a" * 513)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_checksum_read_rechecks_limit_after_stale_inode_size(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_bytes(b"a" * 513)
+    real_fstat = os.fstat
+    from types import SimpleNamespace
+
+    def stale_size(fd):
+        st = real_fstat(fd)
+        return SimpleNamespace(st_mode=st.st_mode, st_size=512,
+                               st_nlink=st.st_nlink)
+
+    monkeypatch.setattr(release.os, "fstat", stale_size)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
