@@ -88,6 +88,12 @@ def _check_queue(path: Path, uid: int) -> None:
         raise WorkerError("unsafe_worker_queue")
 
 
+def _valid_worker_row(row: object) -> bool:
+    """SQLite result rows contain only JSON-serializable scalar SQL values."""
+    return (isinstance(row, list) and
+            all(type(value) in (str, int, float, type(None)) for value in row))
+
+
 class WorkerCursor:
     def __init__(self, owner: "WorkerConnection", cursor: int, rowcount: int):
         self.owner = owner
@@ -96,13 +102,24 @@ class WorkerCursor:
 
     def fetchone(self):
         result = self.owner._request({"op": "fetchone", "cursor": self.cursor})
-        row = result.get("row")
-        return tuple(row) if isinstance(row, list) else None
+        # Missing/malformed rows must not masquerade as "not found" in a
+        # privileged approval/reconciliation path.
+        if set(result) != {"ok", "row"}:
+            raise WorkerError("invalid_worker_row")
+        row = result["row"]
+        if row is None:
+            return None
+        if not _valid_worker_row(row):
+            raise WorkerError("invalid_worker_row")
+        return tuple(row)
 
     def fetchall(self):
         result = self.owner._request({"op": "fetchall", "cursor": self.cursor})
-        rows = result.get("rows")
-        if not isinstance(rows, list):
+        if set(result) != {"ok", "rows"}:
+            raise WorkerError("invalid_worker_rows")
+        rows = result["rows"]
+        if not isinstance(rows, list) or any(
+                not _valid_worker_row(row) for row in rows):
             raise WorkerError("invalid_worker_rows")
         return [tuple(row) for row in rows]
 
