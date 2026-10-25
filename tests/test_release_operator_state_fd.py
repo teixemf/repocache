@@ -318,3 +318,24 @@ def test_checksum_read_rechecks_limit_after_stale_inode_size(monkeypatch, tmp_pa
     with pytest.raises(release.OperatorError) as caught:
         release.read_checksum(path)
     assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_state_refuses_excessively_nested_json_without_traceback(monkeypatch, tmp_path):
+    path, _ = _state(monkeypatch, tmp_path)
+    # Less than the 64 KiB size limit, but beyond typical JSON decoder depth.
+    path.write_text("[" * 12000 + "0" + "]" * 12000, encoding="utf-8")
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert caught.value.code == "INVALID_STATE"
+
+
+def test_state_maps_json_decoder_recursion_to_invalid_state(monkeypatch, tmp_path):
+    _state(monkeypatch, tmp_path)
+
+    def recursion_limit(_raw):
+        raise RecursionError("decoder nesting exceeded")
+
+    monkeypatch.setattr(release.json, "loads", recursion_limit)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert caught.value.code == "INVALID_STATE"

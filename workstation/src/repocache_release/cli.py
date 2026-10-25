@@ -227,7 +227,9 @@ def read_state(version: str) -> dict[str, Any] | None:
         raise OperatorError("UNSAFE_STATE", "State file exceeded the size limit")
     try:
         record = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        # A bounded-size state file can still contain thousands of nested
+        # JSON containers. Parser recursion is invalid state, not a traceback.
         raise OperatorError("INVALID_STATE", "Release state record corrupted") from exc
     if (not isinstance(record, dict) or record.get("schema") != 1
             or record.get("version") != version
