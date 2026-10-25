@@ -222,11 +222,36 @@ def state_root() -> Path:
     return base / "repocache-release"
 
 
+def _guard_state_ancestors(path: Path) -> None:
+    """Refuse symlinked or untrusted writable ancestors of owner-only state.
+
+    Root-owned sticky directories (for example /tmp in isolated tests) may
+    contain a private owner directory; non-root writable ancestors may be
+    renamed by another principal and cannot anchor candidate state.
+    This is a best-effort path check, not a substitute for owner-account trust.
+    """
+    for ancestor in path.parents:
+        try:
+            info = ancestor.lstat()
+        except FileNotFoundError:
+            # A not-yet-created XDG parent is checked again after mkdir.
+            continue
+        except OSError as exc:
+            raise OperatorError("UNSAFE_STATE", "State path ancestor is unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in (0, os.getuid())
+                or ((info.st_mode & 0o022)
+                    and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
+            raise OperatorError("UNSAFE_STATE", "State path has an untrusted ancestor")
+
+
 def guard_state_dir(path: Path, *, create: bool = False) -> None:
+    _guard_state_ancestors(path)
     if path.is_symlink():
         raise OperatorError("UNSAFE_STATE", "Refusing symlinked state directory")
     if create:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _guard_state_ancestors(path)
     if path.exists():
         info = path.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
@@ -243,7 +268,12 @@ def candidate_lock(version: str):
     path = base / (version + ".lock")
     fd = -1
     try:
-        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            # O_NONBLOCK makes a pre-open FIFO substitution fail without a hang.
+            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
+                         | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0), 0o600)
+        except OSError as exc:
+            raise OperatorError("UNSAFE_STATE", "Candidate lock cannot be opened safely") from exc
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or stat.S_IMODE(info.st_mode) != 0o600
@@ -253,6 +283,7 @@ def candidate_lock(version: str):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise OperatorError("BUSY", "Another release operation holds the candidate lock") from exc
+        _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
         yield
     finally:
         if fd >= 0:
