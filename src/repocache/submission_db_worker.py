@@ -34,6 +34,16 @@ MAX_SQL = 8192
 TIMEOUT = 10
 
 
+def _unique_worker_object_pairs(pairs: list[tuple[str, object]]) -> dict:
+    """Reject ambiguous JSON keys at the privileged worker IPC boundary."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_worker_key")
+        result[key] = value
+    return result
+
+
 class WorkerError(sqlite3.OperationalError):
     """Fail closed on missing/compromised privilege separation or IPC."""
 
@@ -181,7 +191,7 @@ class WorkerConnection:
         if len(line) > MAX_MESSAGE:
             raise WorkerError("oversized_worker_response")
         try:
-            response = json.loads(line.decode("ascii"))
+            response = json.loads(line.decode("ascii"),\n                                  object_pairs_hook=_unique_worker_object_pairs)
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise WorkerError("invalid_worker_response") from exc
         if not isinstance(response, dict) or response.get("ok") is not True:

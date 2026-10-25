@@ -287,3 +287,28 @@ def test_backup_ipc_refuses_symlinked_root_stage(tmp_path, monkeypatch):
         connection.backup_file(stage)
     assert requests == []
     assert target.read_bytes() == b""
+
+
+@pytest.mark.parametrize("wire", [
+    b'{"ok":false,"ok":true,"chunk":"YQ=="}',
+    b'{"ok":true,"chunk":"YQ==","chunk":"Yg=="}',
+    b'{"ok":true,"done":false,"done":true}',
+    b'{"ok":true,"metadata":{"a":1,"a":2},"done":true}',
+])
+def test_backup_ipc_rejects_duplicate_json_object_keys(wire):
+    """A compromised worker must not smuggle ambiguous reply fields."""
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(
+        stdout=SimpleNamespace(fileno=lambda: 77))
+    connection._buffer = bytearray(wire + b"\\n")
+    with pytest.raises(worker.WorkerError, match="invalid_worker_response"):
+        connection._recv()
+
+
+def test_backup_ipc_accepts_unambiguous_json_wire_reply():
+    """Strict parsing must preserve the legitimate worker wire format."""
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(
+        stdout=SimpleNamespace(fileno=lambda: 77))
+    connection._buffer = bytearray(b'{"ok":true,"chunk":"YQ=="}\\n')
+    assert connection._recv() == {"ok": True, "chunk": "YQ=="}

@@ -222,3 +222,20 @@ worker's existing reply emitter and does not change ordinary SQL requests.
 **NOT VERIFIED:** exact-new-HEAD GitHub Actions 9/9 and Python test results
 until they finish; independent review/merge approval and original #17/#57,
 #76 and #49 criteria remain separate. No endpoint, release or host mutation.
+
+
+### 2026-10-25 duplicate-key worker JSON refusal (same #17/#57 feature branch)
+
+A hostile service-UID worker could encode repeated JSON object keys (for
+example, conflicting `ok`, `done` or `chunk` values), which Python's
+ordinary JSON decoder otherwise resolves by silently retaining the last
+value. The privileged parent now rejects duplicate keys at **any depth**
+before evaluating the already strict backup-frame allowlist. Deterministic
+negative wire tests cover duplicate status/data/terminal and nested keys;
+a positive wire test preserves the legitimate single-key protocol.
+
+**PASS (isolated stdlib parser smoke and source inspection); NOT VERIFIED**
+for exact-new-HEAD GitHub Python 3.12/3.13 and nine required checks until
+executed. No changes to normal SQL semantics, UID drop, root journal, signing,
+release, production or rollback. Independent security review, original Gate A
+#17/#57 and native Gate B #49 remain separate blockers.
