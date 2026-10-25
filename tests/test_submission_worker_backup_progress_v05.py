@@ -34,10 +34,10 @@ def _connection(responses):
     requests = []
     connection._send = lambda request: requests.append(request)
     if callable(responses):
-        connection._recv = responses
+        connection._recv = lambda *, deadline=None: responses()
     else:
         iterator = iter(responses)
-        connection._recv = lambda: next(iterator)
+        connection._recv = lambda *, deadline=None: next(iterator)
     return connection, requests
 
 
@@ -140,3 +140,44 @@ def test_backup_ipc_refuses_fifo_substitution_without_blocking(tmp_path, monkeyp
     assert swapped
     assert stage.is_fifo()
     assert requests == []
+
+
+def test_backup_pipe_read_respects_remaining_overall_deadline(monkeypatch):
+    """A final stalled frame cannot consume a fresh ten-second timeout."""
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(stdout=SimpleNamespace(fileno=lambda: 77))
+    connection._buffer = bytearray()
+    ticks = iter((100.0, 100.0, 102.0))
+    monkeypatch.setattr(worker, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    observed = []
+
+    def stalled_pipe(readers, writers, errors, timeout):
+        assert readers == [77] and not writers and not errors
+        observed.append(timeout)
+        return [], [], []
+
+    monkeypatch.setattr(worker.select, "select", stalled_pipe)
+    with pytest.raises(worker.WorkerError, match="worker_backup_timeout"):
+        connection._recv(deadline=102.0)
+    assert observed == [2.0]
+
+
+def test_backup_ipc_reuses_one_deadline_across_all_frames(tmp_path, monkeypatch):
+    stage = _staging(tmp_path, monkeypatch)
+    connection, _ = _connection([
+        {"ok": True, "chunk": base64.b64encode(b"data").decode("ascii")},
+        {"ok": True, "done": True},
+    ])
+    original_recv = connection._recv
+    deadlines = []
+
+    def inspect_deadline(*, deadline=None):
+        deadlines.append(deadline)
+        return original_recv(deadline=deadline)
+
+    connection._recv = inspect_deadline
+    connection.backup_file(stage)
+    assert len(deadlines) == 2
+    assert isinstance(deadlines[0], float)
+    assert deadlines[0] == deadlines[1]
+    assert stage.read_bytes() == b"data"
