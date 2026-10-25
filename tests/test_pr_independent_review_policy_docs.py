@@ -18,7 +18,8 @@ def test_policy_explicitly_not_adopted_without_owner_decision() -> None:
     assert "PROPOSED / NOT ADOPTED" in text
     assert "Choose and record ONE enforceable policy" in text
     assert "required_approving_review_count: 0" in text
-    assert "no standing waiver" not in text.lower() or "not a standing waiver" in text.lower()
+    assert "are strictly historical, PR-specific decisions" in text
+    assert "not an amendment of the live rulesets" in text
 
 
 def test_policy_preserves_nonnegotiable_merge_and_security_gates() -> None:
