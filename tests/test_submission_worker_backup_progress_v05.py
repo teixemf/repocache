@@ -300,7 +300,7 @@ def test_backup_ipc_rejects_duplicate_json_object_keys(wire):
     connection = object.__new__(worker.WorkerConnection)
     connection.process = SimpleNamespace(
         stdout=SimpleNamespace(fileno=lambda: 77))
-    connection._buffer = bytearray(wire + b"\\n")
+    connection._buffer = bytearray(wire + b"\n")
     with pytest.raises(worker.WorkerError, match="invalid_worker_response"):
         connection._recv()
 
@@ -310,5 +310,5 @@ def test_backup_ipc_accepts_unambiguous_json_wire_reply():
     connection = object.__new__(worker.WorkerConnection)
     connection.process = SimpleNamespace(
         stdout=SimpleNamespace(fileno=lambda: 77))
-    connection._buffer = bytearray(b'{"ok":true,"chunk":"YQ=="}\\n')
+    connection._buffer = bytearray(b'{"ok":true,"chunk":"YQ=="}\n')
     assert connection._recv() == {"ok": True, "chunk": "YQ=="}

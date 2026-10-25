@@ -191,7 +191,8 @@ class WorkerConnection:
         if len(line) > MAX_MESSAGE:
             raise WorkerError("oversized_worker_response")
         try:
-            response = json.loads(line.decode("ascii"),\n                                  object_pairs_hook=_unique_worker_object_pairs)
+            response = json.loads(line.decode("ascii"),
+                                  object_pairs_hook=_unique_worker_object_pairs)
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise WorkerError("invalid_worker_response") from exc
         if not isinstance(response, dict) or response.get("ok") is not True:
