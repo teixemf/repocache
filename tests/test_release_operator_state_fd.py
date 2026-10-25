@@ -363,3 +363,63 @@ def test_gh_json_maps_decoder_recursion_to_invalid_response(monkeypatch):
     with pytest.raises(release.OperatorError) as caught:
         release.gh_json("repos/teixemf/repocache/actions/runs/123")
     assert caught.value.code == "INVALID_RESPONSE"
+
+
+# The release operator runs Git/GitHub/OpenSSL locally. Tests intercept the
+# allowed command before spawn and execute a Python fixture instead: no GitHub
+# token, network, private key, signature, stage or publication is used.
+_COMMAND_FIXTURE = ["gh", "api", "repos/teixemf/repocache/actions/runs/1"]
+
+
+def _local_command_fixture(monkeypatch, script):
+    original = release.subprocess.Popen
+    launched = []
+
+    def launch(argv, **kwargs):
+        assert argv == _COMMAND_FIXTURE
+        assert kwargs["stdin"] == release.subprocess.DEVNULL
+        assert kwargs["stderr"] == release.subprocess.DEVNULL
+        child = original([sys.executable, "-c", script], **kwargs)
+        launched.append(child)
+        return child
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    return launched
+
+
+def test_command_fails_closed_on_stdout_flood_before_child_exit(monkeypatch):
+    """A tool cannot fill unbounded parent memory before returning."""
+    monkeypatch.setattr(release, "MAX_METADATA", 1024)
+    children = _local_command_fixture(
+        monkeypatch,
+        'import sys,time;sys.stdout.buffer.write(b"x"*8192);'
+        'sys.stdout.flush();time.sleep(10)')
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=4)
+    assert caught.value.code == "OVERSIZED_RESPONSE"
+    assert len(children) == 1 and children[0].poll() is not None
+
+
+def test_command_returns_small_output_and_discards_sensitive_stderr(monkeypatch):
+    children = _local_command_fixture(
+        monkeypatch,
+        'import sys;sys.stdout.write("ok\\n");'
+        'sys.stderr.write("sensitive stderr\\n")')
+    assert release.command(_COMMAND_FIXTURE, timeout=4) == b"ok\\n"
+    assert len(children) == 1 and children[0].returncode == 0
+
+
+def test_command_timeout_terminates_unresponsive_child(monkeypatch):
+    children = _local_command_fixture(monkeypatch, 'import time;time.sleep(10)')
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=0.2)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert len(children) == 1 and children[0].poll() is not None
+
+
+def test_command_nonzero_exit_remains_fail_closed(monkeypatch):
+    children = _local_command_fixture(monkeypatch, 'import sys;sys.exit(7)')
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=4)
+    assert caught.value.code == "OPERATION_FAILED"
+    assert len(children) == 1 and children[0].returncode == 7
