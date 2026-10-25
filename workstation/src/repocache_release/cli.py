@@ -608,9 +608,19 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
         if claimed != digest(assets / name) + "  " + name + "\n":
             raise OperatorError("ASSET_DRIFT", "Unsigned checksum differs from downloaded asset")
     script = worktree / "scripts/verify_release_candidate.py"
-    result = subprocess.run([sys.executable, str(script), str(assets)],
-                            cwd=worktree, capture_output=True, timeout=180,
-                            check=False)
+    # Verifier output is never inspected. Buffering its stdout/stderr could
+    # exhaust owner-workstation memory or retain sensitive diagnostics from
+    # an unexpected child process. Discard both streams and fail closed on
+    # an unavailable or timed-out verifier without exposing its output.
+    try:
+        result = subprocess.run([sys.executable, str(script), str(assets)],
+                                cwd=worktree, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=180,
+                                check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OperatorError("BUILD_NOT_VERIFIED",
+                            "Source rebuild or signed dependency-lock verification failed") from exc
     if result.returncode:
         raise OperatorError("BUILD_NOT_VERIFIED", "Source rebuild or signed dependency-lock verification failed")
 
