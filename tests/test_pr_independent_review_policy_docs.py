@@ -53,3 +53,27 @@ def test_contributing_discloses_proposal_status() -> None:
     assert "docs/PR_INDEPENDENT_REVIEW_POLICY.md" in text
     assert "PROPOSED" in text
     assert "explicit owner merge approval" in text
+
+def test_policy_selected_hybrid_requires_human_review_for_elevated_changes() -> None:
+    text = POLICY.read_text(encoding="utf-8")
+    for required in (
+        "Choice C, the risk-tiered hybrid",
+        "Choice B",
+        "CONFLICT",
+        "not silently supersede",
+        "HUMAN GitHub approval is REQUIRED",
+        "ELEVATED",
+        "ROUTINE / LOWER RISK",
+        "UNCERTAIN",
+        "NOT VERIFIED",
+        "PR-specific",
+    ):
+        assert required in text, required
+
+
+def test_template_records_review_risk_and_conflicting_decisions() -> None:
+    text = TEMPLATE.read_text(encoding="utf-8")
+    assert "Risk classification and trust boundary" in text
+    assert "ELEVATED / ROUTINE / UNCERTAIN" in text
+    assert "independent HUMAN GitHub APPROVED review REQUIRED" in text
+    assert "Choice B and Choice C decisions" in text
