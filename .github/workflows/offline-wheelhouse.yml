@@ -3,7 +3,7 @@ name: Offline wheelchain validation
 on:
   pull_request:
   push:
-    branches: [main, release/v0.4.0]
+    branches: [main, release/v0.4.0, integration/v0.5.0, integration/v0.6.0]
   workflow_dispatch:
 
 permissions:
