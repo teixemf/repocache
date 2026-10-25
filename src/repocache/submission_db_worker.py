@@ -252,10 +252,12 @@ class WorkerConnection:
             if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
                     st.st_mode & 0o077 or st.st_nlink != 1 or st.st_size != 0):
                 raise WorkerError("unsafe_backup_staging")
+            # Include request sending in the absolute backup time budget.
+            # A stalled child cannot gain a fresh deadline after _send().
+            deadline = time.monotonic() + BACKUP_TIMEOUT
             self._send({"op": "backup"})
             total = 0
             frames = 0
-            deadline = time.monotonic() + BACKUP_TIMEOUT
             while True:
                 # A compromised or stalled service-UID worker must not keep a
                 # privileged backup open forever by sending tiny/empty frames

@@ -181,3 +181,54 @@ def test_backup_ipc_reuses_one_deadline_across_all_frames(tmp_path, monkeypatch)
     assert isinstance(deadlines[0], float)
     assert deadlines[0] == deadlines[1]
     assert stage.read_bytes() == b"data"
+
+def test_backup_deadline_includes_request_send_time(tmp_path, monkeypatch):
+    """A slow request send consumes the same budget as all backup frames."""
+    stage = _staging(tmp_path, monkeypatch)
+    clock = {"now": 100.0}
+    monkeypatch.setattr(worker, "time",
+                        SimpleNamespace(monotonic=lambda: clock["now"]))
+    connection, requests = _connection([
+        {"ok": True, "chunk": base64.b64encode(b"valid").decode("ascii")},
+        {"ok": True, "done": True},
+    ])
+    original_send = connection._send
+    original_recv = connection._recv
+    deadlines = []
+
+    def delayed_send(request):
+        original_send(request)
+        clock["now"] += 9.0
+
+    def inspect_recv(*, deadline=None):
+        deadlines.append(deadline)
+        return original_recv(deadline=deadline)
+
+    connection._send = delayed_send
+    connection._recv = inspect_recv
+    connection.backup_file(stage)
+    assert requests == [{"op": "backup"}]
+    assert deadlines == [220.0, 220.0]
+    assert stage.read_bytes() == b"valid"
+
+
+def test_backup_refuses_send_that_exhausted_global_deadline(tmp_path, monkeypatch):
+    """Never read frames after the absolute backup budget expires."""
+    stage = _staging(tmp_path, monkeypatch)
+    clock = {"now": 100.0}
+    monkeypatch.setattr(worker, "time",
+                        SimpleNamespace(monotonic=lambda: clock["now"]))
+    connection, requests = _connection([])
+    original_send = connection._send
+
+    def stalled_send(request):
+        original_send(request)
+        clock["now"] += worker.BACKUP_TIMEOUT + 1
+
+    connection._send = stalled_send
+    connection._recv = lambda *, deadline=None: pytest.fail(
+        "expired backup must not read any worker frames")
+    with pytest.raises(worker.WorkerError, match="worker_backup_timeout"):
+        connection.backup_file(stage)
+    assert requests == [{"op": "backup"}]
+    assert stage.stat().st_size == 0
