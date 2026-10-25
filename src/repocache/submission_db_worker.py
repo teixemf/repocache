@@ -155,18 +155,22 @@ class WorkerConnection:
             self.close(commit=False, suppress=True)
             raise
 
-    def _recv(self) -> dict:
+    def _recv(self, *, deadline: float | None = None) -> dict:
         if self.process.stdout is None:
             raise WorkerError("worker_pipe_missing")
         fd = self.process.stdout.fileno()
-        deadline = time.monotonic() + TIMEOUT
+        message_deadline = time.monotonic() + TIMEOUT
+        if deadline is not None:
+            message_deadline = min(message_deadline, deadline)
         while b"\n" not in self._buffer:
             if len(self._buffer) > MAX_MESSAGE:
                 raise WorkerError("oversized_worker_response")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise WorkerError("worker_timeout")
-            if not select.select([fd], [], [], remaining)[0]:
+            remaining = message_deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                # A stalled child cannot extend the backup's overall deadline
+                # by entering a fresh TIMEOUT-length pipe read near its end.
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
                 raise WorkerError("worker_timeout")
             chunk = os.read(fd, 65536)
             if not chunk:
@@ -258,7 +262,7 @@ class WorkerConnection:
                 # just before each per-message timeout expires.
                 if time.monotonic() >= deadline:
                     raise WorkerError("worker_backup_timeout")
-                reply = self._recv()
+                reply = self._recv(deadline=deadline)
                 if time.monotonic() >= deadline:
                     raise WorkerError("worker_backup_timeout")
                 if reply.get("done") is True:
