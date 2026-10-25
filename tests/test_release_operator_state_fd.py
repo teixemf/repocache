@@ -405,7 +405,7 @@ def test_command_returns_small_output_and_discards_sensitive_stderr(monkeypatch)
         monkeypatch,
         'import sys;sys.stdout.write("ok\\n");'
         'sys.stderr.write("sensitive stderr\\n")')
-    assert release.command(_COMMAND_FIXTURE, timeout=4) == b"ok\\n"
+    assert release.command(_COMMAND_FIXTURE, timeout=4) == b"ok\n"
     assert len(children) == 1 and children[0].returncode == 0
 
 
