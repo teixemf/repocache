@@ -35,6 +35,24 @@ Describe design choices, API/CLI compatibility, and any changes to NGINX, reposi
 
 **Rollback plan:**
 
+## Independent review and acceptance record
+
+Review policy proposal: [#176](https://github.com/teixemf/repocache/issues/176);
+[proposed process](../docs/PR_INDEPENDENT_REVIEW_POLICY.md).
+This template does **not** authorize a standing exception.
+
+- **Exact HEAD/base SHAs and tested merge revision:**
+- **Evidence matrix:** criterion | PASS / FAIL / NOT VERIFIED | test/log/review URL | residual risk
+- **Review evidence:** eligible independent human GitHub review URL / external technical assessment URL / NOT VERIFIED
+- **PR-specific substitution authorized by maintainer?** link to explicit decision, or NOT VERIFIED
+- **Blocking findings / native platform limits / acceptance stage:**
+- **Explicit separate merge authorization:** link or NOT VERIFIED
+- **Intended merge method, ancestry requirements and post-merge verification:**
+
+Never call external AI technical evidence a human GitHub APPROVED review.
+Do not merge on a missing project review decision, any applicable FAIL /
+NOT VERIFIED criterion, missing exact-head CI, or missing owner authorization.
+
 ## Reviewer notes
 
 List known limitations, follow-up Issues and any maintainer decision needed. Do not merge until approved.

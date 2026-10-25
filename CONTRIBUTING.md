@@ -10,6 +10,9 @@ REPOCACHE uses generative AI extensively in code, documentation and review propo
 
 ## Review and security
 
+Review process proposal: [independent PR review policy](docs/PR_INDEPENDENT_REVIEW_POLICY.md) (issue #176). This document is **PROPOSED**, not an adopted standing waiver. Preserve the existing independent review/acceptance and explicit owner merge approval gates until a maintainer decision is recorded. A technical report assisted by AI is not a formal human GitHub approval.
+
+
 - Only Debian 13 and AlmaLinux 10 are currently targeted. Do not assert untested compatibility.
 - Preserve APT/DNF failover, rollback, non-interactive CLI output and configuration safety.
 - Never add private credentials, internal domain names, operational logs or deployment identifiers.
