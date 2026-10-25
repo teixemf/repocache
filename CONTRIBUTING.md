@@ -10,6 +10,8 @@ REPOCACHE uses generative AI extensively in code, documentation and review propo
 
 ## Review and security
 
+The [PR review and acceptance policy](docs/PR_REVIEW_GOVERNANCE.md) defines the maintainer-approved Option B governance model: independent technical evidence is required for every PR. When permitted, accepting an AI-assisted external second opinion **instead of the normal project-level independent-review evidence** requires a distinct, recorded maintainer decision for the **exact PR and HEAD**. This does not replace or create an eligible human GitHub `APPROVED` review, waive any separately mandatory human review, or authorize merging. Current GitHub rulesets require strict checks but zero formal approving reviews; maintainers must enforce the independent project acceptance gate before each merge.
+
 - Only Debian 13 and AlmaLinux 10 are currently targeted. Do not assert untested compatibility.
 - Preserve APT/DNF failover, rollback, non-interactive CLI output and configuration safety.
 - Never add private credentials, internal domain names, operational logs or deployment identifiers.
