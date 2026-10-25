@@ -37,6 +37,9 @@ def test_worker_fetchone_accepts_sqlite_row_or_explicit_null(reply, expected):
     {"ok": True, "row": {"id": "forged"}},
     {"ok": True, "row": ["id", {"unexpected": "nested"}]},
     {"ok": True, "row": [True]},
+    {"ok": True, "row": [float("nan")]},
+    {"ok": True, "row": [float("inf")]},
+    {"ok": True, "row": [float("-inf")]},
     {"ok": True, "row": None, "ignored": "metadata"},
 ])
 def test_worker_fetchone_never_treats_malformed_reply_as_missing_proposal(reply):
@@ -62,6 +65,8 @@ def test_worker_fetchall_accepts_only_sqlite_row_lists(reply, expected):
     {"ok": True, "rows": [[1], {"unexpected": "nested"}]},
     {"ok": True, "rows": [[1], [[2]]]},
     {"ok": True, "rows": [[1]], "ignored": "metadata"},
+    {"ok": True, "rows": [[float("nan")]]},
+    {"ok": True, "rows": [[float("inf")]]},
 ])
 def test_worker_fetchall_rejects_entire_malformed_result(reply):
     with pytest.raises(worker.WorkerError, match="invalid_worker_rows"):

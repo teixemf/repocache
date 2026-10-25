@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import pwd
 import select
@@ -42,6 +43,19 @@ def _unique_worker_object_pairs(pairs: list[tuple[str, object]]) -> dict:
             raise ValueError("duplicate_worker_key")
         result[key] = value
     return result
+
+
+def _reject_nonfinite_worker_number(value: str) -> float:
+    """Python's JSON parser otherwise accepts NaN and Infinity tokens."""
+    raise ValueError("nonfinite_worker_number")
+
+
+def _parse_finite_worker_float(value: str) -> float:
+    """Reject JSON exponents that overflow to infinity (e.g. 1e400)."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("nonfinite_worker_number")
+    return parsed
 
 
 class WorkerError(sqlite3.OperationalError):
@@ -91,7 +105,9 @@ def _check_queue(path: Path, uid: int) -> None:
 def _valid_worker_row(row: object) -> bool:
     """SQLite result rows contain only JSON-serializable scalar SQL values."""
     return (isinstance(row, list) and
-            all(type(value) in (str, int, float, type(None)) for value in row))
+            all(type(value) in (str, int, float, type(None)) and
+                (type(value) is not float or math.isfinite(value))
+                for value in row))
 
 
 class WorkerCursor:
@@ -208,8 +224,12 @@ class WorkerConnection:
         if len(line) > MAX_MESSAGE:
             raise WorkerError("oversized_worker_response")
         try:
-            response = json.loads(line.decode("ascii"),
-                                  object_pairs_hook=_unique_worker_object_pairs)
+            response = json.loads(
+                line.decode("ascii"),
+                object_pairs_hook=_unique_worker_object_pairs,
+                parse_constant=_reject_nonfinite_worker_number,
+                parse_float=_parse_finite_worker_float,
+            )
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise WorkerError("invalid_worker_response") from exc
         if not isinstance(response, dict) or response.get("ok") is not True:

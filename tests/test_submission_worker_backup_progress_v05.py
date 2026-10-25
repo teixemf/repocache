@@ -312,3 +312,31 @@ def test_backup_ipc_accepts_unambiguous_json_wire_reply():
         stdout=SimpleNamespace(fileno=lambda: 77))
     connection._buffer = bytearray(b'{"ok":true,"chunk":"YQ=="}\n')
     assert connection._recv() == {"ok": True, "chunk": "YQ=="}
+
+
+@pytest.mark.parametrize("wire", [
+    b'{"ok":true,"row":[NaN]}',
+    b'{"ok":true,"row":[Infinity]}',
+    b'{"ok":true,"row":[-Infinity]}',
+    b'{"ok":true,"row":[1e400]}',
+    b'{"ok":true,"row":[-1e400]}',
+    b'{"ok":true,"metadata":{"nested":NaN}}',
+])
+def test_worker_ipc_rejects_nonfinite_json_numbers(wire):
+    """A service-controlled IPC reply cannot inject non-JSON numbers."""
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(
+        stdout=SimpleNamespace(fileno=lambda: 77))
+    connection._buffer = bytearray(wire + b"\n")
+    with pytest.raises(worker.WorkerError, match="invalid_worker_response"):
+        connection._recv()
+
+
+def test_worker_ipc_preserves_finite_json_floats():
+    """Valid finite SQL float results still cross the worker boundary."""
+    connection = object.__new__(worker.WorkerConnection)
+    connection.process = SimpleNamespace(
+        stdout=SimpleNamespace(fileno=lambda: 77))
+    connection._buffer = bytearray(
+        b'{"ok":true,"row":[1.25,1e300,null]}\n')
+    assert connection._recv() == {"ok": True, "row": [1.25, 1e300, None]}

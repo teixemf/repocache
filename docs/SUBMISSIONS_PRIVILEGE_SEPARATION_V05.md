@@ -239,3 +239,20 @@ for exact-new-HEAD GitHub Python 3.12/3.13 and nine required checks until
 executed. No changes to normal SQL semantics, UID drop, root journal, signing,
 release, production or rollback. Independent security review, original Gate A
 #17/#57 and native Gate B #49 remain separate blockers.
+
+
+### 2026-10-25 non-finite worker numeric IPC refusal (#17/#57)
+
+**Scoped candidate hardening:** Python's permissive JSON decoder accepts
+`NaN`/`Infinity` and converts exponent-overflowing `1e400` to infinity,
+despite these not being valid finite JSON numbers. The privileged parent now
+rejects both classes at the wire boundary, including nested values, and
+refuses non-finite values in cursor rows even when injected directly.
+Legitimate finite SQL floating-point results remain supported.
+
+**PASS (isolated stdlib parser smoke):** five hostile wire-number forms
+rejected; finite floating-point values accepted. **NOT VERIFIED:** exact
+new PR HEAD Python 3.12/3.13 tests, all nine required GitHub contexts,
+independent security review, original #17/#57 acceptance and native host
+Gate B #49. No claim of worker authenticity, signer custody, real signed
+candidate acceptance, production activation or release approval.
