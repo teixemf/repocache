@@ -423,3 +423,67 @@ def test_command_nonzero_exit_remains_fail_closed(monkeypatch):
         release.command(_COMMAND_FIXTURE, timeout=4)
     assert caught.value.code == "OPERATION_FAILED"
     assert len(children) == 1 and children[0].returncode == 7
+
+
+def _unsigned_verifier_fixture(tmp_path):
+    """Four harmless local placeholders; no candidate, signing or network."""
+    import hashlib
+
+    version = "v0.5.0"
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    base = "repocache-" + version + ".tar.gz"
+    for suffix in ("", ".wheelhouse.tar.gz"):
+        name = base + suffix
+        payload = ("synthetic " + suffix).encode()
+        (assets / name).write_bytes(payload)
+        checksum = hashlib.sha256(payload).hexdigest() + "  " + name + "\n"
+        (assets / (name + ".sha256")).write_text(checksum, encoding="ascii")
+    return version, assets
+
+
+def test_verify_unsigned_discards_verifier_output_and_limits_runtime(
+        monkeypatch, tmp_path, capsys):
+    """Verifier output is unused and must never be buffered or exposed."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_run = release.subprocess.run
+    calls = []
+
+    def local_verifier(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert kwargs["stdin"] == release.subprocess.DEVNULL
+        assert kwargs["stdout"] == release.subprocess.DEVNULL
+        assert kwargs["stderr"] == release.subprocess.DEVNULL
+        assert kwargs["timeout"] == 180
+        # Local-only fixture simulates a verifier flooding both streams.
+        return original_run(
+            [sys.executable, "-c",
+             'import sys; sys.stdout.buffer.write(b"x"*5000000); '
+             'sys.stderr.buffer.write(b"y"*5000000)'],
+            **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "run", local_verifier)
+    release.verify_unsigned(tmp_path, assets, version)
+    assert len(calls) == 1
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unavailable", "nonzero"])
+def test_verify_unsigned_verifier_failures_are_sanitized(
+        monkeypatch, tmp_path, failure):
+    """Never surface a subprocess traceback or output on verifier failure."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+
+    def failing_verifier(argv, **kwargs):
+        if failure == "timeout":
+            raise release.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if failure == "unavailable":
+            raise OSError("fixture verifier unavailable")
+        return release.subprocess.CompletedProcess(argv, 7)
+
+    monkeypatch.setattr(release.subprocess, "run", failing_verifier)
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert str(caught.value) == (
+        "Source rebuild or signed dependency-lock verification failed")
