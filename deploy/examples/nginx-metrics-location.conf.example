@@ -1,0 +1,12 @@
+# Opt-in example for issue #14. NEVER included or installed automatically.
+# These two directives are an EXAMPLE for the EXISTING, operator-approved
+# /debian/ proxy location{} on an HTTPS server; not a new location or route.
+# Change the constant label to the EXACT approved canonical location prefix
+# for each repository. Never use untrusted request/header/submission input.
+#
+# If an access_log is inherited from http/server scope, setting this directive
+# changes inheritance. Preserve any existing required site/access/audit logging
+# explicitly under the same location after reviewing the effective config.
+# Do not add this to repository-request intake or authentication endpoints.
+set $repocache_metric_repo "/debian/";
+access_log /var/log/nginx/repocache-metrics.log repocache_metrics;
