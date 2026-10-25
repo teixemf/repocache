@@ -187,3 +187,20 @@ service-UID, SELinux, power-loss and operational custody remain Gate B #49.
 All new tests and nine required contexts on the updated PR HEAD are **NOT
 VERIFIED** until their fresh GitHub Actions jobs complete successfully;
 previous-head CI results must not be reused.
+
+
+### 2026-10-25 global backup read deadline refinement
+
+A further scoped adversarial review found that the 120-second backup deadline
+was previously checked **around** `_recv()`, while each final pipe read could
+still wait for its own fresh 10-second timeout. The worker transport now
+accepts an optional absolute deadline and uses the **minimum** of its
+per-message timeout and the remaining overall backup deadline. Normal SQL
+requests retain the original per-message limit. Deterministic tests verify
+that a stalled last frame receives only the remaining two-second wait and
+that every backup frame uses the same absolute deadline.
+
+**PASS (implementation review only):** no key, host, listener, release, or
+privilege configuration changes. **NOT VERIFIED:** exact-new-HEAD nine GitHub
+Actions jobs, independent security review, original #17/#57 acceptance and
+native host gates; earlier SHA results cannot be reused after this change.
