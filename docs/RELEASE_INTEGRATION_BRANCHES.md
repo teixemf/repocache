@@ -1,10 +1,10 @@
 # Release integration lanes — v0.5.0 and v0.6.0
 
-**Status (2026-10-24):** both integration branches exist, but the CI extension
-is still under review in PR #158. Its `push` triggers are NOT active on
-`main` until merged; a green PR check is NOT a live integration-branch push.
-Tracking issue: #157. Do not interpret an integration branch as a signed or
-production-ready release.
+**Status (2026-10-25):** PR #158 merged into protected `main` and its
+v0.5.0/v0.6.0 `push` filters are active. Protected lane push CI was exercised
+through PRs #170 and #171 (issue #157). The future-lane glob proposed by
+issue #175 is **not active until separately accepted and merged**. Neither
+CI nor a branch name establishes a signed or production-ready release.
 
 ## Canonical branches and provenance
 
@@ -68,9 +68,10 @@ GitHub immediately before each change; never infer the release from a PR title.
 
 ## Continuous integration
 
-The CI PR for #157 adds nonprivileged `push` triggers for both integration
-branches to FOUR existing workflows, preserving the full original nine
-mandatory unfiltered contexts plus a separate path-filtered compatibility check:
+PR #158 (merged) added nonprivileged `push` triggers for both existing
+integration branches. The #175 proposal would replace those literal names
+with `integration/**` in FOUR workflows, preserving the nine mandatory
+unfiltered contexts plus a separate path-filtered compatibility check:
 
 - `.github/workflows/tests.yml`: four jobs for Python 3.12/3.13 unit, CLI v1,
   mandatory security tests and Debian/Alma source bundle integrity.
@@ -102,8 +103,8 @@ The exact required contexts match protected-main ruleset `#25436501`
 (GitHub Actions app `15368`). Its `required_approving_review_count: 0`
 does **not** prove an independent security review or waive the project's
 documented reviewer gate. Ruleset presence is **PASS (API inspection)**;
-actual live integration push CI, review acceptance and the full release
-gate are still **NOT VERIFIED**.
+live v0.5.0/v0.6.0 integration push CI is verified, but future-lane
+push coverage, review acceptance and full release gates remain **NOT VERIFIED**.
 
 The following operator controls remain to be verified or strengthened
 before accepting feature changes into **either** integration branch:
@@ -128,3 +129,32 @@ impact. Reject promotion if any mandatory criterion, review, branch rule or
 publisher-signature/native acceptance is NOT VERIFIED or FAIL.
 
 Do not merge release integration branches merely to keep GitHub green.
+
+## Proposed future-lane CI coverage (#175; NOT YET ADOPTED)
+
+This PR **proposes** running all three mandatory unfiltered workflows on
+`push` to `integration/**`. GitHub Actions `**` matches nested paths:
+`integration/v0.7.0` and `integration/maintenance/v0.7.0` would both run.
+Experimental branches such as `integration/v0.5.0-experiment` would also
+run all nine checks intentionally, matching the active protected ruleset
+`integration/*` / `integration/**/*`. Lightweight experiments should use
+`feat/`, `test/` or `ci/` feature namespaces and still pass mandatory PR
+checks before promotion. This is a reviewable naming policy, **not** approval
+to create, rename, delete or promote any protected branch.
+
+To add a genuinely authorized future integration lane, first record the
+release milestone, exact reviewed base SHA and stack ancestry. Create and
+update the lane only through the protected, approved PR process; do not push
+directly or bypass rules to test the filter. Verify all nine named contexts
+on the real lane's `push` (both Python interpreters, Debian/Alma source
+integrity and offline wheels, synthetic artifact and both rollback jobs).
+Until such a branch and its push exist, future-lane operational coverage is
+**NOT VERIFIED** even if static tests and existing lane pushes pass.
+
+`native-upstream-wheels.yml` stays supplemental and path-filtered for both
+PR and push; it cannot be a required tenth context for docs-only changes.
+No `pull_request_target`, privileged trigger, write permission, new
+release dispatch, signing authority, secret access, tag, publication or
+production activation is added. Authentic owner-signed #76 and native
+Gate B #49 remain separate. The primary #175 milestone and review/merge
+acceptance must be resolved before this proposal can be merged.
