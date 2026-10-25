@@ -153,7 +153,10 @@ def _assert_stable_inode(path: Path, fd: int, before: os.stat_result,
             or (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino)
             or after.st_size != before.st_size
             or after.st_mtime_ns != before.st_mtime_ns
-            or after.st_ctime_ns != before.st_ctime_ns):
+            or after.st_ctime_ns != before.st_ctime_ns
+            or named.st_size != after.st_size
+            or named.st_mtime_ns != after.st_mtime_ns
+            or named.st_ctime_ns != after.st_ctime_ns):
         raise OperatorError(code, "Verified file changed during read")
 
 

@@ -249,7 +249,7 @@ def test_checksum_read_refuses_path_replacement_after_open(monkeypatch, tmp_path
 
 def test_checksum_read_accepts_stable_small_ascii_file(tmp_path):
     path = tmp_path / "candidate.sha256"
-    expected = "a" * 64 + "  candidate.tar.gz\\n"
+    expected = "a" * 64 + "  candidate.tar.gz\n"
     path.write_text(expected, encoding="ascii")
     assert release.read_checksum(path) == expected
 
@@ -361,7 +361,9 @@ def test_checksum_read_rechecks_limit_after_stale_inode_size(monkeypatch, tmp_pa
     def stale_size(fd):
         st = real_fstat(fd)
         return SimpleNamespace(st_mode=st.st_mode, st_size=512,
-                               st_nlink=st.st_nlink)
+                               st_nlink=st.st_nlink, st_dev=st.st_dev,
+                               st_ino=st.st_ino, st_mtime_ns=st.st_mtime_ns,
+                               st_ctime_ns=st.st_ctime_ns)
 
     monkeypatch.setattr(release.os, "fstat", stale_size)
     with pytest.raises(release.OperatorError) as caught:
