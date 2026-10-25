@@ -35,6 +35,32 @@ Describe design choices, API/CLI compatibility, and any changes to NGINX, reposi
 
 **Rollback plan:**
 
+## Independent review and acceptance (required)
+
+Follow [PR review and acceptance policy](../blob/main/docs/PR_REVIEW_GOVERNANCE.md). Do not call an AI-assisted report a human GitHub approval.
+
+- [ ] Every applicable primary-issue/PR acceptance criterion is PASS with a reproducible executed test or verified review/manual procedure.
+- [ ] Exact PR HEAD, protected target SHA, ancestry, merge method, milestone, and all nine required GitHub Actions contexts checked.
+- [ ] Security/compatibility/install/upgrade/rollback/documentation impacts reviewed and outstanding FAIL/NOT VERIFIED gates classified.
+- [ ] Independent review evidence recorded with the actual reviewer type, scope and exact SHA.
+- [ ] If substituting a technical second opinion for a required human review, **explicit single-PR maintainer approval of that criterion amendment** is linked (or NOT VERIFIED).
+- [ ] GitHub human review count, blocking discussions, and current protection/mergeability checked without bypass.
+- [ ] **Separate explicit maintainer authorization for this merge** recorded after all applicable gates PASS.
+
+**Review source and exact SHA:**
+
+**Actual submitted human GitHub approvals:**
+
+**PR-specific review criterion amendment (owner link, or NONE):**
+
+**Acceptance criterion | PASS / FAIL / NOT VERIFIED | evidence:**
+
+**Tests executed (run IDs/logs); tests not executed:**
+
+**Blocking findings and remaining native/release/production gates:**
+
+**Explicit merge permission (owner link, or NOT VERIFIED):**
+
 ## Reviewer notes
 
-List known limitations, follow-up Issues and any maintainer decision needed. Do not merge until approved.
+List known limitations, follow-up issues, and maintainer decisions. No merge is authorized by a clean CI status or completion of this template alone.

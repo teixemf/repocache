@@ -20,7 +20,7 @@ The milestone workflow also understands a conventional, standalone `Closes #145`
 - If no eligible issue reference exists, or a referenced issue lacks a milestone, the workflow fails with an actionable message. This includes Dependabot maintenance PRs without a linked issue. Assign a milestone manually after review, or link an appropriate already-planned maintenance issue.
 - A PR with only an experimental or test-only contribution should use the milestone of the functionality/release gate it materially serves. Associating a milestone does not make sandbox experiments production-ready.
 
-The check is **not a substitute** for the project's functional, regression, security, compatibility, installation, upgrade, documentation or human merge acceptance gates.
+The check is **not a substitute** for the project's functional, regression, security, compatibility, installation, upgrade, documentation or [independent review and acceptance policy](PR_REVIEW_GOVERNANCE.md). The maintainer-approved Option B process keeps GitHub's zero required formal approvals but requires documented independent technical evidence and any individually authorized review-criterion substitution, plus separate merge permission. A milestone or green CI never supplies those decisions.
 
 ## Execution and security
 
