@@ -8,20 +8,26 @@ It does **not** modify the published immutable v0.4.0 assets, the offline
 Ed25519 signer, release authorization, branch rulesets or package dependency
 resolution. Only the public `teixemf/repocache` repository is in scope.
 
-Reviewed official upstream tag references and `action.yml` `runs.using`
-on 2026-10-23:
+Initially reviewed on 2026-10-23; updated for the protected-main action pins
+on 2026-10-25. The `action.yml` `runs.using` value was independently read
+at each currently pinned commit:
 
 | Action | Reviewed tag | Exact pinned commit | Runtime |
 | --- | --- | --- | --- |
-| actions/checkout | v5.0.1 | `93cb6efe18208431cddfb8368fd83d5badbf9bfd` | node24 |
+| actions/checkout | v7.0.1 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | node24 |
 | actions/setup-python | v6.0.0 | `e797f83bcb11b83ae66e0230d6156d7c80228e7c` | node24 |
 | actions/upload-artifact | v6.0.0 | `b7c566a772e6b6bfb58ed0dc250532a479d7789f` | node24 |
-| actions/download-artifact (merged #77) | v7.0.0 | `37930b1c2abaa49bbe596cd826c3c89aef350131` | node24 |
+| actions/download-artifact (merged #77) | v8.0.2 | `9000827ccba6bdab643e8b6fd33ac0654aef8333` | node24 |
 
-The tags above resolved to Git commit objects (not a floating branch),
-and each action manifest was inspected at its versioned upstream tag.
-Source: `https://github.com/actions/<action>/releases` and
-`https://raw.githubusercontent.com/actions/<action>/<tag>/action.yml`.
+The current checked-in refs are 40-hex commit SHAs, not mutable version tags.
+Each pinned action manifest was fetched from the corresponding official
+`actions/*` repository by commit SHA and declares `node24`. Earlier upstream
+review evidence for the original pins is in PR #116; subsequently updated
+pins require renewed release-note and transitive-change review before parent
+#74 can be marked fully accepted. Sources:
+`https://github.com/actions/<action>/releases` and
+`https://raw.githubusercontent.com/actions/<action>/<sha>/action.yml`.
+Dependabot proposal/review remains owned by #81; no automatic merge is permitted.
 
 The official Node.js 24 actions require **Actions Runner v2.327.1 or newer**.
 GitHub-hosted `ubuntu-latest` is used for all current workflows. Self-hosted
@@ -65,12 +71,77 @@ changes before any update.
    manifest identity and failure logs before merge. Review and merge
    remain distinct from owner approval to sign, tag or publish.
 
+## Protected-main integration verification (2026-10-25)
+
+This is an evidence checkpoint for parent #74, **not** a close-out decision.
+
+- PR [#116](https://github.com/teixemf/repocache/pull/116) was merged
+  on 2026-10-23 at exact protected-main integration SHA
+  `f2d480828279bd7a2220bf6048227f2b0f573a01`;
+  child [#117](https://github.com/teixemf/repocache/issues/117) is CLOSED.
+- The GitHub REST check-runs endpoint at that **integration commit**
+  reported the original nine mandatory checks completed with `success`:
+  2 Python unit, 2 Debian/AlmaLinux bundle, 2 offline wheels,
+  1 signed-release/offline-dependency artifact, and 2 rootless
+  distro-upgrade/rollback checks. Two additional checks also succeeded.
+- An independent read of the protected `main` ref on 2026-10-25 resolved
+  to `9e213d7beb6534181e3ff418a890c5fdf2db2017`. Its
+  [check runs](https://github.com/teixemf/repocache/commit/9e213d7beb6534181e3ff418a890c5fdf2db2017/checks)
+  report **11/11 successful**, including the same nine mandatory contexts
+  and two additional native upstream dependency jobs.
+- The only `Release bundle` `workflow_dispatch` run in the returned
+  complete workflow-dispatch history is
+  [#39559317114](https://github.com/teixemf/repocache/actions/runs/39559317114)
+  on 2026-10-21, `v0.4.0`, source
+  `063c86c9a138bffca6f76f7407e8f1c86bfe4390`. It
+  completed successfully **before** #116 was merged. This is
+  **NOT** proof of a Node24 release-workflow upload.
+- The current `main` `pyproject.toml` still declares `0.4.0`.
+  The release job requires a tag matching the project version,
+  an owner-triggered dispatch, and main-ancestry validation; a genuine
+  approved nonpublishing `v0.5.0` source/tag is therefore a prerequisite
+  to the remaining end-to-end rehearsal. Do not create a release tag
+  or change the version merely to satisfy this documentation gate.
+
+### Parent #74 acceptance evidence
+
+| Acceptance area | State | Evidence or outstanding proof |
+| --- | --- | --- |
+| Current official actions use full-SHA Node24 pins | **PASS** (manifest inspection) | Current exact `checkout`, `setup-python`, `upload-artifact`, `download-artifact` manifests declare `node24`; SHA contract is source-controlled in `tests/test_actions_node24_contract.py`. |
+| Vet every upstream action transition and security-sensitive transitive release change | **NOT VERIFIED** | Refresh review for newer checkout v7.0.1 and download-artifact v8.0.2; check their release notes and relevant behavior against #116 review. |
+| Preserve permissions, credentials, offline signing and publication separation | **PASS** (current `release.yml` inspection) / **NOT VERIFIED** (whole-repo final review) | The release workflow still has `contents: read`, `persist-credentials: false`, actor/tag/ancestry gates, and unsigned artifact upload only; final complete diff and reviews remain required. |
+| Nine original required contexts on the protected integration commit | **PASS** | Exact merged SHA `f2d480828279bd7a2220bf6048227f2b0f573a01`, 9/9 success; current `main` SHA `9e213d7beb6534181e3ff418a890c5fdf2db2017`, 9/9 success (11/11 total checks). |
+| Real `release.yml` Node24 artifact upload and independent readback on a safe approved candidate | **NOT VERIFIED — BLOCKER** | No post-2026-10-23 owner `Release bundle` dispatch found; require an approved version-matched tag, successful upload step, downloadable archive, checksum and source-SHA reconciliation. |
+| Document runner 2.327.1+ and offline signing/rollback boundaries | **PASS** (documented) | Runner and manual-release limits below; no native self-hosted runner claim. |
+| Maintainer final per-criterion approval and issue closure | **NOT VERIFIED — BLOCKER** | Verify latest exact heads, action review and required checks; obtain distinct owner sign-off. No merge/tag/sign/publication authorized by this checkpoint. |
+
+### Remaining owner-authorized end-to-end rehearsal
+
+Only after a legitimate, reviewed `v0.5.0` candidate/tag exists,
+and the owner separately authorizes the nonpublishing rehearsal:
+
+1. Reconfirm exact tag commit, `pyproject.toml` version, protected-main
+   ancestry, workflow content and narrow token permissions.
+2. Manually dispatch `release.yml` on that approved tag, as the repository
+   owner. Do not sign, publish, create an unexpected release or change
+   provenance solely for the test.
+3. Inspect the actual `assemble` job's Node24
+   `actions/upload-artifact` step. A successful unit-test-only dispatch,
+   skipped assemble job or earlier PR rehearsal **does not satisfy** #74.
+4. Retrieve the resulting `unsigned-release-candidate` artifact; record
+   run ID, run/head SHA, uploader step conclusion, artifact ID and digest.
+   Verify the ZIP contents, expected archive/checksum members and their
+   SHA-256 values against the exact approved source commit.
+5. Recheck all acceptance rows against the final reviewed refs and required
+   controls. Close #74 only once none is FAIL/NOT VERIFIED and the
+   maintainer approves the acceptance report.
+
 ## Remaining evidence and rollback
 
-**NOT VERIFIED until independently executed:** actual protected-branch
-integrated CI, the owner-triggered release-workflow artifact retrieval on
-a safe synthetic candidate, and final human review of the exact diff.
-These are not waived by a static contract test.
+The protected-branch integration CI is verified above. The owner-triggered
+post-migration release-workflow artifact readback, latest upstream security
+review and final maintainer sign-off remain **NOT VERIFIED**. These cannot
+be waived by a static contract test or a successful older `v0.4.0` run.
 
 If an official action update fails before publication, revert the
 migration PR with a separately reviewed revert, rerun the nine required
