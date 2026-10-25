@@ -108,3 +108,110 @@ def test_state_refuses_fifo_swapped_before_open_without_blocking(monkeypatch, tm
     assert swapped
     assert caught.value.code == "UNSAFE_STATE"
     assert path.is_fifo()
+
+
+def test_asset_digest_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
+    """The release operator must never hash a substituted private-file link."""
+    import hashlib
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original unsigned candidate")
+    private = tmp_path / "private-secret"
+    private.write_bytes(b"not an asset")
+    original_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(asset) and not swapped:
+            swapped = True
+            assert flags & os.O_NOFOLLOW
+            asset.unlink()
+            asset.symlink_to(private)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert private.read_bytes() == b"not an asset"
+
+
+def test_asset_digest_reads_opened_inode_after_path_replacement(monkeypatch, tmp_path):
+    """A changed pathname after open cannot change the bytes being hashed."""
+    import hashlib
+    asset = tmp_path / "candidate.tar.gz"
+    original = b"approved unsigned candidate bytes"
+    asset.write_bytes(original)
+    original_open = os.open
+    swapped = False
+
+    def replace_after_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if dir_fd is None:
+            fd = original_open(file, flags, mode)
+        else:
+            fd = original_open(file, flags, mode, dir_fd=dir_fd)
+        if os.fspath(file) == os.fspath(asset) and not swapped:
+            swapped = True
+            asset.rename(tmp_path / "old-candidate")
+            asset.write_bytes(b"substituted candidate")
+        return fd
+
+    monkeypatch.setattr(release.os, "open", replace_after_open)
+    assert release.digest(asset) == hashlib.sha256(original).hexdigest()
+    assert swapped and asset.read_bytes() == b"substituted candidate"
+
+
+def test_asset_digest_refuses_fifo_swapped_at_open(monkeypatch, tmp_path):
+    """Reject a FIFO before a blocking read or a misleading size check."""
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original")
+    original_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(asset) and not swapped:
+            swapped = True
+            assert flags & os.O_NONBLOCK
+            asset.unlink()
+            os.mkfifo(asset, mode=0o600)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert asset.is_fifo()
+
+
+def test_asset_digest_refuses_hardlinked_inode(monkeypatch, tmp_path):
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original")
+    os.link(asset, tmp_path / "second-link")
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_asset_digest_rechecks_limit_during_read(monkeypatch, tmp_path):
+    """A stale size observation cannot permit reading past the hard cap."""
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"12345")
+    monkeypatch.setattr(release, "MAX_ASSET", 4)
+    real_fstat = os.fstat
+    from types import SimpleNamespace
+
+    def stale_size(fd):
+        st = real_fstat(fd)
+        return SimpleNamespace(st_mode=st.st_mode, st_size=4,
+                               st_nlink=st.st_nlink)
+
+    monkeypatch.setattr(release.os, "fstat", stale_size)
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert caught.value.code == "UNSAFE_ASSET"
