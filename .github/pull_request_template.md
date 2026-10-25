@@ -39,11 +39,14 @@ Describe design choices, API/CLI compatibility, and any changes to NGINX, reposi
 
 Review policy proposal: [#176](https://github.com/teixemf/repocache/issues/176);
 [proposed process](https://github.com/teixemf/repocache/blob/main/docs/PR_INDEPENDENT_REVIEW_POLICY.md).
-This template does **not** authorize a standing exception.
+Choice B and Choice C decisions in #176 currently conflict; this template does **not** authorize a standing exception or make either policy ACTIVE.
 
 - **Exact HEAD/base SHAs and tested merge revision:**
 - **Evidence matrix:** criterion | PASS / FAIL / NOT VERIFIED | test/log/review URL | residual risk
+- **Risk classification and trust boundary:** ELEVATED / ROUTINE / UNCERTAIN; reasons and affected permissions, identities, source/release integrity, installer/update authority.
 - **Review evidence:** eligible independent human GitHub review URL / external technical assessment URL / NOT VERIFIED
+- **Proposed Choice C elevated gate:** eligible independent HUMAN GitHub APPROVED review REQUIRED; external technical evidence is supplemental only, never a replacement.
+- **Proposed Choice C routine gate:** external assessment only after an explicitly accepted PR-specific, exact-HEAD substitution; no automatic waiver.
 - **PR-specific substitution authorized by maintainer?** link to explicit decision, or NOT VERIFIED
 - **Blocking findings / native platform limits / acceptance stage:**
 - **Explicit separate merge authorization:** link or NOT VERIFIED
