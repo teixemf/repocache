@@ -93,13 +93,35 @@ def gh_json(endpoint: str) -> dict[str, Any]:
 
 
 def digest(path: Path) -> str:
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_ASSET:
-        raise OperatorError("UNSAFE_ASSET", "Missing, symlinked or oversized asset")
-    h = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(131072), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    """Hash the validated asset inode, not a path that can change before open."""
+    try:
+        # A symlink/FIFO substituted after a path precheck must not be followed
+        # or allowed to block an offline release operation.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise OperatorError("UNSAFE_ASSET", "Asset cannot be opened safely") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ASSET
+                or info.st_nlink != 1):
+            raise OperatorError("UNSAFE_ASSET", "Asset inode is unsafe or oversized")
+        h = hashlib.sha256()
+        remaining = MAX_ASSET
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            while True:
+                chunk = stream.read(min(131072, remaining + 1))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                if remaining < 0:
+                    raise OperatorError("UNSAFE_ASSET", "Asset exceeded the size limit")
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError as exc:
+        raise OperatorError("UNSAFE_ASSET", "Asset could not be read") from exc
+    finally:
+        os.close(fd)
 
 
 def check_tag(version: str) -> str:
