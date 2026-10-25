@@ -538,3 +538,70 @@ def test_verify_unsigned_verifier_failures_are_sanitized(
     assert caught.value.code == "BUILD_NOT_VERIFIED"
     assert str(caught.value) == (
         "Source rebuild or signed dependency-lock verification failed")
+
+
+def test_state_rejects_symlinked_xdg_ancestor_before_creation(monkeypatch, tmp_path):
+    """A private leaf under a redirected XDG parent is not trusted state."""
+    actual = tmp_path / "actual-state-home"
+    actual.mkdir(mode=0o700)
+    alias = tmp_path / "linked-state-home"
+    alias.symlink_to(actual, target_is_directory=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(alias))
+    with pytest.raises(release.OperatorError) as caught:
+        release.guard_state_dir(release.state_root(), create=True)
+    assert caught.value.code == "UNSAFE_STATE"
+    assert not (actual / "repocache-release").exists()
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o777])
+def test_state_rejects_nonroot_writable_xdg_ancestor(monkeypatch, tmp_path, mode):
+    """An owner-controlled but shared writable parent is renameable."""
+    parent = tmp_path / "shared-state-home"
+    parent.mkdir()
+    parent.chmod(mode)
+    monkeypatch.setenv("XDG_STATE_HOME", str(parent))
+    with pytest.raises(release.OperatorError) as caught:
+        release.guard_state_dir(release.state_root(), create=True)
+    assert caught.value.code == "UNSAFE_STATE"
+    assert not (parent / "repocache-release").exists()
+
+
+def test_candidate_lock_refuses_fifo_without_blocking(monkeypatch, tmp_path):
+    """A malicious FIFO in place of a lock must not hang an owner operation."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    base = release.state_root()
+    base.mkdir(mode=0o700)
+    path = base / "v0.5.0.lock"
+    os.mkfifo(path, mode=0o600)
+    with pytest.raises(release.OperatorError) as caught:
+        with release.candidate_lock("v0.5.0"):
+            pytest.fail("FIFO must never acquire the release lock")
+    assert caught.value.code == "UNSAFE_STATE"
+
+
+def test_candidate_lock_refuses_named_inode_swapped_after_open(monkeypatch, tmp_path):
+    """An inode lock no longer named by the path cannot serialize candidates."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    base = release.state_root()
+    base.mkdir(mode=0o700)
+    path = base / "v0.5.0.lock"
+    real_open = os.open
+    swapped = False
+
+    def replace_after_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        fd = (real_open(file, flags, mode) if dir_fd is None
+              else real_open(file, flags, mode, dir_fd=dir_fd))
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            assert flags & os.O_NONBLOCK
+            path.rename(base / "detached.lock")
+            path.write_bytes(b"new untrusted lock")
+        return fd
+
+    monkeypatch.setattr(release.os, "open", replace_after_open)
+    with pytest.raises(release.OperatorError) as caught:
+        with release.candidate_lock("v0.5.0"):
+            pytest.fail("Detached lock must never protect a candidate")
+    assert swapped and caught.value.code == "UNSAFE_STATE"
+    assert path.read_bytes() == b"new untrusted lock"
