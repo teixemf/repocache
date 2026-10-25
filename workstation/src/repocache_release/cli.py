@@ -133,6 +133,30 @@ def gh_json(endpoint: str) -> dict[str, Any]:
     return data
 
 
+def _assert_stable_inode(path: Path, fd: int, before: os.stat_result,
+                         *, code: str) -> None:
+    """Fail closed if a verified file changes or its pathname is replaced.
+
+    Reading through a safe descriptor prevents symlink following, but alone
+    cannot attest that the *named* file is still the one just verified.
+    This is a best-effort local race guard, not protection from a compromised
+    owner account or a swap after the final check.
+    """
+    try:
+        after = os.fstat(fd)
+        named = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise OperatorError(code, "Verified file changed during read") from exc
+    if (not stat.S_ISREG(named.st_mode) or after.st_nlink != 1
+            or named.st_nlink != 1
+            or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+            or (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino)
+            or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or after.st_ctime_ns != before.st_ctime_ns):
+        raise OperatorError(code, "Verified file changed during read")
+
+
 def digest(path: Path) -> str:
     """Hash the validated asset inode, not a path that can change before open."""
     try:
@@ -158,6 +182,7 @@ def digest(path: Path) -> str:
                 if remaining < 0:
                     raise OperatorError("UNSAFE_ASSET", "Asset exceeded the size limit")
                 h.update(chunk)
+        _assert_stable_inode(path, fd, info, code="UNSAFE_ASSET")
         return h.hexdigest()
     except OSError as exc:
         raise OperatorError("UNSAFE_ASSET", "Asset could not be read") from exc
@@ -260,6 +285,7 @@ def read_state(version: str) -> dict[str, Any] | None:
             raise OperatorError("UNSAFE_STATE", "State file is not private, unique or is oversized")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             raw = stream.read(65537)
+        _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
     except OSError as exc:
         raise OperatorError("INVALID_STATE", "Release state record could not be read") from exc
     finally:
@@ -584,6 +610,7 @@ def read_checksum(path: Path) -> str:
             raise OperatorError("UNSAFE_ASSET", "Checksum inode is unsafe or oversized")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             raw = stream.read(513)
+        _assert_stable_inode(path, fd, info, code="UNSAFE_ASSET")
         if len(raw) > 512:
             raise OperatorError("UNSAFE_ASSET", "Checksum exceeded the size limit")
         return raw.decode("ascii")

@@ -62,7 +62,7 @@ def test_state_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
     assert outside.read_text() == '{"not": "a release state"}'
 
 
-def test_state_reads_open_inode_not_replacement_path(monkeypatch, tmp_path):
+def test_state_refuses_path_replacement_after_open(monkeypatch, tmp_path):
     path, record = _state(monkeypatch, tmp_path)
     original_open = os.open
     swapped = False
@@ -80,7 +80,9 @@ def test_state_reads_open_inode_not_replacement_path(monkeypatch, tmp_path):
         return fd
 
     monkeypatch.setattr(release.os, "open", replace_after_open)
-    assert release.read_state("v0.5.0") == record
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert caught.value.code == "UNSAFE_STATE"
     assert swapped
     assert path.read_text() == '{"untrusted": true}'
 
@@ -138,7 +140,7 @@ def test_asset_digest_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
     assert private.read_bytes() == b"not an asset"
 
 
-def test_asset_digest_reads_opened_inode_after_path_replacement(monkeypatch, tmp_path):
+def test_asset_digest_refuses_path_replacement_after_open(monkeypatch, tmp_path):
     """A changed pathname after open cannot change the bytes being hashed."""
     import hashlib
     asset = tmp_path / "candidate.tar.gz"
@@ -160,7 +162,9 @@ def test_asset_digest_reads_opened_inode_after_path_replacement(monkeypatch, tmp
         return fd
 
     monkeypatch.setattr(release.os, "open", replace_after_open)
-    assert release.digest(asset) == hashlib.sha256(original).hexdigest()
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert caught.value.code == "UNSAFE_ASSET"
     assert swapped and asset.read_bytes() == b"substituted candidate"
 
 
@@ -217,7 +221,7 @@ def test_asset_digest_rechecks_limit_during_read(monkeypatch, tmp_path):
     assert caught.value.code == "UNSAFE_ASSET"
 
 
-def test_checksum_read_accepts_small_ascii_and_opened_inode(monkeypatch, tmp_path):
+def test_checksum_read_refuses_path_replacement_after_open(monkeypatch, tmp_path):
     path = tmp_path / "candidate.sha256"
     original = "a" * 64 + "  candidate.tar.gz\n"
     path.write_text(original, encoding="ascii")
@@ -235,9 +239,54 @@ def test_checksum_read_accepts_small_ascii_and_opened_inode(monkeypatch, tmp_pat
         return fd
 
     monkeypatch.setattr(release.os, "open", replace_after_open)
-    assert release.read_checksum(path) == original
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
     assert swapped
     assert path.read_text() == "untrusted replacement"
+
+
+
+def test_checksum_read_accepts_stable_small_ascii_file(tmp_path):
+    path = tmp_path / "candidate.sha256"
+    expected = "a" * 64 + "  candidate.tar.gz\\n"
+    path.write_text(expected, encoding="ascii")
+    assert release.read_checksum(path) == expected
+
+
+def test_asset_digest_refuses_inplace_growth_during_stream(monkeypatch, tmp_path):
+    """An opened inode changing mid-hash must not be reported as verified."""
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original unsigned bytes")
+    original_fdopen = os.fdopen
+    mutated = False
+
+    class MutatingReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def read(self, size=-1):
+            nonlocal mutated
+            chunk = self.stream.read(size)
+            if chunk and not mutated:
+                mutated = True
+                with asset.open("ab") as stream:
+                    stream.write(b"unreviewed appended bytes")
+            return chunk
+
+    monkeypatch.setattr(release.os, "fdopen",
+                        lambda fd, *a, **kw: MutatingReader(
+                            original_fdopen(fd, *a, **kw)))
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert mutated and caught.value.code == "UNSAFE_ASSET"
 
 
 def test_checksum_read_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
