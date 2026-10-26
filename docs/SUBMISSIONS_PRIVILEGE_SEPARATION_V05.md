@@ -285,3 +285,27 @@ complete. This does not authenticate the intake-owned queue itself, prove
 native SELinux/systemd, accept #17/#57 in full or satisfy #76 signing.
 No endpoint, key, tag, release, production or rollback gate changed.
 Independent security review and PR-specific merge permission remain pending.
+
+
+### 2026-10-26 duplicate-ID schema downgrade: root decisions and retention
+
+The intake identity owns SQLite and can replace the proposals table without
+its PRIMARY KEY constraint. An administrator decision's `UPDATE ... WHERE id=?`
+could then change multiple rows under one protected root receipt. More
+critically, retention's `DELETE ... WHERE id=?` could erase a forged
+same-ID PENDING row while purging a legitimate expired decided row.
+
+The scoped fix checks that exactly one SQLite proposal matches the identifier
+under the existing `BEGIN IMMEDIATE` transaction **before** writing a root
+decision receipt, reconciling a decision, or deleting an expired row.
+Malformed count replies fail closed. Three adversarial SQLite regressions
+remove the uniqueness constraint and verify that decide, reconcile and
+retention refuse the duplicate without modifying receipts, rows or nonces.
+The underlying intake queue remains untrusted and may lose availability.
+
+**PASS (isolated SQLite reproduction):** removing PRIMARY KEY allows two
+same-ID rows; the old UPDATE affects both and DELETE removes a pending
+duplicate. **NOT VERIFIED until fresh exact-HEAD CI:** both Python suites,
+nine protected contexts, independent security review, native-host UID/SELinux,
+original #17/#57 and actual signed #76 acceptance. No release, production
+listener, security gate or rollback behavior is changed.

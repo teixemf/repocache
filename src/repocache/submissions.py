@@ -361,6 +361,22 @@ class SubmissionQueue:
                              sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _require_unique_proposal(db, ident: str) -> None:
+        """Refuse duplicate IDs even if intake replaced SQLite PRIMARY KEY.
+
+        A root receipt authorizes exactly one proposal. Without this check,
+        UPDATE/DELETE WHERE id=? can affect additional service-controlled rows
+        after a compromised intake UID drops the uniqueness constraint.
+        Call under BEGIN IMMEDIATE before any journal write or deletion.
+        """
+        count = db.execute(
+            "SELECT COUNT(*) FROM proposals WHERE id=?", (ident,)
+        ).fetchone()
+        if (type(count) is not tuple or len(count) != 1 or
+                type(count[0]) is not int or count[0] != 1):
+            raise SubmissionError("invalid_stored_proposal", 503)
+
     def _journal(self) -> DecisionJournal:
         return DecisionJournal(self.journal_dir)
 
@@ -522,6 +538,7 @@ class SubmissionQueue:
                     if row is None:
                         raise SubmissionError("proposal_missing", 404)
                     row = self._checked_proposal_row(row, requested_id=ident)
+                    self._require_unique_proposal(db, ident)
                     proposal_digest = self._proposal_digest(row)
                     # The root UI binds the approval to the exact metadata
                     # displayed earlier, not merely its mutable SQLite version.
@@ -589,6 +606,7 @@ class SubmissionQueue:
                     if row is None:
                         raise SubmissionError("proposal_missing", 404)
                     row = self._checked_proposal_row(row, requested_id=ident)
+                    self._require_unique_proposal(db, ident)
                     chain = journal.read(ident)
                     if not chain:
                         raise SubmissionError("no_authoritative_decision", 409)
@@ -643,6 +661,9 @@ class SubmissionQueue:
                         if row[5] == "PENDING":
                             raise SubmissionError("invalid_stored_proposal", 503)
                         ident = row[0]
+                        # A forged duplicate PENDING row with the same ID
+                        # must never be removed by the later DELETE WHERE id.
+                        self._require_unique_proposal(db, ident)
                         chain = journal.read(ident)
                         self._verify_state(row[5], row[6],
                                            self._proposal_digest(row), chain)

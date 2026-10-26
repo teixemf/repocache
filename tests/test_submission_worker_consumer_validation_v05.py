@@ -310,3 +310,68 @@ def test_pending_refuses_decided_row_hidden_by_compromised_sqlite_schema(
         queue.pending()
     assert (exc.value.code, exc.value.status) == ("unaudited_decision_state", 503)
     assert queue.audit(ident) == []
+
+
+@pytest.mark.parametrize("operation", ["decide", "reconcile", "maintain"])
+def test_root_refuses_duplicate_ids_after_intake_drops_primary_key(
+    operator_queue, operation,
+):
+    """One journal receipt must never authorize two service-owned SQL rows.
+
+    A compromised intake UID can replace the table and remove its PRIMARY
+    KEY. The pre-fix decision UPDATE affected both rows; retention DELETE
+    could even remove a PENDING duplicate when purging a decided row.
+    """
+    queue, ident = operator_queue
+    if operation != "decide":
+        queue.decide(ident, "review", expected_version=0)
+    before_audit = queue.audit(ident)
+
+    with queue._connect() as db:
+        db.executescript("""
+            ALTER TABLE proposals RENAME TO original_proposals;
+            CREATE TABLE proposals AS SELECT * FROM original_proposals;
+            DROP TABLE original_proposals;
+        """)
+        if operation == "maintain":
+            # Only the authorized decided row is expired. The second row is
+            # PENDING, but DELETE WHERE id=? would previously remove both.
+            db.execute("UPDATE proposals SET changed=0 WHERE id=?", (ident,))
+            db.execute(
+                "INSERT INTO proposals "
+                "SELECT id,os_id,os_version,items,'PENDING',0,created,0 "
+                "FROM proposals WHERE id=?", (ident,),
+            )
+        else:
+            db.execute(
+                "INSERT INTO proposals SELECT * FROM proposals WHERE id=?",
+                (ident,),
+            )
+        assert db.execute(
+            "SELECT COUNT(*) FROM proposals WHERE id=?", (ident,),
+        ).fetchone()[0] == 2
+
+    with pytest.raises(SubmissionError) as exc:
+        if operation == "decide":
+            queue.decide(ident, "review", expected_version=0)
+        elif operation == "reconcile":
+            queue.reconcile(ident, approved=True)
+        else:
+            queue.maintain(
+                approved=True, now=2_000_000_000, decided_retention_days=180,
+            )
+    assert (exc.value.code, exc.value.status) == ("invalid_stored_proposal", 503)
+    assert queue.audit(ident) == before_audit
+    with queue._connect() as db:
+        rows = db.execute(
+            "SELECT state,version FROM proposals WHERE id=? ORDER BY rowid",
+            (ident,),
+        ).fetchall()
+        assert len(rows) == 2
+        if operation == "decide":
+            assert rows == [("PENDING", 0), ("PENDING", 0)]
+        elif operation == "reconcile":
+            assert rows == [("REVIEWED", 1), ("REVIEWED", 1)]
+        else:
+            assert rows == [("REVIEWED", 1), ("PENDING", 0)]
+            assert db.execute("SELECT COUNT(*) FROM nonces").fetchone()[0] == 1
