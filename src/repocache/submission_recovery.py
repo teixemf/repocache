@@ -84,6 +84,18 @@ def _verify_sqlite(path: Path) -> None:
                 "SELECT COUNT(*) FROM proposals WHERE state IS NULL OR state NOT IN "
                 "('PENDING','REVIEWED','REJECTED')").fetchone()[0]:
                 raise SubmissionError("invalid_restore_schema", 422)
+            # The intake-owned SQLite schema may also be rebuilt without
+            # NOT NULL or CHECK constraints. A malformed version or timestamp
+            # must not be accepted as a restorable queue simply because the
+            # SQLite pages are structurally intact. SQLite's dynamic typing
+            # makes a declared INTEGER column insufficient for this check.
+            if db.execute(
+                "SELECT 1 FROM proposals WHERE "
+                "typeof(version) != 'integer' OR version < 0 OR "
+                "typeof(created) != 'integer' OR "
+                "typeof(changed) != 'integer' LIMIT 1"
+            ).fetchone() is not None:
+                raise SubmissionError("invalid_restore_schema", 422)
     except sqlite3.Error as exc:
         raise SubmissionError("corrupt_restore_backup", 422) from exc
 
