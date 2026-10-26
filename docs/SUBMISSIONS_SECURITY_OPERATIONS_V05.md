@@ -112,7 +112,7 @@ periodic jobs:
   before the gate passes: 180 days is only the current example/default.
 - **Restore:** requires a root-controlled offline snapshot, strict owner/mode,
   regular files without final-component symlinks, bounded file size, SQLite
-  integrity/schema checks (including explicit refusal of NULL proposal states
+  integrity/schema checks (including explicit refusal of NULL proposal states and non-integer/negative versions or non-integer timestamps
   even if the SQLite file itself passes `integrity_check`) and a *verified inactive* systemd
   `repocache-intake.service`. Absence of systemd or an unknown state denies
   restoration. It writes to a private temporary file, fsyncs, saves the
