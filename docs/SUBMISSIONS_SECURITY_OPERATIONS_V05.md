@@ -133,11 +133,16 @@ encryption, retention/rotation, disposal, restore drills and actual systemd /
 SELinux host assurance remain **NOT VERIFIED under Gate B #49**: this
 document does not authorize an on-host operation or endpoint activation.
 
-Example commands (not an execution checklist or approval):
+Example commands (not an execution checklist or approval; all paths and
+permissions require separate verification):
 
 ```text
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin journal-verify
 /opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin backup --output /root/private/backup-YYYYMMDD.sqlite3 --approve
+/opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin journal-backup --output-dir /root/private/decisions-YYYYMMDD --approve
+# Only after separate authorization and verified backup/journal custody:
 /opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin maintain --retention-days 180 --approve
+# Separate offline recovery only, never part of routine maintenance:
 /opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin restore --input /root/private/known-good.sqlite3 --approve
 ```
 
@@ -149,7 +154,11 @@ Example commands (not an execution checklist or approval):
 - **Retention — formally selected Gate A policy (2026-10-26):** retain
   decided REVIEWED/REJECTED proposals for **180 complete calendar days**,
   counting only from the most recent verified **root decision receipt**,
-  not an intake-writable SQLite timestamp. This is the maintainer-delegated
+  not an intake-writable SQLite timestamp. In the implemented UTC-epoch
+  calculation, 180 days means **180 × 86,400 elapsed seconds**; deletion
+  requires the latest trusted receipt to be strictly *older* than that
+  cutoff (not equal to it). Local daylight-saving transitions must not
+  shorten the interval. This is the maintainer-delegated
   operating policy recorded in [issue #17](https://github.com/teixemf/repocache/issues/17#issuecomment-6425375723).
   Only an explicit root/approval action may then remove the eligible
   *convenience* SQLite proposals and audit rows. **All PENDING proposals
