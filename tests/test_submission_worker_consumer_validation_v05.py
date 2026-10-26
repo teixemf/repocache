@@ -454,3 +454,58 @@ def test_pending_accepts_65_distinct_decided_ids_across_keyset_pages(
         queue.decide(proposal_id, "review", expected_version=0)
     assert queue.pending(limit=1) == []
     assert len(queue.audit(max(identifiers))) == 1
+
+
+def test_maintain_paginates_expired_rows_under_worker_ipc_limit(
+    operator_queue, monkeypatch,
+):
+    """Retention must not fetch the entire intake-controlled queue at once.
+
+    A service-owned database may contain 50,000 records with large metadata;
+    a single fetchall would exceed the worker's 16 MiB JSON reply limit.
+    Exercise the 64-row boundary using actual SQLite and protected receipts.
+    """
+    queue, first = operator_queue
+    item = {
+        "os": {"id": "debian", "version": "13"},
+        "repositories": [{
+            "type": "apt-list", "url": "https://mirror.example.org/debian/",
+            "insecure_http": False,
+        }],
+    }
+    identifiers = [first]
+    for index in range(64):
+        identifiers.append(queue.enqueue(
+            f"retention-key-{index}", f"retention-nonce-{index}",
+            f"retention-digest-{index}", item, now=100001 + index,
+        ))
+    for ident in identifiers:
+        queue.decide(ident, "review", expected_version=0)
+
+    original_connect = queue._connect
+    page_queries = []
+
+    @contextmanager
+    def tracked_connect():
+        with original_connect() as db:
+            class Proxy:
+                def execute(self, sql, params=()):
+                    if "FROM proposals WHERE state!='PENDING' AND changed <" in sql:
+                        assert "ORDER BY id LIMIT 65" in sql
+                        page_queries.append((sql, params))
+                    return db.execute(sql, params)
+
+            yield Proxy()
+
+    monkeypatch.setattr(queue, "_connect", tracked_connect)
+    result = queue.maintain(
+        approved=True, now=2_000_000_000, decided_retention_days=180,
+    )
+    assert result["purged_decided"] == 65
+    assert len(page_queries) == 2
+    assert " AND id>?" not in page_queries[0][0]
+    assert " AND id>?" in page_queries[1][0]
+    with original_connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM proposals").fetchone() == (0,)
+    # Retention removes service-owned rows, never authoritative root receipts.
+    assert len(queue.audit(first)) == 1
