@@ -206,11 +206,10 @@ def test_maintain_rejects_bad_worker_row_without_purge(
     )
     with pytest.raises(SubmissionError) as exc:
         queue.maintain(approved=True, now=2_000_000_000, decided_retention_days=180)
-    # A syntactically valid but forged ID is refused by the root journal,
-    # while malformed projections fail the earlier schema validation.
-    expected_code = ("unaudited_decision_state" if mutation == "wrong_id"
-                     else "invalid_stored_proposal")
-    assert (exc.value.code, exc.value.status) == (expected_code, 503)
+    # The new unique-ID preflight rejects even a syntactically valid
+    # forged ID before consulting the root journal. All malformed worker
+    # projections now fail with the same conservative storage error.
+    assert (exc.value.code, exc.value.status) == ("invalid_stored_proposal", 503)
     assert cleanup == [True]
     assert len(queue.audit(ident)) == 1
     with real_connect() as db:
