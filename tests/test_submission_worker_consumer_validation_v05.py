@@ -228,3 +228,51 @@ def test_legitimate_fixed_projections_remain_usable(operator_queue):
     assert queue.pending() == []
     assert queue.audit(ident)[0][1] == "REVIEWED"
     queue.reconcile(ident, approved=True)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("items", '[{"type":"apt-list","url":"https://mirror.example.org/changed/","insecure_http":false}]'),
+    ("os_version", "13.1"),
+    ("created", 100001),
+])
+def test_pending_refuses_decided_metadata_drift_against_root_receipt(
+    operator_queue, field, value,
+):
+    queue, ident = operator_queue
+    queue.decide(ident, "review", expected_version=0)
+    with queue._connect() as db:
+        # Fixed test-only column names; a compromised intake UID may mutate
+        # these columns without being able to edit the protected root receipt.
+        db.execute(f"UPDATE proposals SET {field}=? WHERE id=?", (value, ident))
+    with pytest.raises(SubmissionError) as exc:
+        queue.pending()
+    assert (exc.value.code, exc.value.status) == ("unaudited_decision_state", 503)
+    assert queue.audit(ident)[0][1] == "REVIEWED"
+
+
+def test_pending_refuses_replayed_decided_worker_page(operator_queue, monkeypatch):
+    queue, ident = operator_queue
+    queue.decide(ident, "review", expected_version=0)
+    decided = _row(queue, ident)
+    _real, cleanup = _inject_result(
+        queue, monkeypatch, statement="WHERE state!='PENDING' AND id>?",
+        response=[decided, decided], operation="fetchall",
+    )
+    with pytest.raises(SubmissionError) as exc:
+        queue.pending()
+    assert (exc.value.code, exc.value.status) == ("unaudited_decision_state", 503)
+    assert cleanup == [True]
+
+
+def test_pending_refuses_oversized_decided_worker_page(operator_queue, monkeypatch):
+    queue, ident = operator_queue
+    queue.decide(ident, "reject", expected_version=0)
+    decided = _row(queue, ident)
+    _real, cleanup = _inject_result(
+        queue, monkeypatch, statement="WHERE state!='PENDING' AND id>?",
+        response=[decided] * 65, operation="fetchall",
+    )
+    with pytest.raises(SubmissionError) as exc:
+        queue.pending()
+    assert (exc.value.code, exc.value.status) == ("unaudited_decision_state", 503)
+    assert cleanup == [True]

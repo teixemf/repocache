@@ -343,14 +343,12 @@ class SubmissionQueue:
 
     @staticmethod
     def _checked_decided_row(row: tuple) -> tuple:
-        """The decided-row preflight has an exact three-column projection."""
-        if type(row) is not tuple or len(row) != 3:
-            raise SubmissionError("unaudited_decision_state", 503)
-        ident, state, version = row
-        if (type(ident) is not str or
-                not re.fullmatch(r"[a-f0-9]{32}", ident) or
-                type(state) is not str or state not in {"REVIEWED", "REJECTED"} or
-                type(version) is not int or version < 1):
+        """Reject forged decided metadata, not only state/version fields."""
+        try:
+            row = SubmissionQueue._checked_proposal_row(row)
+        except SubmissionError as exc:
+            raise SubmissionError("unaudited_decision_state", 503) from exc
+        if row[5] not in {"REVIEWED", "REJECTED"} or row[6] < 1:
             raise SubmissionError("unaudited_decision_state", 503)
         return row
 
@@ -393,24 +391,45 @@ class SubmissionQueue:
                     # Refuse a service-UID-forged REVIEWED/REJECTED row that
                     # would otherwise disappear from the pending-only query.
                     # The root journal decides which transitions are valid.
-                    decided = db.execute(
-                        "SELECT id,state,version FROM proposals WHERE state!='PENDING'"
-                    ).fetchall()
-                    if decided:
-                        known: dict[str, set[str]] = {}
-                        # Enumerate the protected directory just once. Chain
-                        # verification for every decided row then scales with
-                        # its receipts, not with all receipt filenames squared.
-                        for entry in journal.directory.iterdir():
-                            name = entry.name
-                            if name.endswith(".json"):
-                                known.setdefault(name.split(".", 1)[0], set()).add(name)
+                    # The intake UID can retain REVIEWED state/version
+                    # while replacing metadata. Bind every decided row to its
+                    # root receipt; page to bound worker IPC response sizes.
+                    last_id = ""
+                    checked = 0
+                    known = None
+                    while True:
+                        decided = db.execute(
+                            "SELECT id,os_id,os_version,items,created,state,version "
+                            "FROM proposals WHERE state!='PENDING' AND id>? "
+                            "ORDER BY id LIMIT 64",
+                            (last_id,)).fetchall()
+                        if type(decided) is not list or len(decided) > 64:
+                            raise SubmissionError("unaudited_decision_state", 503)
+                        if not decided:
+                            break
+                        if known is None:
+                            known = {}
+                            # Enumerate root-protected receipts once.
+                            for entry in journal.directory.iterdir():
+                                name = entry.name
+                                if name.endswith(".json"):
+                                    known.setdefault(name.split(".", 1)[0], set()).add(name)
                         for result in decided:
-                            ident, state, version = self._checked_decided_row(result)
+                            row = self._checked_decided_row(result)
+                            ident, state, version = row[0], row[5], row[6]
+                            if ident <= last_id:
+                                raise SubmissionError("unaudited_decision_state", 503)
+                            last_id = ident
+                            checked += 1
+                            if checked > 50000:
+                                raise SubmissionError("unaudited_decision_state", 503)
                             chain = journal.read(ident, known_names=known.get(ident, set()))
                             if (not chain or chain[-1]["state"] != state or
-                                    chain[-1]["version"] != version):
+                                    chain[-1]["version"] != version or
+                                    chain[-1]["proposal_digest"] != self._proposal_digest(row)):
                                 raise SubmissionError("unaudited_decision_state", 503)
+                        if len(decided) < 64:
+                            break
                     # Verify all returned rows against root-owned receipts.
                     # The intake may not forge a REVIEWED state by editing DB.
                     rows = db.execute(

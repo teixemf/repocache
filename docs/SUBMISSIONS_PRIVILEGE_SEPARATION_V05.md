@@ -256,3 +256,27 @@ new PR HEAD Python 3.12/3.13 tests, all nine required GitHub contexts,
 independent security review, original #17/#57 acceptance and native host
 Gate B #49. No claim of worker authenticity, signer custody, real signed
 candidate acceptance, production activation or release approval.
+
+
+### 2026-10-26 decided-row metadata binding (scoped #17/#57 follow-up)
+
+**Finding:** the root administrator's pending-list preflight previously compared
+only a service-UID-controlled decided row's ID, state and version against the
+protected decision receipt. A compromised intake SQLite database could retain
+those values while changing stored OS, repositories or creation time; the
+pending view would silently skip the row without detecting metadata drift.
+The root receipt remained authoritative, but listing verification was incomplete.
+
+**Candidate fix:** validate all seven decided-row fields and compare the exact
+proposal metadata SHA-256 to the root-owned receipt under the existing journal
+lock and one SQLite transaction. Keyset pages of at most 64 rows avoid
+exceeding the 16 MiB service-worker response limit; reject duplicate/out-of-
+order pages and more than the queue's 50,000-record limit. Three persisted
+metadata-tamper tests and two hostile-worker pagination tests were added.
+
+**Evidence:** PASS for source-level scope inspection; exact-new-HEAD Python
+3.12/3.13 tests and nine mandatory GitHub checks **NOT VERIFIED** until runs
+complete. This does not authenticate the intake-owned queue itself, prove
+native SELinux/systemd, accept #17/#57 in full or satisfy #76 signing.
+No endpoint, key, tag, release, production or rollback gate changed.
+Independent security review and PR-specific merge permission remain pending.
