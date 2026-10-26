@@ -129,7 +129,9 @@ periodic jobs:
   regular files without final-component symlinks, bounded file size, SQLite
   integrity/schema checks (including refusal of NULL proposal states, malformed
   or duplicate proposal IDs, non-integer/negative versions and non-integer
-  timestamps, even if SQLite `integrity_check` passes; also rejects extra\n  SQLite CHECK constraints that could deny future nonce/audit writes) and a *verified inactive*
+  timestamps, even if SQLite `integrity_check` passes; also rejects extra
+  SQLite CHECK constraints that could deny future nonce/audit writes) and a
+  *verified inactive*
   systemd `repocache-intake.service`. Absence of systemd or an unknown state denies
   restoration. It writes to a private temporary file, fsyncs, saves the
   **previous** database in the root-owned backup directory and atomically
