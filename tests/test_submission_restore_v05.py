@@ -149,7 +149,7 @@ def test_restore_refuses_invalid_version_or_timestamp(
     None,
     "not-a-32-character-hex-id",
     "A" * 32,
-    "a" * 32 + "\\x00" + "junk",
+    "a" * 32 + chr(0) + "junk",
 ])
 def test_restore_refuses_invalid_proposal_identifier(restored_state, replacement):
     dbfile, backup, first, second = restored_state
