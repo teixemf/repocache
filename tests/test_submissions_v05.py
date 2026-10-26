@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import secrets
+import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -198,17 +199,30 @@ def test_listener_requires_explicit_enablement(queue):
         server.server_close()
 
 
-def test_keyring_rejects_unsafe_permissions(tmp_path):
+def test_keyring_rejects_unsafe_permissions(tmp_path, monkeypatch):
+    from repocache import intake
+
     parent = tmp_path / "keys"
     parent.mkdir(mode=0o700)
-    parent.chmod(0o700)
+    parent.chmod(0o750)
     keyring = parent / "keyring.json"
     keyring.write_text(json.dumps({"keys": [{
         "key_id": "test", "secret": base64.urlsafe_b64encode(KEY).decode().rstrip("=")}]}))
-    keyring.chmod(0o600)
+    keyring.chmod(0o640)
+
+    # Model root ownership in a non-root unit fixture. The real owner/GID
+    # checks have separate policy tests and disposable real-UID CI coverage.
+    monkeypatch.setattr(intake, "_service_gid", os.getegid)
+    monkeypatch.setattr(intake, "_trusted_keyring_directory",
+                        lambda path, gid: None)
+    monkeypatch.setattr(intake, "_keyring_file_valid",
+                        lambda info, gid: (stat.S_ISREG(info.st_mode) and
+                                           info.st_gid == gid and
+                                           stat.S_IMODE(info.st_mode) == 0o640 and
+                                           info.st_nlink == 1))
     assert load_keyring(keyring) == {"test": KEY}
     keyring.chmod(0o644)
-    with pytest.raises(SubmissionError):
+    with pytest.raises(SubmissionError, match="invalid_credentials"):
         load_keyring(keyring)
 
 def test_unhashable_kind_and_boolean_schema_fail_cleanly_without_insert(queue):
