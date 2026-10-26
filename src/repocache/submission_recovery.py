@@ -77,8 +77,11 @@ def _verify_sqlite(path: Path) -> None:
             if not {"id", "os_id", "os_version", "items", "state", "version",
                     "created", "changed"}.issubset(proposal_columns):
                 raise SubmissionError("invalid_restore_schema", 422)
+            # SQLite NULL does not satisfy NOT IN (three-valued logic).
+            # A service-owned queue can have its NOT NULL constraint removed;
+            # never restore a backup with a hidden invalid proposal state.
             if db.execute(
-                "SELECT COUNT(*) FROM proposals WHERE state NOT IN "
+                "SELECT COUNT(*) FROM proposals WHERE state IS NULL OR state NOT IN "
                 "('PENDING','REVIEWED','REJECTED')").fetchone()[0]:
                 raise SubmissionError("invalid_restore_schema", 422)
     except sqlite3.Error as exc:
