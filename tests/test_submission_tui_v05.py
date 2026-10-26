@@ -110,3 +110,14 @@ def test_admin_only_submission_screen(tmp_path, monkeypatch):
             await pilot.press("n")
             assert app._last_review is None
     asyncio.run(exercise())
+
+
+def test_repository_requests_is_public_ui_label_only():
+    """Keep the approved user-facing name without changing internal tab IDs."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1]
+              / "src/repocache/tui.py").read_text(encoding="utf-8")
+    assert '("5", "tab(\'submissions\')", "Repository Requests")' in source
+    assert 'with TabPane("✚ REPOSITORY REQUESTS", id="submissions"):' in source
+    assert 'with TabPane("✚ SUBMISSIONS", id="submissions"):' not in source

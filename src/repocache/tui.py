@@ -41,7 +41,7 @@ class RepoCacheApp(App):
         ("2", "tab('repos')", "Repositories"),
         ("3", "tab('metrics')", "Metrics"),
         ("4", "tab('diagnostics')", "Diagnostics"),
-        ("5", "tab('submissions')", "Submissions"),
+        ("5", "tab('submissions')", "Repository Requests"),
         ("y", "review_selected", "Review proposal"),
         ("n", "reject_selected", "Reject proposal"),
         ("u", "undo_review", "Undo review"),
@@ -132,7 +132,7 @@ class RepoCacheApp(App):
                     yield Static("REQUEST VOLUME PER HOUR", id="metric-title", classes="note")
                     yield Sparkline(None, id="histogram", min_color="#215ca7", max_color="#27e6c2")
                     yield Static("Time ranges and limitations", id="metric-details", classes="panel")
-            with TabPane("✚ SUBMISSIONS", id="submissions"):
+            with TabPane("✚ REPOSITORY REQUESTS", id="submissions"):
                 yield Static("No network intake is activated by this screen.", classes="note")
                 yield Static("Root-only review of pending metadata", id="proposal-note", classes="panel")
                 yield DataTable(id="proposal-table", cursor_type="row", zebra_stripes=True)
