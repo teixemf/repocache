@@ -255,7 +255,7 @@ def test_pending_refuses_replayed_decided_worker_page(operator_queue, monkeypatc
     queue.decide(ident, "review", expected_version=0)
     decided = _row(queue, ident)
     _real, cleanup = _inject_result(
-        queue, monkeypatch, statement="WHERE (state!='PENDING' OR state IS NULL) AND id>?",
+        queue, monkeypatch, statement="WHERE (state!='PENDING' OR state IS NULL)",
         response=[decided, decided], operation="fetchall",
     )
     with pytest.raises(SubmissionError) as exc:
@@ -269,7 +269,7 @@ def test_pending_refuses_oversized_decided_worker_page(operator_queue, monkeypat
     queue.decide(ident, "reject", expected_version=0)
     decided = _row(queue, ident)
     _real, cleanup = _inject_result(
-        queue, monkeypatch, statement="WHERE (state!='PENDING' OR state IS NULL) AND id>?",
+        queue, monkeypatch, statement="WHERE (state!='PENDING' OR state IS NULL)",
         response=[decided] * 65, operation="fetchall",
     )
     with pytest.raises(SubmissionError) as exc:
@@ -278,27 +278,34 @@ def test_pending_refuses_oversized_decided_worker_page(operator_queue, monkeypat
     assert cleanup == [True]
 
 
-def test_pending_refuses_null_state_hidden_by_compromised_sqlite_schema(operator_queue):
-    """A service-UID writer can replace SQLite schema, not just row values.
+@pytest.mark.parametrize("field,value", [
+    ("state", None),
+    ("id", None),
+    ("id", ""),
+])
+def test_pending_refuses_decided_row_hidden_by_compromised_sqlite_schema(
+    operator_queue, field, value,
+):
+    """Intake-writable SQLite schema can be replaced, removing constraints.
 
-    SQL NULL is omitted by both state='PENDING' and state!='PENDING'.
-    The root listing must reject this row, not silently report no proposals.
-    This synthetic test does not establish native UID/SELinux confinement.
+    NULL state is excluded by SQL equality/inequality. NULL/empty IDs sort
+    before a keyset cursor initialized to an empty string. None may hide a
+    forged decision from root. This is synthetic, not native UID proof.
     """
     queue, ident = operator_queue
     with queue._connect() as db:
-        # Model full SQLite file control by the intake UID: replace the
-        # schema with an unconstrained copy, preserving the proposal.
         db.executescript("""
             ALTER TABLE proposals RENAME TO original_proposals;
             CREATE TABLE proposals AS SELECT * FROM original_proposals WHERE 0;
             INSERT INTO proposals SELECT * FROM original_proposals;
             DROP TABLE original_proposals;
         """)
-        db.execute("UPDATE proposals SET state=NULL WHERE id=?", (ident,))
-        assert db.execute(
-            "SELECT COUNT(*) FROM proposals WHERE state='PENDING' OR state!='PENDING'"
-        ).fetchone()[0] == 0
+        db.execute("UPDATE proposals SET state='REVIEWED' WHERE id=?", (ident,))
+        db.execute(f"UPDATE proposals SET {field}=? WHERE id=?", (value, ident))
+        if field == "state":
+            assert db.execute(
+                "SELECT COUNT(*) FROM proposals WHERE state='PENDING' OR state!='PENDING'"
+            ).fetchone()[0] == 0
     with pytest.raises(SubmissionError) as exc:
         queue.pending()
     assert (exc.value.code, exc.value.status) == ("unaudited_decision_state", 503)
