@@ -428,11 +428,15 @@ class SubmissionQueue:
                         )
                         if last_id is not None:
                             query += " AND id>?"
-                        query += " ORDER BY id LIMIT 64"
+                        # Fetch one lookahead row. Without it, an intake
+                        # attacker can drop the primary key and place the
+                        # second copy of the 64th ID just beyond the page:
+                        # the next id>? query would silently skip that copy.
+                        query += " ORDER BY id LIMIT 65"
                         decided = db.execute(
                             query, () if last_id is None else (last_id,)
                         ).fetchall()
-                        if type(decided) is not list or len(decided) > 64:
+                        if type(decided) is not list or len(decided) > 65:
                             raise SubmissionError("unaudited_decision_state", 503)
                         if not decided:
                             break
@@ -443,7 +447,7 @@ class SubmissionQueue:
                                 name = entry.name
                                 if name.endswith(".json"):
                                     known.setdefault(name.split(".", 1)[0], set()).add(name)
-                        for result in decided:
+                        for result in decided[:64]:
                             row = self._checked_decided_row(result)
                             ident, state, version = row[0], row[5], row[6]
                             if last_id is not None and ident <= last_id:
@@ -457,7 +461,14 @@ class SubmissionQueue:
                                     chain[-1]["version"] != version or
                                     chain[-1]["proposal_digest"] != self._proposal_digest(row)):
                                 raise SubmissionError("unaudited_decision_state", 503)
-                        if len(decided) < 64:
+                        if len(decided) == 65:
+                            # A duplicate at the page boundary is not
+                            # visited by a strict id>? cursor on the next
+                            # page. Reject it before returning a pending view.
+                            lookahead = self._checked_decided_row(decided[64])
+                            if lookahead[0] <= last_id:
+                                raise SubmissionError("unaudited_decision_state", 503)
+                        else:
                             break
                     # Verify all returned rows against root-owned receipts.
                     # The intake may not forge a REVIEWED state by editing DB.
