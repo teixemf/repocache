@@ -33,7 +33,7 @@ Target access model (operator must validate on Debian 13 and AlmaLinux 10):
 | Object | Owner/group | Mode | Reason |
 | --- | --- | --- | --- |
 | `/etc/repocache-intake` | root:repocache-intake | 0750 | Only operator writes config; service traverses |
-| `/etc/repocache-intake/keyring.json` | repocache-intake:repocache-intake | 0600 | Only service and root can read active HMAC secrets |
+| `/etc/repocache-intake/keyring.json` | root:repocache-intake | 0640 | Root alone can change persistent keys; service group can read |
 | `/etc/repocache-intake/enable-local-intake` | root:root | 0644 | Explicit operator-created opt-in, never created by upgrade |
 | `/var/lib/repocache/submissions` | repocache-intake:repocache-intake | 0700 | Private SQLite storage |
 | `/var/lib/repocache/submissions/queue.sqlite3` | repocache-intake:repocache-intake | 0600 | Service writes; root-only TUI administrates |
@@ -50,6 +50,18 @@ group/other-writable. A higher root-owned sticky ancestor is permitted
 only above these protected directories. These are code and synthetic-CI
 checks; actual target filesystem, service account and SELinux protection
 remain **NOT VERIFIED** before production activation (#49).
+
+**SEC-GA-26-01 credential integrity:** The active keyring and its parent
+must be provisioned as `root:repocache-intake 0640` (file) and
+`root:repocache-intake 0750` (directory), respectively. A service-owned
+`0600` keyring is deliberately rejected by both startup and root-only key
+management. **There is no automatic migration**: stop/disable the intake,
+preserve a private operator-controlled backup, review the existing credentials,
+and explicitly migrate ownership/mode offline using approved root procedures
+before restarting. Actual native host checks, SELinux labels and restart
+approval remain #49 Gate B. The service can still read currently valid HMAC
+secrets by design; compromise of the running service requires immediate
+operator key replacement and controlled restart.
 
 The account must be fixed and non-login, and the service must run as that UID.
 The example unit has `NoNewPrivileges`, a strict read-only system tree,

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from repocache import intake_service, submission_admin, submission_keys
+from repocache import intake, intake_service, submission_admin, submission_keys
 from repocache.intake import load_keyring
 from repocache.submissions import SubmissionError
 
@@ -23,7 +23,18 @@ def keys(tmp_path, monkeypatch):
         path.mkdir(mode=0o700)
         path.chmod(0o700)
     monkeypatch.setattr(submission_keys, "_root_only", lambda: None)
-    monkeypatch.setattr(submission_keys, "_service_uid", os.geteuid)
+    monkeypatch.setattr(submission_keys, "_service_gid", os.getegid)
+    monkeypatch.setattr(intake, "_service_gid", os.getegid)
+    # Synthetic non-root fixture: use real temp file operations, but model
+    # root-owned inode identity separately with explicit policy tests below.
+    def synthetic_file_safe(info, group):
+        return (stat.S_ISREG(info.st_mode) and info.st_gid == group and
+                stat.S_IMODE(info.st_mode) == 0o640 and info.st_nlink == 1)
+    monkeypatch.setattr(submission_keys, "_keyring_file_valid", synthetic_file_safe)
+    monkeypatch.setattr(intake, "_keyring_file_valid", synthetic_file_safe)
+    monkeypatch.setattr(intake, "_trusted_keyring_directory", lambda path, gid: None)
+    monkeypatch.setattr(submission_keys, "_set_keyring_ownership",
+                        lambda fd, gid: os.fchmod(fd, 0o600))
     # The parent UID is synthetic; its access mode and no-symlink checks remain.
     original = submission_keys._trusted_directory
     def trusted(path, *, for_client):
@@ -37,7 +48,7 @@ def test_credentials_can_be_issued_rotated_and_revoked_offline(keys):
     keyring, handoff = keys
     client_a, client_b = handoff / "a.json", handoff / "b.json"
     submission_keys.issue_key(keyring, client_a, "client_A", approved=True)
-    assert keyring.stat().st_mode & 0o077 == 0
+    assert stat.S_IMODE(keyring.stat().st_mode) == 0o640
     assert client_a.stat().st_mode & 0o077 == 0
     first = json.loads(client_a.read_text())
     assert len(load_keyring(keyring)["client_A"]) == 32
@@ -138,7 +149,7 @@ def test_keyring_replacement_between_lstat_and_open_is_refused(
     submission_keys.issue_key(keyring, handoff / "client.json", "good", approved=True)
     alternate = keyring.parent / "alternate.json"
     alternate.write_bytes(keyring.read_bytes())
-    alternate.chmod(0o600)
+    alternate.chmod(0o640)
     original_open = intake.os.open
     replaced = []
 
@@ -168,7 +179,8 @@ def test_root_keyring_and_client_handoff_reject_renamable_ancestors(
     attacker = tmp_path / "attacker-controlled"
     protected = attacker / "root-owned-handoff"
     protected.mkdir(parents=True, mode=0o700)
-    protected.chmod(0o700)
+    protected.chmod(0o700 if for_client else 0o750)
+    monkeypatch.setattr(submission_keys, "_service_gid", os.getegid)
     original_lstat = Path.lstat
 
     def model_ownership(path, *args, **kwargs):
@@ -176,7 +188,10 @@ def test_root_keyring_and_client_handoff_reject_renamable_ancestors(
         if path == attacker:
             return SimpleNamespace(st_mode=stat.S_IFDIR | ancestor_mode,
                                    st_uid=ancestor_uid)
-        if path == protected or path == tmp_path or path in tmp_path.parents:
+        if path == protected:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | (0o700 if for_client else 0o750),
+                                   st_uid=0, st_gid=os.getegid())
+        if path == tmp_path or path in tmp_path.parents:
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
         return details
 
@@ -187,3 +202,42 @@ def test_root_keyring_and_client_handoff_reject_renamable_ancestors(
                 submission_keys._trusted_directory(protected, for_client=for_client)
         else:
             submission_keys._trusted_directory(protected, for_client=for_client)
+
+
+
+@pytest.mark.parametrize(("uid", "gid", "mode", "nlink", "valid"), [
+    (0, 101, 0o640, 1, True),
+    (1001, 101, 0o640, 1, False),  # service-owned: never trust persistence
+    (0, 102, 0o640, 1, False),
+    (0, 101, 0o660, 1, False),
+    (0, 101, 0o600, 1, False),   # unreadable by the dedicated service
+    (0, 101, 0o644, 1, False),
+    (0, 101, 0o640, 2, False),   # refuse unexpected hard links
+])
+def test_root_controlled_keyring_inode_policy(uid, gid, mode, nlink, valid):
+    policy = intake._keyring_file_valid
+    info = SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=uid, st_gid=gid,
+                           st_nlink=nlink, st_size=128)
+    assert policy(info, 101) is valid
+
+
+@pytest.mark.parametrize(("uid", "gid", "mode", "valid"), [
+    (0, 101, 0o750, True),
+    (1001, 101, 0o750, False),
+    (0, 102, 0o750, False),
+    (0, 101, 0o770, False),
+    (0, 101, 0o700, False),  # cannot traverse with service identity
+    (0, 101, 0o755, False),
+])
+def test_keyring_directory_policy(uid, gid, mode, valid):
+    info = SimpleNamespace(st_mode=stat.S_IFDIR | mode, st_uid=uid, st_gid=gid)
+    assert intake._keyring_directory_valid(info, 101) is valid
+
+
+def test_old_service_owned_keyring_is_not_silently_migrated(monkeypatch):
+    # Both readers and operator lifecycle operations must refuse the
+    # vulnerable previous ownership rather than silently trusting it.
+    info = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=101,
+                           st_gid=101, st_nlink=1, st_size=100)
+    assert not intake._keyring_file_valid(info, 101)
+    assert not submission_keys._keyring_file_valid(info, 101)
