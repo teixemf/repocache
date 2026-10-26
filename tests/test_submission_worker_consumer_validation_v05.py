@@ -374,3 +374,58 @@ def test_root_refuses_duplicate_ids_after_intake_drops_primary_key(
         else:
             assert rows == [("REVIEWED", 1), ("PENDING", 0)]
             assert db.execute("SELECT COUNT(*) FROM nonces").fetchone()[0] == 1
+
+
+def test_pending_rejects_duplicate_decided_id_at_keyset_page_boundary(
+    operator_queue,
+):
+    """The 65th row must not disappear behind a strict id>? page cursor.
+
+    The compromised intake identity can remove SQLite's primary key and
+    duplicate the largest decided ID. The first 64 rows all have valid root
+    receipts, so only the one-row lookahead detects the boundary duplicate.
+    This is a synthetic SQLite/journal regression, not native UID evidence.
+    """
+    queue, ident = operator_queue
+    item = {
+        "os": {"id": "debian", "version": "13"},
+        "repositories": [{
+            "type": "apt-list",
+            "url": "https://mirror.example.org/debian/",
+            "insecure_http": False,
+        }],
+    }
+    identifiers = [ident]
+    for index in range(63):
+        identifiers.append(queue.enqueue(
+            f"key-{index}", f"nonce-{index}", f"digest-{index}",
+            item, now=100001 + index,
+        ))
+    for proposal_id in identifiers:
+        queue.decide(proposal_id, "review", expected_version=0)
+
+    with queue._connect() as db:
+        db.executescript("""
+            ALTER TABLE proposals RENAME TO original_proposals;
+            CREATE TABLE proposals AS SELECT * FROM original_proposals;
+            DROP TABLE original_proposals;
+        """)
+        largest = max(identifiers)
+        db.execute(
+            "INSERT INTO proposals SELECT * FROM proposals WHERE id=?",
+            (largest,),
+        )
+        assert db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 65
+        assert db.execute(
+            "SELECT id FROM proposals ORDER BY id LIMIT 1 OFFSET 63"
+        ).fetchone()[0] == largest
+        assert db.execute(
+            "SELECT id FROM proposals ORDER BY id LIMIT 1 OFFSET 64"
+        ).fetchone()[0] == largest
+
+    with pytest.raises(SubmissionError) as exc:
+        queue.pending(limit=1)
+    assert (exc.value.code, exc.value.status) == (
+        "unaudited_decision_state", 503,
+    )
+    assert len(queue.audit(largest)) == 1
