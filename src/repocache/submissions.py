@@ -23,6 +23,26 @@ from repocache.submission_decisions import (
     DEFAULT_DECISION_DIR, DecisionJournal, DecisionError,
 )
 
+# Single trusted schema contract for initialization and privileged offline restore.
+# Restores fail closed on noncanonical constraints, indexes or schema objects.
+SUBMISSION_QUEUE_SCHEMA_SQL = """
+                    CREATE TABLE IF NOT EXISTS proposals(
+                        id TEXT PRIMARY KEY, os_id TEXT NOT NULL,
+                        os_version TEXT NOT NULL, items TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN ('PENDING','REVIEWED','REJECTED')),
+                        version INTEGER NOT NULL DEFAULT 0,
+                        created INTEGER NOT NULL, changed INTEGER NOT NULL);
+                    CREATE TABLE IF NOT EXISTS nonces(
+                        key_hash TEXT NOT NULL, nonce TEXT NOT NULL,
+                        digest TEXT NOT NULL, proposal_id TEXT NOT NULL,
+                        created INTEGER NOT NULL,
+                        PRIMARY KEY(key_hash, nonce));
+                    CREATE TABLE IF NOT EXISTS audit(
+                        seq INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL,
+                        changed INTEGER NOT NULL, actor_uid INTEGER NOT NULL,
+                        action TEXT NOT NULL, result TEXT NOT NULL);
+"""
+
 
 class SubmissionError(ValueError):
     def __init__(self, code: str, status: int = 422):
@@ -210,23 +230,7 @@ class SubmissionQueue:
                         or fst.st_uid not in owners):
                     raise SubmissionError("unsafe_store", 503)
             with self._connect() as connection:
-                connection.executescript("""
-                    CREATE TABLE IF NOT EXISTS proposals(
-                        id TEXT PRIMARY KEY, os_id TEXT NOT NULL,
-                        os_version TEXT NOT NULL, items TEXT NOT NULL,
-                        state TEXT NOT NULL CHECK(state IN ('PENDING','REVIEWED','REJECTED')),
-                        version INTEGER NOT NULL DEFAULT 0,
-                        created INTEGER NOT NULL, changed INTEGER NOT NULL);
-                    CREATE TABLE IF NOT EXISTS nonces(
-                        key_hash TEXT NOT NULL, nonce TEXT NOT NULL,
-                        digest TEXT NOT NULL, proposal_id TEXT NOT NULL,
-                        created INTEGER NOT NULL,
-                        PRIMARY KEY(key_hash, nonce));
-                    CREATE TABLE IF NOT EXISTS audit(
-                        seq INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL,
-                        changed INTEGER NOT NULL, actor_uid INTEGER NOT NULL,
-                        action TEXT NOT NULL, result TEXT NOT NULL);
-                    """)
+                connection.executescript(SUBMISSION_QUEUE_SCHEMA_SQL)
             if delegated:
                 from repocache.submission_db_worker import _check_queue, _service_account
                 _check_queue(self.path, _service_account().pw_uid)
@@ -313,6 +317,52 @@ class SubmissionQueue:
             raise SubmissionError("store_unavailable", 503) from exc
 
     @staticmethod
+    def _checked_proposal_row(row: tuple, *, requested_id: str | None = None,
+                              expected_state: str | None = None) -> tuple:
+        """Validate fixed SQL projections before any privileged decision.
+
+        A service-UID worker can return a scalar-only row with the wrong
+        number, order or meaning of fields. The generic cursor cannot know
+        this schema. Refuse malformed rows before hashing or journal writes.
+        """
+        if type(row) is not tuple or len(row) != 7:
+            raise SubmissionError("invalid_stored_proposal", 503)
+        ident, os_id, os_version, items, created, state, version = row
+        if (type(ident) is not str or
+                not re.fullmatch(r"[a-f0-9]{32}", ident) or
+                (requested_id is not None and ident != requested_id) or
+                type(os_id) is not str or type(os_version) is not str or
+                not ((os_id == "debian" and
+                      re.fullmatch(r"13(?:\.[0-9]{1,4})?", os_version)) or
+                     (os_id == "almalinux" and
+                      re.fullmatch(r"10(?:\.[0-9]{1,4})?", os_version))) or
+                type(items) is not str or not 0 < len(items) <= 131072 or
+                type(created) is not int or
+                type(state) is not str or
+                state not in {"PENDING", "REVIEWED", "REJECTED"} or
+                (expected_state is not None and state != expected_state) or
+                type(version) is not int or version < 0):
+            raise SubmissionError("invalid_stored_proposal", 503)
+        # Escaped lone Unicode surrogates are legal worker JSON strings, but
+        # not UTF-8 text. Refuse them here for pending views and journal paths.
+        try:
+            items.encode("utf-8")
+        except UnicodeError as exc:
+            raise SubmissionError("invalid_stored_proposal", 503) from exc
+        return row
+
+    @staticmethod
+    def _checked_decided_row(row: tuple) -> tuple:
+        """Reject forged decided metadata, not only state/version fields."""
+        try:
+            row = SubmissionQueue._checked_proposal_row(row)
+        except SubmissionError as exc:
+            raise SubmissionError("unaudited_decision_state", 503) from exc
+        if row[5] not in {"REVIEWED", "REJECTED"} or row[6] < 1:
+            raise SubmissionError("unaudited_decision_state", 503)
+        return row
+
+    @staticmethod
     def _proposal_digest(row: tuple) -> str:
         # Bind administrator receipt to the exact persisted proposal metadata,
         # not to a mutable state/version/audit field controlled by intake.
@@ -320,6 +370,22 @@ class SubmissionQueue:
         payload = json.dumps([ident, os_id, os_version, items, created],
                              sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _require_unique_proposal(db, ident: str) -> None:
+        """Refuse duplicate IDs even if intake replaced SQLite PRIMARY KEY.
+
+        A root receipt authorizes exactly one proposal. Without this check,
+        UPDATE/DELETE WHERE id=? can affect additional service-controlled rows
+        after a compromised intake UID drops the uniqueness constraint.
+        Call under BEGIN IMMEDIATE before any journal write or deletion.
+        """
+        count = db.execute(
+            "SELECT COUNT(*) FROM proposals WHERE id=?", (ident,)
+        ).fetchone()
+        if (type(count) is not tuple or len(count) != 1 or
+                type(count[0]) is not int or count[0] != 1):
+            raise SubmissionError("invalid_stored_proposal", 503)
 
     def _journal(self) -> DecisionJournal:
         return DecisionJournal(self.journal_dir)
@@ -351,38 +417,81 @@ class SubmissionQueue:
                     # Refuse a service-UID-forged REVIEWED/REJECTED row that
                     # would otherwise disappear from the pending-only query.
                     # The root journal decides which transitions are valid.
-                    decided = db.execute(
-                        "SELECT id,state,version FROM proposals WHERE state!='PENDING'"
-                    ).fetchall()
-                    if decided:
-                        known: dict[str, set[str]] = {}
-                        # Enumerate the protected directory just once. Chain
-                        # verification for every decided row then scales with
-                        # its receipts, not with all receipt filenames squared.
-                        for entry in journal.directory.iterdir():
-                            name = entry.name
-                            if name.endswith(".json"):
-                                known.setdefault(name.split(".", 1)[0], set()).add(name)
-                        for ident, state, version in decided:
-                            if (not isinstance(ident, str) or
-                                    not re.fullmatch(r"[a-f0-9]{32}", ident) or
-                                    type(version) is not int or version < 1):
+                    # A compromised intake UID may also replace the SQLite
+                    # schema and set state=NULL, which ordinary SQL != and =
+                    # comparisons both omit. Treat NULL as an invalid decided
+                    # row rather than hiding it from administrator review.
+                    # The intake UID can retain REVIEWED state/version
+                    # while replacing metadata. Bind every decided row to its
+                    # root receipt; page to bound worker IPC response sizes.
+                    last_id = None
+                    checked = 0
+                    known = None
+                    while True:
+                        # The first page has no id>? predicate: a compromised
+                        # SQLite schema may contain NULL/empty/numeric IDs that
+                        # would otherwise sort before the empty-string cursor
+                        # and evade both pending and decided preflights.
+                        query = (
+                            "SELECT id,os_id,os_version,items,created,state,version "
+                            "FROM proposals WHERE (state!='PENDING' OR state IS NULL)"
+                        )
+                        if last_id is not None:
+                            query += " AND id>?"
+                        # Fetch one lookahead row. Without it, an intake
+                        # attacker can drop the primary key and place the
+                        # second copy of the 64th ID just beyond the page:
+                        # the next id>? query would silently skip that copy.
+                        query += " ORDER BY id LIMIT 65"
+                        decided = db.execute(
+                            query, () if last_id is None else (last_id,)
+                        ).fetchall()
+                        if type(decided) is not list or len(decided) > 65:
+                            raise SubmissionError("unaudited_decision_state", 503)
+                        if not decided:
+                            break
+                        if known is None:
+                            known = {}
+                            # Enumerate root-protected receipts once.
+                            for entry in journal.directory.iterdir():
+                                name = entry.name
+                                if name.endswith(".json"):
+                                    known.setdefault(name.split(".", 1)[0], set()).add(name)
+                        for result in decided[:64]:
+                            row = self._checked_decided_row(result)
+                            ident, state, version = row[0], row[5], row[6]
+                            if last_id is not None and ident <= last_id:
+                                raise SubmissionError("unaudited_decision_state", 503)
+                            last_id = ident
+                            checked += 1
+                            if checked > 50000:
                                 raise SubmissionError("unaudited_decision_state", 503)
                             chain = journal.read(ident, known_names=known.get(ident, set()))
                             if (not chain or chain[-1]["state"] != state or
-                                    chain[-1]["version"] != version):
+                                    chain[-1]["version"] != version or
+                                    chain[-1]["proposal_digest"] != self._proposal_digest(row)):
                                 raise SubmissionError("unaudited_decision_state", 503)
+                        if len(decided) == 65:
+                            # A duplicate at the page boundary is not
+                            # visited by a strict id>? cursor on the next
+                            # page. Reject it before returning a pending view.
+                            lookahead = self._checked_decided_row(decided[64])
+                            if lookahead[0] <= last_id:
+                                raise SubmissionError("unaudited_decision_state", 503)
+                        else:
+                            break
                     # Verify all returned rows against root-owned receipts.
                     # The intake may not forge a REVIEWED state by editing DB.
                     rows = db.execute(
                         "SELECT id,os_id,os_version,items,created,state,version "
                         "FROM proposals WHERE state='PENDING' ORDER BY created,id LIMIT ?",
                         (limit,)).fetchall()
-                    for ident, os_id, os_version, items, created, state, version in rows:
-                        if (not isinstance(items, str) or len(items) > 131072 or
-                                not isinstance(ident, str) or
-                                not re.fullmatch(r"[a-f0-9]{32}", ident)):
-                            raise SubmissionError("invalid_stored_proposal", 503)
+                    if type(rows) is not list or len(rows) > limit:
+                        raise SubmissionError("invalid_stored_proposal", 503)
+                    for result in rows:
+                        (ident, os_id, os_version, items, created, state,
+                         version) = self._checked_proposal_row(
+                             result, expected_state="PENDING")
                         _check_json_depth(items.encode("utf-8"),
                                           code="invalid_stored_proposal", status=503)
                         try:
@@ -447,8 +556,10 @@ class SubmissionQueue:
                     row = db.execute(
                         "SELECT id,os_id,os_version,items,created,state,version "
                         "FROM proposals WHERE id=?", (ident,)).fetchone()
-                    if not row:
+                    if row is None:
                         raise SubmissionError("proposal_missing", 404)
+                    row = self._checked_proposal_row(row, requested_id=ident)
+                    self._require_unique_proposal(db, ident)
                     proposal_digest = self._proposal_digest(row)
                     # The root UI binds the approval to the exact metadata
                     # displayed earlier, not merely its mutable SQLite version.
@@ -513,8 +624,10 @@ class SubmissionQueue:
                     row = db.execute(
                         "SELECT id,os_id,os_version,items,created,state,version "
                         "FROM proposals WHERE id=?", (ident,)).fetchone()
-                    if not row:
+                    if row is None:
                         raise SubmissionError("proposal_missing", 404)
+                    row = self._checked_proposal_row(row, requested_id=ident)
+                    self._require_unique_proposal(db, ident)
                     chain = journal.read(ident)
                     if not chain:
                         raise SubmissionError("no_authoritative_decision", 409)
@@ -557,25 +670,57 @@ class SubmissionQueue:
             with self._journal().locked() as journal:
                 with self._connect() as db:
                     db.execute("BEGIN IMMEDIATE")
-                    candidates = db.execute(
-                        "SELECT id,os_id,os_version,items,created,state,version "
-                        "FROM proposals WHERE state!='PENDING' AND changed < ?",
-                        (cutoff,)).fetchall()
+                    # Keep every worker response below the bounded IPC limit.
+                    # A 50,000-row queue with 128 KiB metadata per proposal
+                    # must not be fetched as one unbounded JSON reply.
                     expired = []
-                    for row in candidates:
-                        ident = row[0]
-                        if (not isinstance(ident, str) or
-                                not re.fullmatch(r"[a-f0-9]{32}", ident)):
+                    last_id = None
+                    checked = 0
+                    while True:
+                        query = (
+                            "SELECT id,os_id,os_version,items,created,state,version "
+                            "FROM proposals WHERE state!='PENDING' AND changed < ?"
+                        )
+                        params = (cutoff,)
+                        if last_id is not None:
+                            query += " AND id>?"
+                            params = (cutoff, last_id)
+                        # One lookahead detects a duplicate at the keyset
+                        # boundary even if intake dropped the PRIMARY KEY.
+                        query += " ORDER BY id LIMIT 65"
+                        candidates = db.execute(query, params).fetchall()
+                        if type(candidates) is not list or len(candidates) > 65:
                             raise SubmissionError("invalid_stored_proposal", 503)
-                        chain = journal.read(ident)
-                        self._verify_state(row[5], row[6],
-                                           self._proposal_digest(row), chain)
-                        if not chain:
-                            raise SubmissionError("unaudited_decision_state", 503)
-                        # The SQLite timestamp is untrusted; an intake writer
-                        # cannot shorten retention of root-authorized decisions.
-                        if chain[-1]["at"] < cutoff:
-                            expired.append(ident)
+                        if not candidates:
+                            break
+                        for result in candidates[:64]:
+                            row = self._checked_proposal_row(result)
+                            if row[5] == "PENDING":
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                            ident = row[0]
+                            if last_id is not None and ident <= last_id:
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                            last_id = ident
+                            checked += 1
+                            if checked > 50000:
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                            # A forged duplicate PENDING row with the same ID
+                            # must never be removed by DELETE WHERE id.
+                            self._require_unique_proposal(db, ident)
+                            chain = journal.read(ident)
+                            self._verify_state(row[5], row[6],
+                                               self._proposal_digest(row), chain)
+                            if not chain:
+                                raise SubmissionError("unaudited_decision_state", 503)
+                            # Intake timestamps cannot shorten root retention.
+                            if chain[-1]["at"] < cutoff:
+                                expired.append(ident)
+                        if len(candidates) == 65:
+                            lookahead = self._checked_proposal_row(candidates[64])
+                            if lookahead[0] <= last_id:
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                        else:
+                            break
                     # All replay windows are shorter than one day (30 seconds
                     # timestamp skew); retain nonces at least 24 hours.
                     dropped_nonces = db.execute(

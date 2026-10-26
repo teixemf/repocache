@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import pwd
 import re
 import stat
 import time
@@ -38,25 +39,54 @@ def _secret(encoded: str) -> bytes:
     return value
 
 
+def _service_gid() -> int:
+    """Resolve the fixed, non-root service group's identity."""
+    try:
+        user = pwd.getpwnam("repocache-intake")
+    except KeyError as exc:
+        raise SubmissionError("invalid_credentials", 503) from exc
+    if user.pw_uid <= 0 or user.pw_gid <= 0:
+        raise SubmissionError("invalid_credentials", 503)
+    return user.pw_gid
+
+
+def _keyring_file_valid(info: os.stat_result, gid: int) -> bool:
+    """An active keyring is writable by root, readable by the intake group."""
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == 0
+            and info.st_gid == gid and stat.S_IMODE(info.st_mode) == 0o640
+            and info.st_nlink == 1 and info.st_size <= 8192)
+
+
+def _keyring_directory_valid(info: os.stat_result, gid: int) -> bool:
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid == 0
+            and info.st_gid == gid and stat.S_IMODE(info.st_mode) == 0o750)
+
+
+def _trusted_keyring_directory(path: Path, gid: int) -> None:
+    if not _keyring_directory_valid(path.lstat(), gid):
+        raise SubmissionError("invalid_credentials", 503)
+    for ancestor in path.parents:
+        item = ancestor.lstat()
+        if (not stat.S_ISDIR(item.st_mode) or item.st_uid != 0 or
+                (item.st_mode & 0o022 and not item.st_mode & stat.S_ISVTX)):
+            raise SubmissionError("invalid_credentials", 503)
+
+
 def load_keyring(path: Path) -> dict[str, bytes]:
     """Read an operator-created protected keyring (never keys from requests)."""
     try:
+        group = _service_gid()
+        _trusted_keyring_directory(path.parent, group)
         st = path.lstat()
-        if (not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077
-                or st.st_uid not in {0, os.geteuid()} or st.st_size > 8192):
-            raise SubmissionError("invalid_credentials", 503)
-        if path.parent.lstat().st_mode & 0o022:
+        if not _keyring_file_valid(st, group):
             raise SubmissionError("invalid_credentials", 503)
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
         fd = os.open(path, flags)
         with os.fdopen(fd, "rb") as file:
             actual = os.fstat(file.fileno())
-            # The pathname may be replaced between lstat and open. Trust
-            # only the verified inode actually supplying HMAC credentials.
-            if (not stat.S_ISREG(actual.st_mode) or actual.st_mode & 0o077
-                    or actual.st_uid not in {0, os.geteuid()}
-                    or actual.st_size > 8192
-                    or (actual.st_dev, actual.st_ino) != (st.st_dev, st.st_ino)):
+            # Validate the opened inode, not just the pathname before open.
+            if (not _keyring_file_valid(actual, group) or
+                    (actual.st_dev, actual.st_ino) != (st.st_dev, st.st_ino)):
                 raise SubmissionError("invalid_credentials", 503)
             data = file.read(8193)
         doc = json.loads(data.decode("utf-8"))
