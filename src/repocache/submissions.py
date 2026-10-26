@@ -660,30 +660,57 @@ class SubmissionQueue:
             with self._journal().locked() as journal:
                 with self._connect() as db:
                     db.execute("BEGIN IMMEDIATE")
-                    candidates = db.execute(
-                        "SELECT id,os_id,os_version,items,created,state,version "
-                        "FROM proposals WHERE state!='PENDING' AND changed < ?",
-                        (cutoff,)).fetchall()
+                    # Keep every worker response below the bounded IPC limit.
+                    # A 50,000-row queue with 128 KiB metadata per proposal
+                    # must not be fetched as one unbounded JSON reply.
                     expired = []
-                    if type(candidates) is not list:
-                        raise SubmissionError("invalid_stored_proposal", 503)
-                    for result in candidates:
-                        row = self._checked_proposal_row(result)
-                        if row[5] == "PENDING":
+                    last_id = None
+                    checked = 0
+                    while True:
+                        query = (
+                            "SELECT id,os_id,os_version,items,created,state,version "
+                            "FROM proposals WHERE state!='PENDING' AND changed < ?"
+                        )
+                        params = (cutoff,)
+                        if last_id is not None:
+                            query += " AND id>?"
+                            params = (cutoff, last_id)
+                        # One lookahead detects a duplicate at the keyset
+                        # boundary even if intake dropped the PRIMARY KEY.
+                        query += " ORDER BY id LIMIT 65"
+                        candidates = db.execute(query, params).fetchall()
+                        if type(candidates) is not list or len(candidates) > 65:
                             raise SubmissionError("invalid_stored_proposal", 503)
-                        ident = row[0]
-                        # A forged duplicate PENDING row with the same ID
-                        # must never be removed by the later DELETE WHERE id.
-                        self._require_unique_proposal(db, ident)
-                        chain = journal.read(ident)
-                        self._verify_state(row[5], row[6],
-                                           self._proposal_digest(row), chain)
-                        if not chain:
-                            raise SubmissionError("unaudited_decision_state", 503)
-                        # The SQLite timestamp is untrusted; an intake writer
-                        # cannot shorten retention of root-authorized decisions.
-                        if chain[-1]["at"] < cutoff:
-                            expired.append(ident)
+                        if not candidates:
+                            break
+                        for result in candidates[:64]:
+                            row = self._checked_proposal_row(result)
+                            if row[5] == "PENDING":
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                            ident = row[0]
+                            if last_id is not None and ident <= last_id:
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                            last_id = ident
+                            checked += 1
+                            if checked > 50000:
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                            # A forged duplicate PENDING row with the same ID
+                            # must never be removed by DELETE WHERE id.
+                            self._require_unique_proposal(db, ident)
+                            chain = journal.read(ident)
+                            self._verify_state(row[5], row[6],
+                                               self._proposal_digest(row), chain)
+                            if not chain:
+                                raise SubmissionError("unaudited_decision_state", 503)
+                            # Intake timestamps cannot shorten root retention.
+                            if chain[-1]["at"] < cutoff:
+                                expired.append(ident)
+                        if len(candidates) == 65:
+                            lookahead = self._checked_proposal_row(candidates[64])
+                            if lookahead[0] <= last_id:
+                                raise SubmissionError("invalid_stored_proposal", 503)
+                        else:
+                            break
                     # All replay windows are shorter than one day (30 seconds
                     # timestamp skew); retain nonces at least 24 hours.
                     dropped_nonces = db.execute(
