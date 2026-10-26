@@ -36,8 +36,13 @@ That design is a **security FAIL** even when all synthetic CI jobs pass.
   communicates via bounded JSON pipes. SQL and parameters originate from
   trusted parent code, not from a submitted repository payload. Every
   command has bounded input/output and a timeout; errors and unavailable
-  worker binaries fail closed. A child exit or lost acknowledgement is not
-  reported as a successful decision.
+  worker binaries fail closed. Control replies for ping, SQL execution,
+  schema scripts and commit/rollback must contain exactly their documented
+  fields; cursor IDs must be positive and SQLite row counts at least -1.
+  Malformed or extra fields fail closed rather than being silently ignored.
+  These shape checks cannot authenticate a compromised worker's positive
+  acknowledgement or replace protected-journal reconciliation. A child exit
+  or lost acknowledgement is not reported as a successful decision.
 - The parent holds the root decision-journal lock across the worker
   transaction. Root writes a durable, hash-linked decision receipt first;
   the child then updates the untrusted queue. If the queue commit fails,
