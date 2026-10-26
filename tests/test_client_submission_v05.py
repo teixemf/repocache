@@ -46,12 +46,12 @@ class Response:
 
 
 def test_client_submits_explicitly_over_https_without_redirects(monkeypatch, credential):
-    # Base64-encoded nonces may legitimately contain "cccc"; a substring
-    # assertion against random HMAC/nonce values makes redaction tests flaky.
-    # Exercise that case deterministically while checking the *actual* secret.
+    # Nonces may legitimately contain "cccc"; test this without allowing a
+    # full raw fixture secret to be hidden inside the deterministic nonce.
+    # Both raw and encoded credential representations must stay off headers.
     monkeypatch.setattr(
         client.secrets, "token_bytes",
-        lambda n: (bytes.fromhex("71c71c") * ((n + 2) // 3))[:n])
+        lambda n: (bytes.fromhex("71c71c") + b"\x00" * n)[:n])
     calls = []
     class FakeOpener:
         def open(self, request, timeout):
@@ -67,6 +67,7 @@ def test_client_submits_explicitly_over_https_without_redirects(monkeypatch, cre
     assert request.get_header("X-repocache-nonce").startswith("cccc")
     credential_secret = base64.urlsafe_b64encode(b"c" * 32).decode().rstrip("=")
     assert not any(credential_secret in str(v) for v in request.headers.values())
+    assert not any("c" * 32 in str(v) for v in request.headers.values())
     assert client._RejectRedirects().redirect_request(None, None, 307, "", {},
                                                        "https://evil.example.net") is None
 
