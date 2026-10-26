@@ -95,6 +95,150 @@ def test_corrupt_source_never_replaces_working_queue(restored_state):
     assert _ids(dbfile) == {first, second}
 
 
+def test_restore_refuses_null_state_hidden_by_sql_not_in(restored_state):
+    dbfile, backup, first, second = restored_state
+    # A compromised intake UID can replace the SQLite schema and remove
+    # NOT NULL. The backup remains a valid SQLite database, but a NULL state
+    # is invisible to the old WHERE state NOT IN (...) preflight predicate.
+    with sqlite3.connect(backup) as db:
+        db.execute("CREATE TABLE nullable_proposals AS SELECT * FROM proposals")
+        db.execute("DROP TABLE proposals")
+        db.execute("ALTER TABLE nullable_proposals RENAME TO proposals")
+        db.execute("UPDATE proposals SET state=NULL WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert db.execute(
+            "SELECT COUNT(*) FROM proposals WHERE state NOT IN "
+            "('PENDING','REVIEWED','REJECTED')"
+        ).fetchone() == (0,)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("column,value", [
+    ("version", "NULL"),
+    ("version", "-1"),
+    ("version", "'malformed'"),
+    ("created", "NULL"),
+    ("changed", "'not-an-integer'"),
+])
+def test_restore_refuses_invalid_version_or_timestamp(
+    restored_state, column, value
+):
+    dbfile, backup, first, second = restored_state
+    # Simulate an intake-writable DB with its original NOT NULL constraints
+    # stripped. SQLite integrity_check still succeeds on these corrupt rows.
+    with sqlite3.connect(backup) as db:
+        db.execute("CREATE TABLE weak_proposals AS SELECT * FROM proposals")
+        db.execute("DROP TABLE proposals")
+        db.execute("ALTER TABLE weak_proposals RENAME TO proposals")
+        db.execute(f"UPDATE proposals SET {column}={value} WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("replacement", [
+    None,
+    "not-a-32-character-hex-id",
+    "A" * 32,
+    "a" * 32 + chr(0) + "junk",
+    "a" * 31 + chr(0),  # Exactly 32 bytes: GLOB truncates at NUL.
+    "a" * 30 + chr(0) + "b",  # Exactly 32 bytes, trailing text hidden.
+])
+def test_restore_refuses_invalid_proposal_identifier(restored_state, replacement):
+    dbfile, backup, first, second = restored_state
+    # SQLite rowid tables permit NULL even with id TEXT PRIMARY KEY.
+    # Invalid text and embedded NUL bytes are likewise integrity-clean.
+    # SQLite GLOB alone ignores bytes after NUL; the BLOB-level check must
+    # reject even an identifier with exactly 32 bytes.
+    with sqlite3.connect(backup) as db:
+        db.execute("UPDATE proposals SET id=? WHERE id=?", (replacement, first))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+def test_restore_refuses_duplicate_id_after_schema_downgrade(restored_state):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute("CREATE TABLE weak_proposals AS SELECT * FROM proposals")
+        db.execute("DROP TABLE proposals")
+        db.execute("ALTER TABLE weak_proposals RENAME TO proposals")
+        db.execute("INSERT INTO proposals SELECT * FROM proposals WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("table", ["nonces", "audit"])
+def test_restore_refuses_incomplete_operational_table_schema(
+    restored_state, table,
+):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute(f"DROP TABLE {table}")
+        db.execute(f"CREATE TABLE {table}(unrelated TEXT)")
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("table,ddl", [
+    ("nonces", "CREATE TABLE nonces(key_hash TEXT,nonce TEXT,digest TEXT,"
+     "proposal_id TEXT,created INTEGER)"),
+    ("audit", "CREATE TABLE audit(seq INTEGER,proposal_id TEXT,changed INTEGER,"
+     "actor_uid INTEGER,action TEXT,result TEXT)"),
+])
+def test_restore_refuses_missing_operational_primary_keys(
+    restored_state, table, ddl,
+):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute(f"DROP TABLE {table}")
+        db.execute(ddl)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+def test_restore_refuses_decided_state_without_journal_version(restored_state):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute("UPDATE proposals SET state='REVIEWED', version=0 WHERE id=?",
+                   (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
 def test_interrupted_atomic_swap_keeps_original_queue(restored_state, monkeypatch):
     dbfile, backup, first, second = restored_state
     def fail_replace(*args, **kwargs):
@@ -306,3 +450,29 @@ def test_restore_refuses_service_planted_fifo_without_blocking(
             dbfile, backup, approved=True, service_stopped=lambda: True
         )
     assert opened_fifo and dbfile.is_fifo()
+
+
+@pytest.mark.parametrize("column,sql_value", [
+    ("os_id", "'ubuntu'"),
+    ("os_version", "'14'"),
+    ("os_version", "'13.bad'"),
+    ("items", "'not-json'"),
+    ("items", "'[]'"),
+    ("items", "'[1]'"),
+    ("items", """'[{"type":"apt-list","url":"https://mirror.example.org/debian/","insecure_http":true}]'"""),
+    ("items", """'[{"type":"apt-list","url":"http://127.0.0.1/","insecure_http":true}]'"""),
+])
+def test_restore_refuses_invalid_proposal_metadata_before_swap(
+    restored_state, column, sql_value,
+):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        # Service-owned state is not a trusted schema authority.
+        db.execute(f"UPDATE proposals SET {column}={sql_value} WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))

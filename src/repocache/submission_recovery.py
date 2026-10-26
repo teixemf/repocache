@@ -7,7 +7,9 @@ normal install/upgrade process calls this function.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
+import re
 import pwd
 import shutil
 import sqlite3
@@ -17,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from repocache.submissions import SubmissionError
+from repocache.submissions import SubmissionError, _url, _check_json_depth, _pairs, _invalid_constant
 
 MAX_RESTORE_BYTES = 128 * 1024 * 1024
 REQUIRED_TABLES = frozenset({"proposals", "nonces", "audit"})
@@ -77,10 +79,98 @@ def _verify_sqlite(path: Path) -> None:
             if not {"id", "os_id", "os_version", "items", "state", "version",
                     "created", "changed"}.issubset(proposal_columns):
                 raise SubmissionError("invalid_restore_schema", 422)
+            # The required tables must also retain the columns consumed by
+            # replay protection and administrative audit writes. A service-owned
+            # backup can have been rebuilt with arbitrary table definitions.
+            # The nonce composite primary key must remain enforced on restore.
+            nonce_columns = {row[1]: row for row in
+                             db.execute("PRAGMA table_info(nonces)")}
+            audit_columns = {row[1]: row for row in
+                             db.execute("PRAGMA table_info(audit)")}
+            if (not {"key_hash", "nonce", "digest", "proposal_id", "created"}.issubset(
+                        nonce_columns)
+                    or not {"seq", "proposal_id", "changed", "actor_uid",
+                            "action", "result"}.issubset(audit_columns)
+                    or nonce_columns["key_hash"][5] != 1
+                    or nonce_columns["nonce"][5] != 2
+                    or audit_columns["seq"][5] != 1):
+                raise SubmissionError("invalid_restore_schema", 422)
+            # SQLite NULL does not satisfy NOT IN (three-valued logic).
+            # A service-owned queue can have its NOT NULL constraint removed;
+            # never restore a backup with a hidden invalid proposal state.
             if db.execute(
-                "SELECT COUNT(*) FROM proposals WHERE state NOT IN "
+                "SELECT COUNT(*) FROM proposals WHERE state IS NULL OR state NOT IN "
                 "('PENDING','REVIEWED','REJECTED')").fetchone()[0]:
                 raise SubmissionError("invalid_restore_schema", 422)
+            # A rowid table's TEXT PRIMARY KEY can accept NULL, and a
+            # service-owned backup may have its uniqueness constraint removed.
+            # GLOB stops at embedded NUL even when the BLOB byte length is 32.
+            # Check all identifier bytes (including NUL) and duplicates before swap.
+            if db.execute(
+                "SELECT 1 FROM proposals WHERE id IS NULL OR "
+                "typeof(id) != 'text' OR length(CAST(id AS BLOB)) != 32 OR "
+                "id GLOB '*[^0-9a-f]*' OR "
+                "instr(CAST(id AS BLOB), X'00') > 0 LIMIT 1"
+            ).fetchone() is not None:
+                raise SubmissionError("invalid_restore_schema", 422)
+            if db.execute(
+                "SELECT 1 FROM proposals GROUP BY id HAVING COUNT(*) > 1 LIMIT 1"
+            ).fetchone() is not None:
+                raise SubmissionError("invalid_restore_schema", 422)
+            # The intake-owned SQLite schema may also be rebuilt without
+            # NOT NULL or CHECK constraints. A malformed version or timestamp
+            # must not be accepted as a restorable queue simply because the
+            # SQLite pages are structurally intact. SQLite's dynamic typing
+            # makes a declared INTEGER column insufficient for this check.
+            if db.execute(
+                "SELECT 1 FROM proposals WHERE "
+                "typeof(version) != 'integer' OR version < 0 OR "
+                "(state IN ('REVIEWED','REJECTED') AND version = 0) OR "
+                "typeof(created) != 'integer' OR "
+                "typeof(changed) != 'integer' LIMIT 1"
+            ).fetchone() is not None:
+                raise SubmissionError("invalid_restore_schema", 422)
+            # Restore is a privileged operation consuming intake-controlled
+            # records. Reject unusable metadata before installing the backup.
+            for os_id, os_version, items in db.execute(
+                    "SELECT os_id,os_version,items FROM proposals"):
+                if (type(os_id) is not str or type(os_version) is not str or
+                        not ((os_id == "debian" and re.fullmatch(
+                            r"13(?:\.[0-9]{1,4})?", os_version)) or
+                            (os_id == "almalinux" and re.fullmatch(
+                                r"10(?:\.[0-9]{1,4})?", os_version))) or
+                        type(items) is not str or not 0 < len(items) <= 131072):
+                    raise SubmissionError("invalid_restore_schema", 422)
+                try:
+                    raw = items.encode("utf-8")
+                    _check_json_depth(raw, code="invalid_restore_schema", status=422)
+                    repos = json.loads(items, object_pairs_hook=_pairs,
+                                       parse_constant=_invalid_constant)
+                except (ValueError, UnicodeError, RecursionError, TypeError) as exc:
+                    raise SubmissionError("invalid_restore_schema", 422) from exc
+                if type(repos) is not list or not 1 <= len(repos) <= 32:
+                    raise SubmissionError("invalid_restore_schema", 422)
+                seen = set()
+                for repo in repos:
+                    if (type(repo) is not dict or
+                            set(repo) != {"type", "url", "insecure_http"} or
+                            type(repo["type"]) is not str or
+                            type(repo["url"]) is not str or
+                            type(repo["insecure_http"]) is not bool or
+                            (os_id == "debian" and
+                             repo["type"] not in {"apt-list", "apt-deb822"}) or
+                            (os_id == "almalinux" and repo["type"] != "dnf")):
+                        raise SubmissionError("invalid_restore_schema", 422)
+                    try:
+                        canonical = _url(repo["url"])
+                    except SubmissionError as exc:
+                        raise SubmissionError("invalid_restore_schema", 422) from exc
+                    pair = (repo["type"], canonical)
+                    if (canonical != repo["url"] or
+                            repo["insecure_http"] != canonical.startswith("http://") or
+                            pair in seen):
+                        raise SubmissionError("invalid_restore_schema", 422)
+                    seen.add(pair)
     except sqlite3.Error as exc:
         raise SubmissionError("corrupt_restore_backup", 422) from exc
 
