@@ -104,6 +104,27 @@ def _verify_sqlite(path: Path) -> None:
                     or nonce_columns["nonce"][5] != 2
                     or audit_columns["seq"][5] != 1):
                 raise SubmissionError("invalid_restore_schema", 422)
+            # The canonical queue has exactly one implicit primary-key index
+            # each on proposals and nonces, and none on audit. A service-owned
+            # backup could add UNIQUE(key_hash) ON CONFLICT IGNORE to nonces:
+            # the composite PK still looks correct, but future nonce receipts
+            # are silently discarded. Reject extra indexes and any SQLite
+            # conflict-resolution clause before installing the backup.
+            for table, count in (("proposals", 1), ("nonces", 1), ("audit", 0)):
+                indexes = list(db.execute(f"PRAGMA index_list({table})"))
+                if (len(indexes) != count or any(
+                        index[2] != 1 or index[3] != "pk" or index[4] != 0
+                        for index in indexes)):
+                    raise SubmissionError("invalid_restore_schema", 422)
+                ddl = db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,)
+                ).fetchone()
+                # Matching CONFLICT itself also catches ON/**/CONFLICT,
+                # which SQLite accepts but a whitespace-only check misses.
+                if (ddl is None or type(ddl[0]) is not str or
+                        re.search(r"\bCONFLICT\b", ddl[0], re.IGNORECASE)):
+                    raise SubmissionError("invalid_restore_schema", 422)
             # SQLite NULL does not satisfy NOT IN (three-valued logic).
             # A service-owned queue can have its NOT NULL constraint removed;
             # never restore a backup with a hidden invalid proposal state.

@@ -13,6 +13,11 @@ before a privileged offline restore can replace the active queue. Restore
 also refuses persisted SQLite triggers: an intake-controlled trigger could
 silently suppress nonce replay records or delete PENDING proposals even when
 SQLite integrity and column checks pass. The canonical queue uses no triggers.
+Restore also refuses unexpected table indexes and SQLite conflict-resolution
+clauses: a modified nonce table can otherwise silently discard replay receipts
+while retaining the expected composite primary-key columns. These checks
+validate the offline snapshot only; they do not protect a service-writable
+queue from subsequent compromise.
 This preflight cannot stop a compromised intake UID from changing its writable
 database after restoration. Validation is synthetic/tested until the native
 Gate B checks and does not authorize service activation.
