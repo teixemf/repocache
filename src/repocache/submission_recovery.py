@@ -79,6 +79,22 @@ def _verify_sqlite(path: Path) -> None:
             if not {"id", "os_id", "os_version", "items", "state", "version",
                     "created", "changed"}.issubset(proposal_columns):
                 raise SubmissionError("invalid_restore_schema", 422)
+            # The required tables must also retain the columns consumed by
+            # replay protection and administrative audit writes. A service-owned
+            # backup can have been rebuilt with arbitrary table definitions.
+            # The nonce composite primary key must remain enforced on restore.
+            nonce_columns = {row[1]: row for row in
+                             db.execute("PRAGMA table_info(nonces)")}
+            audit_columns = {row[1]: row for row in
+                             db.execute("PRAGMA table_info(audit)")}
+            if (not {"key_hash", "nonce", "digest", "proposal_id", "created"}.issubset(
+                        nonce_columns)
+                    or not {"seq", "proposal_id", "changed", "actor_uid",
+                            "action", "result"}.issubset(audit_columns)
+                    or nonce_columns["key_hash"][5] != 1
+                    or nonce_columns["nonce"][5] != 2
+                    or audit_columns["seq"][5] != 1):
+                raise SubmissionError("invalid_restore_schema", 422)
             # SQLite NULL does not satisfy NOT IN (three-valued logic).
             # A service-owned queue can have its NOT NULL constraint removed;
             # never restore a backup with a hidden invalid proposal state.
@@ -109,6 +125,7 @@ def _verify_sqlite(path: Path) -> None:
             if db.execute(
                 "SELECT 1 FROM proposals WHERE "
                 "typeof(version) != 'integer' OR version < 0 OR "
+                "(state IN ('REVIEWED','REJECTED') AND version = 0) OR "
                 "typeof(created) != 'integer' OR "
                 "typeof(changed) != 'integer' LIMIT 1"
             ).fetchone() is not None:
