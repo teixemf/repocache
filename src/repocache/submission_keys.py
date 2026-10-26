@@ -173,7 +173,10 @@ def _write_keyring(path: Path, service_gid: int, keys: list[dict]) -> None:
         try:
             os.replace(name, path)
             _fsync_directory(path.parent)
-        except OSError as exc:
+        except BaseException as exc:
+            # SIGINT/SystemExit may arrive immediately after rename succeeds,
+            # before directory fsync. Preserve the confidential handoff even
+            # when interruption makes publication durability unknowable.
             raise _KeyringPublicationUncertain("keyring publication uncertain") from exc
     finally:
         if os.path.exists(name):

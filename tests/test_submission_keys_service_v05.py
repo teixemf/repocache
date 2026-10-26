@@ -416,3 +416,36 @@ def test_keyring_refuses_symlinked_or_unsafe_root_lock(
         )
     assert not (handoff / "a.json").exists()
     assert not keyring.exists()
+
+
+@pytest.mark.parametrize("publish_step", ["rename", "directory_sync"])
+def test_interrupted_keyring_publication_retains_private_handoff(
+    keys, monkeypatch, publish_step,
+):
+    keyring, handoff = keys
+    original_replace = submission_keys.os.replace
+    original_sync = submission_keys._fsync_directory
+
+    def interrupted_replace(*args):
+        original_replace(*args)
+        raise KeyboardInterrupt("synthetic post-rename interruption")
+
+    def interrupted_sync(directory):
+        if directory == keyring.parent:
+            raise KeyboardInterrupt("synthetic after-rename interruption")
+        return original_sync(directory)
+
+    with monkeypatch.context() as patch:
+        if publish_step == "rename":
+            patch.setattr(submission_keys.os, "replace", interrupted_replace)
+        else:
+            patch.setattr(submission_keys, "_fsync_directory", interrupted_sync)
+        with pytest.raises(
+            SubmissionError, match="credential_publication_uncertain"
+        ):
+            submission_keys.issue_key(
+                keyring, handoff / "a.json", "a", approved=True,
+            )
+
+    assert (handoff / "a.json").is_file()
+    assert set(load_keyring(keyring)) == {"a"}
