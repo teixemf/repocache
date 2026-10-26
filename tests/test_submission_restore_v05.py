@@ -118,6 +118,33 @@ def test_restore_refuses_null_state_hidden_by_sql_not_in(restored_state):
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
 
 
+@pytest.mark.parametrize("column,value", [
+    ("version", "NULL"),
+    ("version", "-1"),
+    ("version", "'malformed'"),
+    ("created", "NULL"),
+    ("changed", "'not-an-integer'"),
+])
+def test_restore_refuses_invalid_version_or_timestamp(
+    restored_state, column, value
+):
+    dbfile, backup, first, second = restored_state
+    # Simulate an intake-writable DB with its original NOT NULL constraints
+    # stripped. SQLite integrity_check still succeeds on these corrupt rows.
+    with sqlite3.connect(backup) as db:
+        db.execute("CREATE TABLE weak_proposals AS SELECT * FROM proposals")
+        db.execute("DROP TABLE proposals")
+        db.execute("ALTER TABLE weak_proposals RENAME TO proposals")
+        db.execute(f"UPDATE proposals SET {column}={value} WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
 def test_interrupted_atomic_swap_keeps_original_queue(restored_state, monkeypatch):
     dbfile, backup, first, second = restored_state
     def fail_replace(*args, **kwargs):
