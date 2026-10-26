@@ -161,7 +161,7 @@ def test_pending_rejects_forged_decided_preflight(
 ):
     queue, ident = operator_queue
     _real, cleanup = _inject_result(
-        queue, monkeypatch, statement="WHERE state!='PENDING'",
+        queue, monkeypatch, statement="WHERE (state!='PENDING' OR state IS NULL)",
         response=[decided_row], operation="fetchall",
     )
     with pytest.raises(SubmissionError) as exc:
@@ -255,7 +255,7 @@ def test_pending_refuses_replayed_decided_worker_page(operator_queue, monkeypatc
     queue.decide(ident, "review", expected_version=0)
     decided = _row(queue, ident)
     _real, cleanup = _inject_result(
-        queue, monkeypatch, statement="WHERE state!='PENDING' AND id>?",
+        queue, monkeypatch, statement="WHERE (state!='PENDING' OR state IS NULL) AND id>?",
         response=[decided, decided], operation="fetchall",
     )
     with pytest.raises(SubmissionError) as exc:
@@ -269,10 +269,37 @@ def test_pending_refuses_oversized_decided_worker_page(operator_queue, monkeypat
     queue.decide(ident, "reject", expected_version=0)
     decided = _row(queue, ident)
     _real, cleanup = _inject_result(
-        queue, monkeypatch, statement="WHERE state!='PENDING' AND id>?",
+        queue, monkeypatch, statement="WHERE (state!='PENDING' OR state IS NULL) AND id>?",
         response=[decided] * 65, operation="fetchall",
     )
     with pytest.raises(SubmissionError) as exc:
         queue.pending()
     assert (exc.value.code, exc.value.status) == ("unaudited_decision_state", 503)
     assert cleanup == [True]
+
+
+def test_pending_refuses_null_state_hidden_by_compromised_sqlite_schema(operator_queue):
+    """A service-UID writer can replace SQLite schema, not just row values.
+
+    SQL NULL is omitted by both state='PENDING' and state!='PENDING'.
+    The root listing must reject this row, not silently report no proposals.
+    This synthetic test does not establish native UID/SELinux confinement.
+    """
+    queue, ident = operator_queue
+    with queue._connect() as db:
+        # Model full SQLite file control by the intake UID: replace the
+        # schema with an unconstrained copy, preserving the proposal.
+        db.executescript("""
+            ALTER TABLE proposals RENAME TO original_proposals;
+            CREATE TABLE proposals AS SELECT * FROM original_proposals WHERE 0;
+            INSERT INTO proposals SELECT * FROM original_proposals;
+            DROP TABLE original_proposals;
+        """)
+        db.execute("UPDATE proposals SET state=NULL WHERE id=?", (ident,))
+        assert db.execute(
+            "SELECT COUNT(*) FROM proposals WHERE state='PENDING' OR state!='PENDING'"
+        ).fetchone()[0] == 0
+    with pytest.raises(SubmissionError) as exc:
+        queue.pending()
+    assert (exc.value.code, exc.value.status) == ("unaudited_decision_state", 503)
+    assert queue.audit(ident) == []
