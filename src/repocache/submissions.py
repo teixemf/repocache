@@ -391,6 +391,10 @@ class SubmissionQueue:
                     # Refuse a service-UID-forged REVIEWED/REJECTED row that
                     # would otherwise disappear from the pending-only query.
                     # The root journal decides which transitions are valid.
+                    # A compromised intake UID may also replace the SQLite
+                    # schema and set state=NULL, which ordinary SQL != and =
+                    # comparisons both omit. Treat NULL as an invalid decided
+                    # row rather than hiding it from administrator review.
                     # The intake UID can retain REVIEWED state/version
                     # while replacing metadata. Bind every decided row to its
                     # root receipt; page to bound worker IPC response sizes.
@@ -400,7 +404,7 @@ class SubmissionQueue:
                     while True:
                         decided = db.execute(
                             "SELECT id,os_id,os_version,items,created,state,version "
-                            "FROM proposals WHERE state!='PENDING' AND id>? "
+                            "FROM proposals WHERE (state!='PENDING' OR state IS NULL) AND id>? "
                             "ORDER BY id LIMIT 64",
                             (last_id,)).fetchall()
                         if type(decided) is not list or len(decided) > 64:
