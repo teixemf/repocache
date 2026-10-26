@@ -186,6 +186,59 @@ def test_restore_refuses_duplicate_id_after_schema_downgrade(restored_state):
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
 
 
+@pytest.mark.parametrize("table", ["nonces", "audit"])
+def test_restore_refuses_incomplete_operational_table_schema(
+    restored_state, table,
+):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute(f"DROP TABLE {table}")
+        db.execute(f"CREATE TABLE {table}(unrelated TEXT)")
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("table,ddl", [
+    ("nonces", "CREATE TABLE nonces(key_hash TEXT,nonce TEXT,digest TEXT,"
+     "proposal_id TEXT,created INTEGER)"),
+    ("audit", "CREATE TABLE audit(seq INTEGER,proposal_id TEXT,changed INTEGER,"
+     "actor_uid INTEGER,action TEXT,result TEXT)"),
+])
+def test_restore_refuses_missing_operational_primary_keys(
+    restored_state, table, ddl,
+):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute(f"DROP TABLE {table}")
+        db.execute(ddl)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+def test_restore_refuses_decided_state_without_journal_version(restored_state):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute("UPDATE proposals SET state='REVIEWED', version=0 WHERE id=?",
+                   (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
 def test_interrupted_atomic_swap_keeps_original_queue(restored_state, monkeypatch):
     dbfile, backup, first, second = restored_state
     def fail_replace(*args, **kwargs):
