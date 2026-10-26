@@ -504,6 +504,58 @@ def test_restore_refuses_executable_sqlite_triggers(
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
 
 
+
+@pytest.mark.parametrize("table,ddl,write_sql", [
+    (
+        "nonces",
+        "CREATE TABLE nonces(key_hash TEXT NOT NULL,nonce TEXT NOT NULL,"
+        "digest TEXT NOT NULL,proposal_id TEXT NOT NULL,"
+        "created INTEGER NOT NULL CHECK(created < 1),"
+        "PRIMARY KEY(key_hash,nonce))",
+        "INSERT INTO nonces VALUES ('k','n','d','p',100)",
+    ),
+    (
+        "audit",
+        "CREATE TABLE audit(seq INTEGER PRIMARY KEY,"
+        "proposal_id TEXT NOT NULL,changed INTEGER NOT NULL CHECK(changed < 1),"
+        "actor_uid INTEGER NOT NULL,action TEXT NOT NULL,result TEXT NOT NULL)",
+        "INSERT INTO audit(proposal_id,changed,actor_uid,action,result)"
+        " VALUES ('p',100,0,'REVIEW','ok')",
+    ),
+])
+def test_restore_refuses_future_write_blocking_check_constraints(
+    restored_state, table, ddl, write_sql,
+):
+    dbfile, backup, first, second = restored_state
+    # A compromised backup can have a valid SQLite integrity check and the
+    # expected primary-key indexes while denying all normal future writes.
+    with sqlite3.connect(backup) as db:
+        db.execute(f"DROP TABLE {table}")
+        db.execute(ddl)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            db.execute(write_sql)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+def test_restore_refuses_extra_proposal_check_constraint(restored_state):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute("ALTER TABLE proposals ADD COLUMN blocked INTEGER CHECK(blocked < 0)")
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
 @pytest.mark.parametrize("index_sql", [
     "CREATE UNIQUE INDEX nonce_digest_extra ON nonces(digest)",
     "CREATE INDEX audit_changed_extra ON audit(changed)",
