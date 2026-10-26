@@ -23,6 +23,26 @@ from repocache.submission_decisions import (
     DEFAULT_DECISION_DIR, DecisionJournal, DecisionError,
 )
 
+# Single trusted schema contract for initialization and privileged offline restore.
+# Restores fail closed on noncanonical constraints, indexes or schema objects.
+SUBMISSION_QUEUE_SCHEMA_SQL = """
+                    CREATE TABLE IF NOT EXISTS proposals(
+                        id TEXT PRIMARY KEY, os_id TEXT NOT NULL,
+                        os_version TEXT NOT NULL, items TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN ('PENDING','REVIEWED','REJECTED')),
+                        version INTEGER NOT NULL DEFAULT 0,
+                        created INTEGER NOT NULL, changed INTEGER NOT NULL);
+                    CREATE TABLE IF NOT EXISTS nonces(
+                        key_hash TEXT NOT NULL, nonce TEXT NOT NULL,
+                        digest TEXT NOT NULL, proposal_id TEXT NOT NULL,
+                        created INTEGER NOT NULL,
+                        PRIMARY KEY(key_hash, nonce));
+                    CREATE TABLE IF NOT EXISTS audit(
+                        seq INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL,
+                        changed INTEGER NOT NULL, actor_uid INTEGER NOT NULL,
+                        action TEXT NOT NULL, result TEXT NOT NULL);
+"""
+
 
 class SubmissionError(ValueError):
     def __init__(self, code: str, status: int = 422):
@@ -210,23 +230,7 @@ class SubmissionQueue:
                         or fst.st_uid not in owners):
                     raise SubmissionError("unsafe_store", 503)
             with self._connect() as connection:
-                connection.executescript("""
-                    CREATE TABLE IF NOT EXISTS proposals(
-                        id TEXT PRIMARY KEY, os_id TEXT NOT NULL,
-                        os_version TEXT NOT NULL, items TEXT NOT NULL,
-                        state TEXT NOT NULL CHECK(state IN ('PENDING','REVIEWED','REJECTED')),
-                        version INTEGER NOT NULL DEFAULT 0,
-                        created INTEGER NOT NULL, changed INTEGER NOT NULL);
-                    CREATE TABLE IF NOT EXISTS nonces(
-                        key_hash TEXT NOT NULL, nonce TEXT NOT NULL,
-                        digest TEXT NOT NULL, proposal_id TEXT NOT NULL,
-                        created INTEGER NOT NULL,
-                        PRIMARY KEY(key_hash, nonce));
-                    CREATE TABLE IF NOT EXISTS audit(
-                        seq INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL,
-                        changed INTEGER NOT NULL, actor_uid INTEGER NOT NULL,
-                        action TEXT NOT NULL, result TEXT NOT NULL);
-                    """)
+                connection.executescript(SUBMISSION_QUEUE_SCHEMA_SQL)
             if delegated:
                 from repocache.submission_db_worker import _check_queue, _service_account
                 _check_queue(self.path, _service_account().pw_uid)

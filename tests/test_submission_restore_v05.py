@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 
 from repocache import submission_recovery as recovery
-from repocache.submissions import SubmissionError, SubmissionQueue
+from repocache.submissions import (SubmissionError, SubmissionQueue,
+                                   SUBMISSION_QUEUE_SCHEMA_SQL)
 
 
 @pytest.fixture
@@ -629,5 +630,50 @@ def test_restore_refuses_altered_primary_key_conflict_policy(
         recovery.restore_offline(
             dbfile, backup, approved=True, service_stopped=lambda: True,
         )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+@pytest.mark.parametrize("policy,action,version", [
+    ("state IN ('PENDING')", "REVIEWED", 1),
+    ("state IN ('PENDING','REVIEWED')", "REJECTED", 1),
+    ("state IN ('PENDING','REVIEWED','REJECTED') "
+     "AND (state='PENDING' OR version >= 99)", "REVIEWED", 1),
+])
+def test_restore_refuses_modified_existing_state_check_semantics(
+    restored_state, policy, action, version,
+):
+    dbfile, backup, first, second = restored_state
+    active_before = dbfile.read_bytes()
+    canonical_check = (
+        "state TEXT NOT NULL "
+        "CHECK(state IN ('PENDING','REVIEWED','REJECTED'))"
+    )
+    altered_schema = SUBMISSION_QUEUE_SCHEMA_SQL.replace(
+        canonical_check, f"state TEXT NOT NULL CHECK({policy})",
+    )
+    assert altered_schema != SUBMISSION_QUEUE_SCHEMA_SQL
+    with sqlite3.connect(backup) as db:
+        original = list(db.execute("SELECT * FROM proposals"))
+        db.execute("DROP TABLE proposals")
+        db.executescript(altered_schema)
+        db.executemany("INSERT INTO proposals VALUES(?,?,?,?,?,?,?,?)", original)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert db.execute(
+            "SELECT state FROM proposals WHERE id=?", (first,)
+        ).fetchone() == ("PENDING",)
+        assert db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='proposals'"
+        ).fetchone()[0].count("CHECK(") == 1
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            db.execute(
+                "UPDATE proposals SET state=?,version=? WHERE id=?",
+                (action, version, first),
+            )
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert dbfile.read_bytes() == active_before
     assert _ids(dbfile) == {first, second}
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))

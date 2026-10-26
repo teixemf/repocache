@@ -145,11 +145,13 @@ periodic jobs:
   integrity and preflight validation of proposal state, IDs, versions,
   timestamps, OS metadata, canonical repository URLs, and the required nonce
   replay/audit table layout, even when SQLite `integrity_check` succeeds.
-  Restore preflight also rejects executable SQLite triggers, unexpected
-  indexes, altered conflict-resolution clauses and extra CHECK constraints;
-  it does not trust
-  integrity-clean but attacker-modified operational schemas. Each rejection
-  must preserve the existing queue and avoid a spurious rollback snapshot.
+  Restore preflight requires the exact canonical SQLite schema generated
+  from the same trusted DDL as queue initialization. Matching column names or
+  CHECK counts is insufficient: changed state restrictions, missing constraints,
+  triggers, unexpected indexes and altered conflict policies fail closed.
+  A backup with a noncanonical schema requires separate operator-controlled
+  remediation; no automatic schema migration is attempted. Each rejection
+  preserves the existing queue without creating a rollback snapshot.
   These checks only validate the offline snapshot; they do not protect an
   intake-writable database from compromise after restoration.
   Restoration also requires a *verified inactive* systemd

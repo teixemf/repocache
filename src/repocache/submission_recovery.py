@@ -19,10 +19,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from repocache.submissions import SubmissionError, _url, _check_json_depth, _pairs, _invalid_constant
+from repocache.submissions import (SubmissionError, SUBMISSION_QUEUE_SCHEMA_SQL,
+                                   _url, _check_json_depth, _pairs, _invalid_constant)
 
 MAX_RESTORE_BYTES = 128 * 1024 * 1024
-REQUIRED_TABLES = frozenset({"proposals", "nonces", "audit"})
 
 
 def _require_root() -> None:
@@ -71,67 +71,20 @@ def _verify_sqlite(path: Path) -> None:
         with sqlite3.connect(uri, uri=True, timeout=3) as db:
             if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise SubmissionError("corrupt_restore_backup", 422)
-            tables = {row[0] for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-            if not REQUIRED_TABLES.issubset(tables):
+            # SQLite integrity and individual column/constraint counts cannot
+            # prove the meaning of an attacker-controlled persisted schema.
+            # Compare all durable schema objects against SQLite's own schema
+            # generated from the SAME trusted DDL used by SubmissionQueue.
+            # This rejects changed CHECK expressions, omitted NOT NULL rules,
+            # executable triggers, extra indexes and modified conflict modes,
+            # before any privileged restore or rollback snapshot is published.
+            query = ("SELECT type,name,tbl_name,sql FROM sqlite_master "
+                     "ORDER BY type,name,tbl_name")
+            with sqlite3.connect(":memory:") as canonical_db:
+                canonical_db.executescript(SUBMISSION_QUEUE_SCHEMA_SQL)
+                expected_schema = canonical_db.execute(query).fetchall()
+            if db.execute(query).fetchall() != expected_schema:
                 raise SubmissionError("invalid_restore_schema", 422)
-            # Persisted SQLite triggers are executable queue policy supplied by
-            # the untrusted intake UID. A BEFORE INSERT RAISE(IGNORE) trigger
-            # can silently disable nonce replay tracking; an AFTER INSERT
-            # trigger can erase PENDING proposals. The canonical queue has
-            # no application-managed triggers, so refuse all of them.
-            if db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='trigger' LIMIT 1"
-            ).fetchone() is not None:
-                raise SubmissionError("invalid_restore_schema", 422)
-            proposal_columns = {row[1] for row in db.execute("PRAGMA table_info(proposals)")}
-            if not {"id", "os_id", "os_version", "items", "state", "version",
-                    "created", "changed"}.issubset(proposal_columns):
-                raise SubmissionError("invalid_restore_schema", 422)
-            # The required tables must also retain the columns consumed by
-            # replay protection and administrative audit writes. A service-owned
-            # backup can have been rebuilt with arbitrary table definitions.
-            # The nonce composite primary key must remain enforced on restore.
-            nonce_columns = {row[1]: row for row in
-                             db.execute("PRAGMA table_info(nonces)")}
-            audit_columns = {row[1]: row for row in
-                             db.execute("PRAGMA table_info(audit)")}
-            if (not {"key_hash", "nonce", "digest", "proposal_id", "created"}.issubset(
-                        nonce_columns)
-                    or not {"seq", "proposal_id", "changed", "actor_uid",
-                            "action", "result"}.issubset(audit_columns)
-                    or nonce_columns["key_hash"][5] != 1
-                    or nonce_columns["nonce"][5] != 2
-                    or audit_columns["seq"][5] != 1):
-                raise SubmissionError("invalid_restore_schema", 422)
-            # The canonical queue has exactly one implicit primary-key index
-            # each on proposals and nonces, and none on audit. A service-owned
-            # backup could add UNIQUE(key_hash) ON CONFLICT IGNORE to nonces:
-            # the composite PK still looks correct, but future nonce receipts
-            # are silently discarded. Reject extra indexes and any SQLite
-            # conflict-resolution clause before installing the backup.
-            for table, count in (("proposals", 1), ("nonces", 1), ("audit", 0)):
-                indexes = list(db.execute(f"PRAGMA index_list({table})"))
-                if (len(indexes) != count or any(
-                        index[2] != 1 or index[3] != "pk" or index[4] != 0
-                        for index in indexes)):
-                    raise SubmissionError("invalid_restore_schema", 422)
-                ddl = db.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-                    (table,)
-                ).fetchone()
-                # Matching CONFLICT itself also catches ON/**/CONFLICT,
-                # which SQLite accepts but a whitespace-only check misses.
-                if (ddl is None or type(ddl[0]) is not str or
-                        re.search(r"\bCONFLICT\b", ddl[0], re.IGNORECASE)):
-                    raise SubmissionError("invalid_restore_schema", 422)
-                # Extra CHECK clauses can make otherwise valid future nonce
-                # receipts or audit writes fail. The canonical proposals
-                # table has exactly one state CHECK; the other two have none.
-                # Reject modified constraint counts before swapping the queue.
-                expected_checks = 1 if table == "proposals" else 0
-                if len(re.findall(r"\bCHECK\b", ddl[0], re.IGNORECASE)) != expected_checks:
-                    raise SubmissionError("invalid_restore_schema", 422)
             # SQLite NULL does not satisfy NOT IN (three-valued logic).
             # A service-owned queue can have its NOT NULL constraint removed;
             # never restore a backup with a hidden invalid proposal state.
