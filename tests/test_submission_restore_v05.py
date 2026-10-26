@@ -95,6 +95,29 @@ def test_corrupt_source_never_replaces_working_queue(restored_state):
     assert _ids(dbfile) == {first, second}
 
 
+def test_restore_refuses_null_state_hidden_by_sql_not_in(restored_state):
+    dbfile, backup, first, second = restored_state
+    # A compromised intake UID can replace the SQLite schema and remove
+    # NOT NULL. The backup remains a valid SQLite database, but a NULL state
+    # is invisible to the old WHERE state NOT IN (...) preflight predicate.
+    with sqlite3.connect(backup) as db:
+        db.execute("CREATE TABLE nullable_proposals AS SELECT * FROM proposals")
+        db.execute("DROP TABLE proposals")
+        db.execute("ALTER TABLE nullable_proposals RENAME TO proposals")
+        db.execute("UPDATE proposals SET state=NULL WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert db.execute(
+            "SELECT COUNT(*) FROM proposals WHERE state NOT IN "
+            "('PENDING','REVIEWED','REJECTED')"
+        ).fetchone() == (0,)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
 def test_interrupted_atomic_swap_keeps_original_queue(restored_state, monkeypatch):
     dbfile, backup, first, second = restored_state
     def fail_replace(*args, **kwargs):
