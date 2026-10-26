@@ -125,6 +125,13 @@ def _verify_sqlite(path: Path) -> None:
                 if (ddl is None or type(ddl[0]) is not str or
                         re.search(r"\bCONFLICT\b", ddl[0], re.IGNORECASE)):
                     raise SubmissionError("invalid_restore_schema", 422)
+                # Extra CHECK clauses can make otherwise valid future nonce
+                # receipts or audit writes fail. The canonical proposals
+                # table has exactly one state CHECK; the other two have none.
+                # Reject modified constraint counts before swapping the queue.
+                expected_checks = 1 if table == "proposals" else 0
+                if len(re.findall(r"\bCHECK\b", ddl[0], re.IGNORECASE)) != expected_checks:
+                    raise SubmissionError("invalid_restore_schema", 422)
             # SQLite NULL does not satisfy NOT IN (three-valued logic).
             # A service-owned queue can have its NOT NULL constraint removed;
             # never restore a backup with a hidden invalid proposal state.

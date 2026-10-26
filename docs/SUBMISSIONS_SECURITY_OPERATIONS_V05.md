@@ -146,7 +146,8 @@ periodic jobs:
   timestamps, OS metadata, canonical repository URLs, and the required nonce
   replay/audit table layout, even when SQLite `integrity_check` succeeds.
   Restore preflight also rejects executable SQLite triggers, unexpected
-  indexes and altered conflict-resolution clauses; it does not trust
+  indexes, altered conflict-resolution clauses and extra CHECK constraints;
+  it does not trust
   integrity-clean but attacker-modified operational schemas. Each rejection
   must preserve the existing queue and avoid a spurious rollback snapshot.
   These checks only validate the offline snapshot; they do not protect an
