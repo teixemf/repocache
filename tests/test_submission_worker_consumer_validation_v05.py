@@ -429,3 +429,28 @@ def test_pending_rejects_duplicate_decided_id_at_keyset_page_boundary(
         "unaudited_decision_state", 503,
     )
     assert len(queue.audit(largest)) == 1
+
+
+def test_pending_accepts_65_distinct_decided_ids_across_keyset_pages(
+    operator_queue,
+):
+    """A legitimate lookahead must still visit the next distinct ID."""
+    queue, ident = operator_queue
+    item = {
+        "os": {"id": "debian", "version": "13"},
+        "repositories": [{
+            "type": "apt-list",
+            "url": "https://mirror.example.org/debian/",
+            "insecure_http": False,
+        }],
+    }
+    identifiers = [ident]
+    for index in range(64):
+        identifiers.append(queue.enqueue(
+            f"positive-key-{index}", f"positive-nonce-{index}",
+            f"positive-digest-{index}", item, now=100001 + index,
+        ))
+    for proposal_id in identifiers:
+        queue.decide(proposal_id, "review", expected_version=0)
+    assert queue.pending(limit=1) == []
+    assert len(queue.audit(max(identifiers))) == 1
