@@ -121,7 +121,19 @@ Gate B items.
 ## Durable database operations
 
 The root-only tool is deliberately non-interactive and has no automatic
-periodic jobs:
+periodic jobs. **Policy selection is not approval to run data deletion.**
+For any future separately authorized maintenance run, the operator must
+first verify the root journal (`journal-verify`), create and independently
+protect **both** a new non-overwriting SQLite backup (`backup --output ...
+--approve`) and a separate root journal snapshot (`journal-backup
+--output-dir ... --approve`), and verify custody/recoverability before
+considering `maintain --retention-days 180 --approve`. The journal and
+SQLite backups are distinct recovery artifacts; preserve both. Off-host
+encryption, retention/rotation, disposal, restore drills and actual systemd /
+SELinux host assurance remain **NOT VERIFIED under Gate B #49**: this
+document does not authorize an on-host operation or endpoint activation.
+
+Example commands (not an execution checklist or approval):
 
 ```text
 /opt/repocache-cli/managed/current/bin/python -m repocache.submission_admin backup --output /root/private/backup-YYYYMMDD.sqlite3 --approve
@@ -134,12 +146,21 @@ periodic jobs:
   root-owned mode-0700 destination directory. Secure off-host media copies,
   encryption, backup verification schedules and retention are operator
   responsibilities; no background job is installed.
-- **Retention:** only an explicit root/approval action can remove *decided*
-  proposals older than the selected retention interval. All PENDING rows
-  persist until reviewed. Nonces expire after at least 24 hours; the
-  request timestamp window remains 30 seconds. Queue/audit limits are
-  fail-closed if capacity is exceeded. Select a retention duration formally
-  before the gate passes: 180 days is only the current example/default.
+- **Retention — formally selected Gate A policy (2026-10-26):** retain
+  decided REVIEWED/REJECTED proposals for **180 complete calendar days**,
+  counting only from the most recent verified **root decision receipt**,
+  not an intake-writable SQLite timestamp. This is the maintainer-delegated
+  operating policy recorded in [issue #17](https://github.com/teixemf/repocache/issues/17#issuecomment-6425375723).
+  Only an explicit root/approval action may then remove the eligible
+  *convenience* SQLite proposals and audit rows. **All PENDING proposals
+  persist until an authorized decision**, regardless of age or queue size.
+  Nonces expire only after at least 24 hours; request timestamp skew
+  remains 30 seconds. Queue/audit limits fail closed when exhausted.
+  The privileged CLI technically accepts 30–3650 days, but shorter values
+  are **not authorized** under the selected 180-day operating policy.
+  No timer, cron job or automatic purging is installed. The authoritative
+  root decision journal and its complete historical chains are **never
+  automatically pruned**, even after an eligible SQLite row is removed.
 - **Restore:** requires a root-controlled offline snapshot, strict owner/mode,
   regular files without final-component symlinks, bounded file size, SQLite
   integrity and preflight validation of proposal state, IDs, versions,
@@ -194,8 +215,11 @@ do **not** prove live service/root trust boundaries. The HTTP adapter is
 single-process, and the local loopback test is not a full external rate-limit,
 TLS or denial-of-service rehearsal. Native systemd, SELinux, NGINX, credential
 handoff and rotation, encrypted off-host backups and recovery all require
-recorded Gate B results. The code acceptance Gate A remains separately
-blocked until its full, integrated SHA-based review is complete.
+recorded Gate B results. The Gate A **code/test scope** has since been
+reviewed and accepted on protected main and separately reviewed and
+merged into `integration/v0.5.0` through PR #185 (2026-10-26).
+This does **not** establish booted target-host systemd/SELinux,
+real TLS/service deployment, off-host recovery or production readiness.
 
 Security review is a **documented developer threat review**, not an
 independent audit. No claims of independently certified security or
