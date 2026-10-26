@@ -6,6 +6,7 @@ worker process termination, booted systemd or SELinux (issue #49).
 """
 from __future__ import annotations
 
+import json
 import os
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -509,3 +510,68 @@ def test_maintain_paginates_expired_rows_under_worker_ipc_limit(
         assert db.execute("SELECT COUNT(*) FROM proposals").fetchone() == (0,)
     # Retention removes service-owned rows, never authoritative root receipts.
     assert len(queue.audit(first)) == 1
+
+
+@pytest.mark.parametrize("encoded_string", [
+    r'"\ud800"',  # high surrogate, permitted as an escaped JSON code unit
+    r'"\udfff"',  # low surrogate, also invalid as standalone UTF-8
+])
+def test_pending_rejects_hostile_unicode_without_leaking_exception_or_mutation(
+    operator_queue, monkeypatch, encoded_string,
+):
+    queue, ident = operator_queue
+    hostile_items = json.loads(encoded_string)
+    # The wire JSON decoder returns a Python str even though the scalar
+    # cannot be re-encoded as UTF-8 by the privileged pending consumer.
+    assert type(hostile_items) is str
+    with pytest.raises(UnicodeEncodeError):
+        hostile_items.encode("utf-8")
+    row = list(_row(queue, ident))
+    row[3] = hostile_items
+    original_connect, cleanup = _inject_result(
+        queue, monkeypatch, statement="WHERE state='PENDING' ORDER BY",
+        response=[tuple(row)], operation="fetchall",
+    )
+    with pytest.raises(SubmissionError) as exc:
+        queue.pending()
+    assert (exc.value.code, exc.value.status) == ("invalid_stored_proposal", 503)
+    assert cleanup == [True]
+    assert queue.audit(ident) == []
+    # Confirm the real database, transaction and protected journal were not
+    # modified; the hostile value was only a forged worker response.
+    with original_connect() as db:
+        assert db.execute(
+            "SELECT state,version FROM proposals WHERE id=?", (ident,)
+        ).fetchone() == ("PENDING", 0)
+        assert db.execute("SELECT COUNT(*) FROM nonces").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("encoded_string", [r'"\ud800"', r'"\udfff"'])
+def test_decide_rejects_hostile_unicode_before_authoritative_receipt(
+    operator_queue, monkeypatch, encoded_string,
+):
+    queue, ident = operator_queue
+    row = list(_row(queue, ident))
+    row[3] = json.loads(encoded_string)
+    original_connect, cleanup = _inject_result(
+        queue, monkeypatch, statement="FROM proposals WHERE id=?",
+        response=tuple(row), operation="fetchone",
+    )
+    with pytest.raises(SubmissionError) as exc:
+        queue.decide(ident, "review", expected_version=0)
+    assert (exc.value.code, exc.value.status) == ("invalid_stored_proposal", 503)
+    assert cleanup == [True]
+    assert queue.audit(ident) == []
+    with original_connect() as db:
+        assert db.execute(
+            "SELECT state,version FROM proposals WHERE id=?", (ident,)
+        ).fetchone() == ("PENDING", 0)
+
+
+def test_fixed_projection_accepts_utf8_non_ascii_scalar(operator_queue):
+    # Schema-level validation must reject only invalid UTF-8, not legitimate
+    # Unicode text. Full repository URL/metadata policy remains separate.
+    queue, ident = operator_queue
+    row = list(_row(queue, ident))
+    row[3] = "valid caf\u00e9 text"
+    assert queue._checked_proposal_row(tuple(row)) == tuple(row)

@@ -339,6 +339,12 @@ class SubmissionQueue:
                 (expected_state is not None and state != expected_state) or
                 type(version) is not int or version < 0):
             raise SubmissionError("invalid_stored_proposal", 503)
+        # Escaped lone Unicode surrogates are legal worker JSON strings, but
+        # not UTF-8 text. Refuse them here for pending views and journal paths.
+        try:
+            items.encode("utf-8")
+        except UnicodeError as exc:
+            raise SubmissionError("invalid_stored_proposal", 503) from exc
         return row
 
     @staticmethod
