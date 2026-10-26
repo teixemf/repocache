@@ -193,7 +193,9 @@ class WorkerConnection:
         self._buffer = bytearray()
         self._closed = False
         try:
-            self._request({"op": "ping"})
+            reply = self._request({"op": "ping"})
+            if reply.get("ok") is not True or set(reply) != {"ok"}:
+                raise WorkerError("invalid_worker_ack")
         except BaseException:
             self.close(commit=False, suppress=True)
             raise
@@ -281,14 +283,19 @@ class WorkerConnection:
             raise WorkerError("invalid_worker_sql")
         reply = self._request({"op": "execute", "sql": sql,
                                "params": list(parameters)})
-        if type(reply.get("cursor")) is not int or type(reply.get("rowcount")) is not int:
+        if (reply.get("ok") is not True or
+                set(reply) != {"ok", "cursor", "rowcount"} or
+                type(reply["cursor"]) is not int or reply["cursor"] <= 0 or
+                type(reply["rowcount"]) is not int or reply["rowcount"] < -1):
             raise WorkerError("invalid_worker_cursor")
         return WorkerCursor(self, reply["cursor"], reply["rowcount"])
 
     def executescript(self, script: str) -> None:
         if not isinstance(script, str) or len(script) > MAX_SQL:
             raise WorkerError("invalid_worker_sql")
-        self._request({"op": "script", "sql": script})
+        reply = self._request({"op": "script", "sql": script})
+        if reply.get("ok") is not True or set(reply) != {"ok"}:
+            raise WorkerError("invalid_worker_ack")
 
     def backup_file(self, destination: Path) -> None:
         """Stream a consistent SQLite snapshot to a ROOT-PRIVATE staging inode."""
@@ -365,7 +372,9 @@ class WorkerConnection:
         self._closed = True
         error = None
         try:
-            self._request({"op": "commit" if commit else "rollback"})
+            reply = self._request({"op": "commit" if commit else "rollback"})
+            if reply.get("ok") is not True or set(reply) != {"ok"}:
+                raise WorkerError("invalid_worker_ack")
         except (WorkerError, OSError) as exc:
             error = exc
         try:
