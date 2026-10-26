@@ -397,3 +397,29 @@ def test_restore_refuses_service_planted_fifo_without_blocking(
             dbfile, backup, approved=True, service_stopped=lambda: True
         )
     assert opened_fifo and dbfile.is_fifo()
+
+
+@pytest.mark.parametrize("column,sql_value", [
+    ("os_id", "'ubuntu'"),
+    ("os_version", "'14'"),
+    ("os_version", "'13.bad'"),
+    ("items", "'not-json'"),
+    ("items", "'[]'"),
+    ("items", "'[1]'"),
+    ("items", """'[{"type":"apt-list","url":"https://mirror.example.org/debian/","insecure_http":true}]'"""),
+    ("items", """'[{"type":"apt-list","url":"http://127.0.0.1/","insecure_http":true}]'"""),
+])
+def test_restore_refuses_invalid_proposal_metadata_before_swap(
+    restored_state, column, sql_value,
+):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        # Service-owned state is not a trusted schema authority.
+        db.execute(f"UPDATE proposals SET {column}={sql_value} WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))

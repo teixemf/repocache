@@ -7,7 +7,9 @@ normal install/upgrade process calls this function.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
+import re
 import pwd
 import shutil
 import sqlite3
@@ -17,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from repocache.submissions import SubmissionError
+from repocache.submissions import SubmissionError, _url, _check_json_depth, _pairs, _invalid_constant
 
 MAX_RESTORE_BYTES = 128 * 1024 * 1024
 REQUIRED_TABLES = frozenset({"proposals", "nonces", "audit"})
@@ -111,6 +113,47 @@ def _verify_sqlite(path: Path) -> None:
                 "typeof(changed) != 'integer' LIMIT 1"
             ).fetchone() is not None:
                 raise SubmissionError("invalid_restore_schema", 422)
+            # Restore is a privileged operation consuming intake-controlled
+            # records. Reject unusable metadata before installing the backup.
+            for os_id, os_version, items in db.execute(
+                    "SELECT os_id,os_version,items FROM proposals"):
+                if (type(os_id) is not str or type(os_version) is not str or
+                        not ((os_id == "debian" and re.fullmatch(
+                            r"13(?:\.[0-9]{1,4})?", os_version)) or
+                            (os_id == "almalinux" and re.fullmatch(
+                                r"10(?:\.[0-9]{1,4})?", os_version))) or
+                        type(items) is not str or not 0 < len(items) <= 131072):
+                    raise SubmissionError("invalid_restore_schema", 422)
+                try:
+                    raw = items.encode("utf-8")
+                    _check_json_depth(raw, code="invalid_restore_schema", status=422)
+                    repos = json.loads(items, object_pairs_hook=_pairs,
+                                       parse_constant=_invalid_constant)
+                except (ValueError, UnicodeError, RecursionError, TypeError) as exc:
+                    raise SubmissionError("invalid_restore_schema", 422) from exc
+                if type(repos) is not list or not 1 <= len(repos) <= 32:
+                    raise SubmissionError("invalid_restore_schema", 422)
+                seen = set()
+                for repo in repos:
+                    if (type(repo) is not dict or
+                            set(repo) != {"type", "url", "insecure_http"} or
+                            type(repo["type"]) is not str or
+                            type(repo["url"]) is not str or
+                            type(repo["insecure_http"]) is not bool or
+                            (os_id == "debian" and
+                             repo["type"] not in {"apt-list", "apt-deb822"}) or
+                            (os_id == "almalinux" and repo["type"] != "dnf")):
+                        raise SubmissionError("invalid_restore_schema", 422)
+                    try:
+                        canonical = _url(repo["url"])
+                    except SubmissionError as exc:
+                        raise SubmissionError("invalid_restore_schema", 422) from exc
+                    pair = (repo["type"], canonical)
+                    if (canonical != repo["url"] or
+                            repo["insecure_http"] != canonical.startswith("http://") or
+                            pair in seen):
+                        raise SubmissionError("invalid_restore_schema", 422)
+                    seen.add(pair)
     except sqlite3.Error as exc:
         raise SubmissionError("corrupt_restore_backup", 422) from exc
 

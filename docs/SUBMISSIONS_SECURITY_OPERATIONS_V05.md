@@ -6,6 +6,12 @@ independent **production activation decision**. These optional files/commands
 must not be deployed or used to accept live traffic until #49 has PASS evidence
 and the maintainer separately authorizes activation.
 
+
+Restore preflight also rejects invalid persisted platform identifiers/version
+strings and noncanonical, malformed, duplicate or unsafe repository metadata,
+before a privileged offline restore can replace the active queue. Validation is
+synthetic/tested until the native Gate B checks and does not authorize service
+activation.
 ## Architecture and installation boundaries
 
 - The internal `repocache.intake_service` module binds **127.0.0.1:8765 only**, and only after the
