@@ -476,3 +476,106 @@ def test_restore_refuses_invalid_proposal_metadata_before_swap(
         )
     assert _ids(dbfile) == {first, second}
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("trigger_sql", [
+    "CREATE TRIGGER skip_nonce BEFORE INSERT ON nonces "
+    "BEGIN SELECT RAISE(IGNORE); END",
+    "CREATE TRIGGER erase_pending AFTER INSERT ON nonces "
+    "BEGIN DELETE FROM proposals WHERE state='PENDING'; END",
+])
+def test_restore_refuses_executable_sqlite_triggers(
+    restored_state, trigger_sql,
+):
+    dbfile, backup, first, second = restored_state
+    # A service-writable backup may have valid pages and the right tables,
+    # yet run hostile DML during future replay tracking or queue updates.
+    with sqlite3.connect(backup) as db:
+        db.execute(trigger_sql)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert db.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'"
+        ).fetchone() == (1,)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("index_sql", [
+    "CREATE UNIQUE INDEX nonce_digest_extra ON nonces(digest)",
+    "CREATE INDEX audit_changed_extra ON audit(changed)",
+    "CREATE INDEX proposals_state_extra ON proposals(state)",
+])
+def test_restore_refuses_unexpected_sqlite_indexes(restored_state, index_sql):
+    dbfile, backup, first, second = restored_state
+    # The original queue creates only its implicit primary-key indexes.
+    # Even an ordinary extra index changes the accepted recovery schema.
+    with sqlite3.connect(backup) as db:
+        db.execute(index_sql)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+def test_restore_refuses_silent_nonce_receipt_suppression(restored_state):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute("DROP TABLE nonces")
+        db.execute(
+            "CREATE TABLE nonces("
+            "key_hash TEXT NOT NULL, nonce TEXT NOT NULL, "
+            "digest TEXT NOT NULL, proposal_id TEXT NOT NULL, "
+            "created INTEGER NOT NULL, PRIMARY KEY(key_hash, nonce), "
+            "UNIQUE(key_hash) ON CONFLICT IGNORE)"
+        )
+        # A malicious unique constraint can discard a new nonce without
+        # raising an error, despite the correct composite PK ordinals.
+        db.execute(
+            "INSERT INTO nonces VALUES ('k','nonce-a','d',?,100)", (first,)
+        )
+        db.execute(
+            "INSERT INTO nonces VALUES ('k','nonce-b','d',?,101)", (first,)
+        )
+        assert db.execute("SELECT COUNT(*) FROM nonces").fetchone() == (1,)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert [row[5] for row in db.execute("PRAGMA table_info(nonces)")][:2] == [1, 2]
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("policy", [
+    "ON CONFLICT IGNORE",
+    "ON/**/CONFLICT REPLACE",
+])
+def test_restore_refuses_altered_primary_key_conflict_policy(
+    restored_state, policy,
+):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute("DROP TABLE nonces")
+        db.execute(
+            "CREATE TABLE nonces("
+            "key_hash TEXT NOT NULL, nonce TEXT NOT NULL, "
+            "digest TEXT NOT NULL, proposal_id TEXT NOT NULL, "
+            "created INTEGER NOT NULL, "
+            f"PRIMARY KEY(key_hash, nonce) {policy})"
+        )
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert [row[5] for row in db.execute("PRAGMA table_info(nonces)")][:2] == [1, 2]
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
