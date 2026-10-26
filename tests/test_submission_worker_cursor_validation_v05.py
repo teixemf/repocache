@@ -71,3 +71,80 @@ def test_worker_fetchall_accepts_only_sqlite_row_lists(reply, expected):
 def test_worker_fetchall_rejects_entire_malformed_result(reply):
     with pytest.raises(worker.WorkerError, match="invalid_worker_rows"):
         _cursor(reply, operation="fetchall").fetchall()
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": True, "cursor": 0, "rowcount": -1},
+    {"ok": True, "cursor": -1, "rowcount": 0},
+    {"ok": True, "cursor": 1, "rowcount": -2},
+    {"ok": True, "cursor": True, "rowcount": 0},
+    {"ok": True, "cursor": 1, "rowcount": False},
+    {"ok": True, "cursor": 1, "rowcount": 0, "ignored": "forged"},
+    {"ok": False, "cursor": 1, "rowcount": 0},
+])
+def test_worker_execute_rejects_forged_control_reply(reply):
+    """Root must not trust malformed service-UID cursor acknowledgements."""
+    connection = object.__new__(worker.WorkerConnection)
+    connection._request = lambda _request: reply
+    with pytest.raises(worker.WorkerError, match="invalid_worker_cursor"):
+        connection.execute("SELECT 1")
+
+
+def test_worker_execute_accepts_real_sqlite_cursor_semantics():
+    connection = object.__new__(worker.WorkerConnection)
+    connection._request = lambda _request: {
+        "ok": True, "cursor": 1, "rowcount": -1,
+    }
+    cursor = connection.execute("SELECT 1")
+    assert cursor.cursor == 1
+    assert cursor.rowcount == -1
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": True, "ignored": "forged"},
+    {"ok": False},
+    {},
+])
+def test_worker_script_refuses_ambiguous_ack(reply):
+    connection = object.__new__(worker.WorkerConnection)
+    connection._request = lambda _request: reply
+    with pytest.raises(worker.WorkerError, match="invalid_worker_ack"):
+        connection.executescript("CREATE TABLE example(value INTEGER);")
+
+
+def test_worker_script_accepts_exact_ack():
+    connection = object.__new__(worker.WorkerConnection)
+    requests = []
+    connection._request = lambda request: requests.append(request) or {"ok": True}
+    connection.executescript("CREATE TABLE example(value INTEGER);")
+    assert requests == [{"op": "script", "sql": "CREATE TABLE example(value INTEGER);"}]
+
+
+@pytest.mark.parametrize("reply", [
+    {"ok": True, "ignored": "forged"},
+    {"ok": False},
+    {},
+])
+def test_worker_commit_refuses_ambiguous_ack(reply):
+    connection = object.__new__(worker.WorkerConnection)
+    connection._closed = False
+    connection._request = lambda _request: reply
+    connection.process = SimpleNamespace(
+        stdin=None, stdout=None, wait=lambda timeout: None, returncode=0,
+    )
+    with pytest.raises(worker.WorkerError, match="invalid_worker_ack"):
+        connection.close(commit=True)
+    assert connection._closed
+
+
+def test_worker_rollback_accepts_exact_ack():
+    connection = object.__new__(worker.WorkerConnection)
+    connection._closed = False
+    requests = []
+    connection._request = lambda request: requests.append(request) or {"ok": True}
+    connection.process = SimpleNamespace(
+        stdin=None, stdout=None, wait=lambda timeout: None, returncode=0,
+    )
+    connection.close(commit=False)
+    assert requests == [{"op": "rollback"}]
+    assert connection._closed
