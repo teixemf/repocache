@@ -338,3 +338,26 @@ lookahead are explicit. **NOT VERIFIED pending exact-new-HEAD CI:** Python
 3.12/3.13 execution, nine required contexts, independent security review,
 original #17/#57, native #49 and authentic owner-signed #76. No signing
 key, tag, release, service activation or rollback gate changed.
+
+
+### 2026-10-26 bounded privileged retention enumeration (#17/#57)
+
+The administrator-only `maintain()` path previously fetched **all** expired
+decided proposals in one service-worker IPC reply. A service-writable queue
+can contain up to 50,000 rows with large repository metadata; the worker
+caps replies at 16 MiB. The unbounded fetch therefore failed closed but could
+make legitimate retention unavailable at scale. The root-side retention scan
+now uses the same 64-row keyset pages plus one-row lookahead as the pending
+preflight, validates row order and a 50,000-row ceiling, and verifies each
+unique proposal against its protected journal receipt **before** any deletion.
+The original `BEGIN IMMEDIATE` transaction, non-overwriting root journal,
+PENDING preservation and fail-closed duplicate-ID guard remain unchanged.
+
+**PASS (scoped design / local SQLite query rehearsal):** 65 distinct rows are
+visited in two bounded pages (65 including lookahead, then one). A new
+repository regression exercises actual SQLite and root receipts across the
+page boundary and verifies that retention preserves protected history.
+**NOT VERIFIED:** the new exact-HEAD GitHub Actions nine contexts, Python
+3.12/3.13 test execution, independent security review, original Gate A
+#17/#57 and native Gate B #49 until separately evidenced. This does not
+authorize merge, signing, release or production activation.
