@@ -150,11 +150,15 @@ def test_restore_refuses_invalid_version_or_timestamp(
     "not-a-32-character-hex-id",
     "A" * 32,
     "a" * 32 + chr(0) + "junk",
+    "a" * 31 + chr(0),  # Exactly 32 bytes: GLOB truncates at NUL.
+    "a" * 30 + chr(0) + "b",  # Exactly 32 bytes, trailing text hidden.
 ])
 def test_restore_refuses_invalid_proposal_identifier(restored_state, replacement):
     dbfile, backup, first, second = restored_state
     # SQLite rowid tables permit NULL even with id TEXT PRIMARY KEY.
     # Invalid text and embedded NUL bytes are likewise integrity-clean.
+    # SQLite GLOB alone ignores bytes after NUL; the BLOB-level check must
+    # reject even an identifier with exactly 32 bytes.
     with sqlite3.connect(backup) as db:
         db.execute("UPDATE proposals SET id=? WHERE id=?", (replacement, first))
         assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
