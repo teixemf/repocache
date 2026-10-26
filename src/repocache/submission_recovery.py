@@ -84,6 +84,19 @@ def _verify_sqlite(path: Path) -> None:
                 "SELECT COUNT(*) FROM proposals WHERE state IS NULL OR state NOT IN "
                 "('PENDING','REVIEWED','REJECTED')").fetchone()[0]:
                 raise SubmissionError("invalid_restore_schema", 422)
+            # A rowid table's TEXT PRIMARY KEY can accept NULL, and a
+            # service-owned backup may have its uniqueness constraint removed.
+            # Check the actual identifier bytes and duplicates before swap.
+            if db.execute(
+                "SELECT 1 FROM proposals WHERE id IS NULL OR "
+                "typeof(id) != 'text' OR length(CAST(id AS BLOB)) != 32 OR "
+                "id GLOB '*[^0-9a-f]*' LIMIT 1"
+            ).fetchone() is not None:
+                raise SubmissionError("invalid_restore_schema", 422)
+            if db.execute(
+                "SELECT 1 FROM proposals GROUP BY id HAVING COUNT(*) > 1 LIMIT 1"
+            ).fetchone() is not None:
+                raise SubmissionError("invalid_restore_schema", 422)
             # The intake-owned SQLite schema may also be rebuilt without
             # NOT NULL or CHECK constraints. A malformed version or timestamp
             # must not be accepted as a restorable queue simply because the

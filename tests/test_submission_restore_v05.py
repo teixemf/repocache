@@ -145,6 +145,43 @@ def test_restore_refuses_invalid_version_or_timestamp(
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
 
 
+@pytest.mark.parametrize("replacement", [
+    None,
+    "not-a-32-character-hex-id",
+    "A" * 32,
+    "a" * 32 + "\\x00" + "junk",
+])
+def test_restore_refuses_invalid_proposal_identifier(restored_state, replacement):
+    dbfile, backup, first, second = restored_state
+    # SQLite rowid tables permit NULL even with id TEXT PRIMARY KEY.
+    # Invalid text and embedded NUL bytes are likewise integrity-clean.
+    with sqlite3.connect(backup) as db:
+        db.execute("UPDATE proposals SET id=? WHERE id=?", (replacement, first))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+def test_restore_refuses_duplicate_id_after_schema_downgrade(restored_state):
+    dbfile, backup, first, second = restored_state
+    with sqlite3.connect(backup) as db:
+        db.execute("CREATE TABLE weak_proposals AS SELECT * FROM proposals")
+        db.execute("DROP TABLE proposals")
+        db.execute("ALTER TABLE weak_proposals RENAME TO proposals")
+        db.execute("INSERT INTO proposals SELECT * FROM proposals WHERE id=?", (first,))
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
 def test_interrupted_atomic_swap_keeps_original_queue(restored_state, monkeypatch):
     dbfile, backup, first, second = restored_state
     def fail_replace(*args, **kwargs):

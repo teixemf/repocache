@@ -112,9 +112,10 @@ periodic jobs:
   before the gate passes: 180 days is only the current example/default.
 - **Restore:** requires a root-controlled offline snapshot, strict owner/mode,
   regular files without final-component symlinks, bounded file size, SQLite
-  integrity/schema checks (including explicit refusal of NULL proposal states and non-integer/negative versions or non-integer timestamps
-  even if the SQLite file itself passes `integrity_check`) and a *verified inactive* systemd
-  `repocache-intake.service`. Absence of systemd or an unknown state denies
+  integrity/schema checks (including refusal of NULL proposal states, malformed
+  or duplicate proposal IDs, non-integer/negative versions and non-integer
+  timestamps, even if SQLite `integrity_check` passes) and a *verified inactive*
+  systemd `repocache-intake.service`. Absence of systemd or an unknown state denies
   restoration. It writes to a private temporary file, fsyncs, saves the
   **previous** database in the root-owned backup directory and atomically
   replaces the active file. Rollback is a **second** separately authorized
