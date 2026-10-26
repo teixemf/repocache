@@ -15,7 +15,11 @@ silently suppress nonce replay records or delete PENDING proposals even when
 SQLite integrity and column checks pass. The canonical queue uses no triggers.
 Restore also refuses unexpected table indexes and SQLite conflict-resolution
 clauses: a modified nonce table can otherwise silently discard replay receipts
-while retaining the expected composite primary-key columns. These checks
+while retaining the expected composite primary-key columns.
+Restore additionally requires the canonical v0.5.0 SQLite CREATE TABLE definitions
+(ignoring whitespace): counting CHECK keywords alone misses a rewritten state
+constraint that blocks administrator decisions, or a fake CHECK inside a comment.
+A future queue schema requires an explicitly reviewed restore migration. These checks
 validate the offline snapshot only; they do not protect a service-writable
 queue from subsequent compromise.
 This preflight cannot stop a compromised intake UID from changing its writable

@@ -24,6 +24,29 @@ from repocache.submissions import SubmissionError, _url, _check_json_depth, _pai
 MAX_RESTORE_BYTES = 128 * 1024 * 1024
 REQUIRED_TABLES = frozenset({"proposals", "nonces", "audit"})
 
+# Restore accepts only the exact v0.5.0 queue schema. SQLite persists CREATE
+# TABLE statements without IF NOT EXISTS. Whitespace differences are harmless,
+# but altered CHECK predicates, comments, collations and conflict policies are
+# not: an intake-controlled backup must not redefine future admin writes.
+# Any future queue schema requires an explicitly reviewed migration here.
+_CANONICAL_TABLE_SQL = {
+    "proposals": """CREATE TABLE proposals(
+        id TEXT PRIMARY KEY, os_id TEXT NOT NULL,
+        os_version TEXT NOT NULL, items TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('PENDING','REVIEWED','REJECTED')),
+        version INTEGER NOT NULL DEFAULT 0,
+        created INTEGER NOT NULL, changed INTEGER NOT NULL)""",
+    "nonces": """CREATE TABLE nonces(
+        key_hash TEXT NOT NULL, nonce TEXT NOT NULL,
+        digest TEXT NOT NULL, proposal_id TEXT NOT NULL,
+        created INTEGER NOT NULL,
+        PRIMARY KEY(key_hash, nonce))""",
+    "audit": """CREATE TABLE audit(
+        seq INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL,
+        changed INTEGER NOT NULL, actor_uid INTEGER NOT NULL,
+        action TEXT NOT NULL, result TEXT NOT NULL)""",
+}
+
 
 def _require_root() -> None:
     if os.geteuid() != 0:
@@ -120,17 +143,13 @@ def _verify_sqlite(path: Path) -> None:
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
                     (table,)
                 ).fetchone()
-                # Matching CONFLICT itself also catches ON/**/CONFLICT,
-                # which SQLite accepts but a whitespace-only check misses.
+                # A count of CHECK keywords is insufficient: a changed
+                # CHECK(state='PENDING') can prevent every legitimate review,
+                # and CHECK inside a SQL comment is not an actual constraint.
+                # Compare complete canonical DDL, not just column names.
                 if (ddl is None or type(ddl[0]) is not str or
-                        re.search(r"\bCONFLICT\b", ddl[0], re.IGNORECASE)):
-                    raise SubmissionError("invalid_restore_schema", 422)
-                # Extra CHECK clauses can make otherwise valid future nonce
-                # receipts or audit writes fail. The canonical proposals
-                # table has exactly one state CHECK; the other two have none.
-                # Reject modified constraint counts before swapping the queue.
-                expected_checks = 1 if table == "proposals" else 0
-                if len(re.findall(r"\bCHECK\b", ddl[0], re.IGNORECASE)) != expected_checks:
+                        " ".join(ddl[0].split()) !=
+                        " ".join(_CANONICAL_TABLE_SQL[table].split())):
                     raise SubmissionError("invalid_restore_schema", 422)
             # SQLite NULL does not satisfy NOT IN (three-valued logic).
             # A service-owned queue can have its NOT NULL constraint removed;

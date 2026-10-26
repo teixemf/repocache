@@ -239,6 +239,48 @@ def test_restore_refuses_decided_state_without_journal_version(restored_state):
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
 
 
+@pytest.mark.parametrize("state_definition,allows_invalid_state", [
+    ("state TEXT NOT NULL CHECK(state = 'PENDING')", False),
+    ("state TEXT NOT NULL /* CHECK(state IN ('PENDING','REVIEWED','REJECTED')) */", True),
+])
+def test_restore_refuses_rewritten_state_check_with_same_keyword_count(
+    restored_state, state_definition, allows_invalid_state,
+):
+    dbfile, backup, first, second = restored_state
+    # Both variants have one CHECK keyword in sqlite_master, and the
+    # modified backup passes SQLite integrity and existing index checks.
+    # The first blocks legitimate REVIEWED transitions; the second merely
+    # mentions CHECK in a comment and permits invalid future states.
+    with sqlite3.connect(backup) as db:
+        rows = list(db.execute("SELECT * FROM proposals"))
+        db.execute("DROP TABLE proposals")
+        db.execute(
+            "CREATE TABLE proposals("
+            "id TEXT PRIMARY KEY, os_id TEXT NOT NULL,"
+            "os_version TEXT NOT NULL, items TEXT NOT NULL,"
+            + state_definition + ","
+            "version INTEGER NOT NULL DEFAULT 0,"
+            "created INTEGER NOT NULL, changed INTEGER NOT NULL)"
+        )
+        db.executemany("INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?)", rows)
+        if allows_invalid_state:
+            db.execute("UPDATE proposals SET state='INVALID' WHERE id=?", (first,))
+            db.execute("UPDATE proposals SET state='PENDING' WHERE id=?", (first,))
+        else:
+            with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+                db.execute(
+                    "UPDATE proposals SET state='REVIEWED',version=1 WHERE id=?",
+                    (first,),
+                )
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
 def test_interrupted_atomic_swap_keeps_original_queue(restored_state, monkeypatch):
     dbfile, backup, first, second = restored_state
     def fail_replace(*args, **kwargs):
