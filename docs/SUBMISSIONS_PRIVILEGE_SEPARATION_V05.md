@@ -309,3 +309,30 @@ duplicate. **NOT VERIFIED until fresh exact-HEAD CI:** both Python suites,
 nine protected contexts, independent security review, native-host UID/SELinux,
 original #17/#57 and actual signed #76 acceptance. No release, production
 listener, security gate or rollback behavior is changed.
+
+
+### 2026-10-26 decided-ID keyset boundary lookahead (#17/#57)
+
+A separate pagination ambiguity remained after the root receipt metadata
+check: when the intake UID removes the SQLite primary key and duplicates
+the **64th** decided proposal ID, `ORDER BY id LIMIT 64` can return
+64 individually valid rows while the strict next-page `id > last_id`
+predicate silently skips the 65th, duplicated row. Within-page duplicate
+checks alone do not detect this case.
+
+The privileged pending preflight now fetches **at most 65** rows, verifies
+only the first 64 against the protected root journal and checks the 65th
+lookahead ID against the previous page boundary before continuing. A
+duplicate or out-of-order lookahead fails closed. The 50,000-row total
+cap, fixed transaction snapshot, original decision-journal trust boundary
+and pending-only behavior are unchanged. A synthetic regression creates
+64 genuinely root-reviewed rows, removes SQLite uniqueness and duplicates
+the largest ID at the exact 64/65 boundary; the pending view must refuse
+it. This is an incremental security fix within the existing PR #169 scope,
+not production activation or a change to original acceptance.
+
+**PASS (source/diff analysis):** the skipped-boundary scenario and bounded
+lookahead are explicit. **NOT VERIFIED pending exact-new-HEAD CI:** Python
+3.12/3.13 execution, nine required contexts, independent security review,
+original #17/#57, native #49 and authentic owner-signed #76. No signing
+key, tag, release, service activation or rollback gate changed.
