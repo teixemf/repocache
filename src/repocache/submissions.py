@@ -398,15 +398,24 @@ class SubmissionQueue:
                     # The intake UID can retain REVIEWED state/version
                     # while replacing metadata. Bind every decided row to its
                     # root receipt; page to bound worker IPC response sizes.
-                    last_id = ""
+                    last_id = None
                     checked = 0
                     known = None
                     while True:
-                        decided = db.execute(
+                        # The first page has no id>? predicate: a compromised
+                        # SQLite schema may contain NULL/empty/numeric IDs that
+                        # would otherwise sort before the empty-string cursor
+                        # and evade both pending and decided preflights.
+                        query = (
                             "SELECT id,os_id,os_version,items,created,state,version "
-                            "FROM proposals WHERE (state!='PENDING' OR state IS NULL) AND id>? "
-                            "ORDER BY id LIMIT 64",
-                            (last_id,)).fetchall()
+                            "FROM proposals WHERE (state!='PENDING' OR state IS NULL)"
+                        )
+                        if last_id is not None:
+                            query += " AND id>?"
+                        query += " ORDER BY id LIMIT 64"
+                        decided = db.execute(
+                            query, () if last_id is None else (last_id,)
+                        ).fetchall()
                         if type(decided) is not list or len(decided) > 64:
                             raise SubmissionError("unaudited_decision_state", 503)
                         if not decided:
@@ -421,7 +430,7 @@ class SubmissionQueue:
                         for result in decided:
                             row = self._checked_decided_row(result)
                             ident, state, version = row[0], row[5], row[6]
-                            if ident <= last_id:
+                            if last_id is not None and ident <= last_id:
                                 raise SubmissionError("unaudited_decision_state", 503)
                             last_id = ident
                             checked += 1
