@@ -6,6 +6,7 @@ There is no automatic service reload, networking or client provisioning.
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import os
 import pwd
@@ -13,6 +14,8 @@ import re
 import secrets
 import stat
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from repocache.intake import (_secret, _keyring_file_valid,
@@ -22,6 +25,61 @@ from repocache.submissions import SubmissionError
 KEY_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 SERVICE_USER = "repocache-intake"
 MAX_KEYS = 32
+_KEYRING_LOCK_TIMEOUT = 10.0
+
+
+class _KeyringPublicationUncertain(OSError):
+    """Keyring rename may be visible while directory durability is unknown."""
+
+
+def _fsync_directory(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) |
+                 getattr(os, "O_CLOEXEC", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _verify_keyring_lock(fd: int) -> None:
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or
+            info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+        raise SubmissionError("unsafe_keyring_lock", 403)
+
+
+@contextmanager
+def _exclusive_keyring_lock(directory: Path):
+    """Serialize full read-modify-publish transactions between root operators."""
+    path = directory / ".keyring.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR |
+                 getattr(os, "O_NOFOLLOW", 0) |
+                 getattr(os, "O_CLOEXEC", 0), 0o600)
+    try:
+        _verify_keyring_lock(fd)
+        deadline = time.monotonic() + _KEYRING_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise SubmissionError("credential_busy", 409) from exc
+                time.sleep(0.025)
+        try:
+            # Never trust a swapped pathname after acquiring the inode lock.
+            inode = path.lstat()
+            actual = os.fstat(fd)
+            if ((inode.st_dev, inode.st_ino) !=
+                    (actual.st_dev, actual.st_ino) or
+                    not stat.S_ISREG(inode.st_mode)):
+                raise SubmissionError("unsafe_keyring_lock", 403)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
 
 
 def _root_only() -> None:
@@ -109,12 +167,14 @@ def _write_keyring(path: Path, service_gid: int, keys: list[dict]) -> None:
             # group-readable file after root has written the full payload.
             os.fchmod(stream.fileno(), 0o640)
             os.fsync(stream.fileno())
-        os.replace(name, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        # After entering the rename boundary the on-disk state is not
+        # safely reversible on an I/O error or crash. The caller must retain
+        # the confidential client handoff for explicit reconciliation.
         try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            os.replace(name, path)
+            _fsync_directory(path.parent)
+        except OSError as exc:
+            raise _KeyringPublicationUncertain("keyring publication uncertain") from exc
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -133,25 +193,35 @@ def issue_key(keyring: Path, client_output: Path, key_id: str, *,
     _trusted_directory(client_output.parent, for_client=True)
     service_gid = _service_gid()
     try:
-        keys = _load(keyring, service_gid)
-        if len(keys) >= MAX_KEYS or any(item["key_id"] == key_id for item in keys):
-            raise SubmissionError("duplicate_or_full_keyring", 409)
-        secret = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
-        # Write exclusive private client handoff first. If the keyring write
-        # fails, remove the uncommitted credential and never leak its bytes.
-        fd = os.open(client_output,
-                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                     0o600)
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write((json.dumps({"key_id": key_id, "secret": secret}) + "\n").encode("ascii"))
-                stream.flush()
-                os.fsync(stream.fileno())
-            _write_keyring(keyring, service_gid,
-                           keys + [{"key_id": key_id, "secret": secret}])
-        except BaseException:
-            client_output.unlink(missing_ok=True)
-            raise
+        with _exclusive_keyring_lock(keyring.parent):
+            keys = _load(keyring, service_gid)
+            if len(keys) >= MAX_KEYS or any(item["key_id"] == key_id for item in keys):
+                raise SubmissionError("duplicate_or_full_keyring", 409)
+            secret = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+            # The confidential client handoff must be durable before the
+            # server key becomes active. Both stay under root-controlled dirs.
+            fd = os.open(client_output,
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write((json.dumps({"key_id": key_id, "secret": secret}) +
+                                  "\n").encode("ascii"))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _fsync_directory(client_output.parent)
+                _write_keyring(keyring, service_gid,
+                               keys + [{"key_id": key_id, "secret": secret}])
+            except _KeyringPublicationUncertain as exc:
+                # Never discard the only client copy when its key may
+                # already be published. The operator must reconcile offline.
+                raise SubmissionError("credential_publication_uncertain", 503) from exc
+            except BaseException:
+                # No keyring publication was attempted or the write failed
+                # before the rename boundary. Remove the uncommitted handoff.
+                client_output.unlink(missing_ok=True)
+                _fsync_directory(client_output.parent)
+                raise
     except SubmissionError:
         raise
     except (OSError, UnicodeError, ValueError) as exc:
@@ -169,13 +239,17 @@ def revoke_key(keyring: Path, key_id: str, *, approved: bool = False) -> None:
     _trusted_directory(keyring.parent, for_client=False)
     service_gid = _service_gid()
     try:
-        keys = _load(keyring, service_gid)
-        retained = [key for key in keys if key["key_id"] != key_id]
-        if len(retained) == len(keys):
-            raise SubmissionError("key_not_found", 404)
-        if not retained:
-            raise SubmissionError("last_key_refused", 409)
-        _write_keyring(keyring, service_gid, retained)
+        with _exclusive_keyring_lock(keyring.parent):
+            keys = _load(keyring, service_gid)
+            retained = [key for key in keys if key["key_id"] != key_id]
+            if len(retained) == len(keys):
+                raise SubmissionError("key_not_found", 404)
+            if not retained:
+                raise SubmissionError("last_key_refused", 409)
+            try:
+                _write_keyring(keyring, service_gid, retained)
+            except _KeyringPublicationUncertain as exc:
+                raise SubmissionError("credential_publication_uncertain", 503) from exc
     except SubmissionError:
         raise
     except (OSError, UnicodeError, ValueError) as exc:

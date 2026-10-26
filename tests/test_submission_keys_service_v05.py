@@ -4,6 +4,9 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +26,8 @@ def keys(tmp_path, monkeypatch):
         path.mkdir(mode=0o700)
         path.chmod(0o700)
     monkeypatch.setattr(submission_keys, "_root_only", lambda: None)
+    # Real file-lock operations; root identity is synthetic in this fixture.
+    monkeypatch.setattr(submission_keys, "_verify_keyring_lock", lambda fd: None)
     monkeypatch.setattr(submission_keys, "_service_gid", os.getegid)
     monkeypatch.setattr(intake, "_service_gid", os.getegid)
     # Synthetic non-root fixture: use real temp file operations, but model
@@ -241,3 +246,173 @@ def test_old_service_owned_keyring_is_not_silently_migrated(monkeypatch):
                            st_gid=101, st_nlink=1, st_size=100)
     assert not intake._keyring_file_valid(info, 101)
     assert not submission_keys._keyring_file_valid(info, 101)
+
+
+def test_issue_fsyncs_handoff_directory_before_publishing_keyring(
+    keys, monkeypatch,
+):
+    keyring, handoff = keys
+    events = []
+    original_sync = submission_keys._fsync_directory
+    original_write = submission_keys._write_keyring
+
+    def sync(directory):
+        events.append(("sync", str(directory)))
+        return original_sync(directory)
+
+    def publish(*args):
+        events.append(("publish", str(keyring)))
+        assert ("sync", str(handoff)) in events
+        return original_write(*args)
+
+    monkeypatch.setattr(submission_keys, "_fsync_directory", sync)
+    monkeypatch.setattr(submission_keys, "_write_keyring", publish)
+    submission_keys.issue_key(keyring, handoff / "a.json", "a", approved=True)
+    assert ("publish", str(keyring)) in events
+    assert ("sync", str(keyring.parent)) in events
+
+
+def test_prepublication_failure_cleans_uncommitted_client_secret(
+    keys, monkeypatch,
+):
+    keyring, handoff = keys
+
+    def fail_before_rename(*args):
+        raise OSError("synthetic prepublication failure")
+
+    monkeypatch.setattr(submission_keys, "_write_keyring", fail_before_rename)
+    with pytest.raises(SubmissionError, match="credential_write_unavailable"):
+        submission_keys.issue_key(keyring, handoff / "a.json", "a", approved=True)
+    assert not (handoff / "a.json").exists()
+    assert not keyring.exists()
+
+
+def test_after_publish_fsync_failure_retains_reconcilable_client_secret(
+    keys, monkeypatch,
+):
+    keyring, handoff = keys
+    original_sync = submission_keys._fsync_directory
+    def fault(directory):
+        if directory == keyring.parent:
+            raise OSError("synthetic durability ambiguity")
+        return original_sync(directory)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(submission_keys, "_fsync_directory", fault)
+        with pytest.raises(
+            SubmissionError, match="credential_publication_uncertain"
+        ):
+            submission_keys.issue_key(keyring, handoff / "a.json", "a", approved=True)
+
+    credential = json.loads((handoff / "a.json").read_text())
+    assert set(load_keyring(keyring)) == {"a"}
+    assert base64.urlsafe_b64decode(credential["secret"] + "=") == load_keyring(keyring)["a"]
+    # An operator must not silently re-issue an ambiguous credential.
+    with pytest.raises(SubmissionError, match="duplicate_or_full_keyring"):
+        submission_keys.issue_key(keyring, handoff / "b.json", "a", approved=True)
+    assert not (handoff / "b.json").exists()
+
+
+def test_failed_revoke_after_publication_reports_uncertain(
+    keys, monkeypatch,
+):
+    keyring, handoff = keys
+    submission_keys.issue_key(keyring, handoff / "a.json", "a", approved=True)
+    submission_keys.issue_key(keyring, handoff / "b.json", "b", approved=True)
+    original_sync = submission_keys._fsync_directory
+    with monkeypatch.context() as patch:
+        def fail(directory):
+            if directory == keyring.parent:
+                raise OSError("synthetic publication ambiguity")
+            return original_sync(directory)
+        patch.setattr(submission_keys, "_fsync_directory", fail)
+        with pytest.raises(
+            SubmissionError, match="credential_publication_uncertain"
+        ):
+            submission_keys.revoke_key(keyring, "a", approved=True)
+    assert set(load_keyring(keyring)) == {"b"}
+
+
+def test_issuance_serializes_concurrent_root_read_modify_writes(
+    keys, monkeypatch,
+):
+    keyring, handoff = keys
+    original_write = submission_keys._write_keyring
+    entered = threading.Event()
+    release = threading.Event()
+    first = [True]
+
+    def slowed(*args):
+        if first[0]:
+            first[0] = False
+            entered.set()
+            assert release.wait(6), "first transaction never released"
+        return original_write(*args)
+
+    monkeypatch.setattr(submission_keys, "_write_keyring", slowed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        one = executor.submit(
+            submission_keys.issue_key, keyring, handoff / "a.json",
+            "a", approved=True,
+        )
+        assert entered.wait(6), "first transaction did not enter"
+        two = executor.submit(
+            submission_keys.issue_key, keyring, handoff / "b.json",
+            "b", approved=True,
+        )
+        time.sleep(0.05)
+        release.set()
+        one.result(timeout=8)
+        two.result(timeout=8)
+    assert set(load_keyring(keyring)) == {"a", "b"}
+
+
+def test_revoke_and_issue_are_serialized_without_revocation_rollback(
+    keys, monkeypatch,
+):
+    keyring, handoff = keys
+    submission_keys.issue_key(keyring, handoff / "a.json", "a", approved=True)
+    submission_keys.issue_key(keyring, handoff / "b.json", "b", approved=True)
+    original_write = submission_keys._write_keyring
+    entered = threading.Event()
+    release = threading.Event()
+    first = [True]
+
+    def slowed(*args):
+        if first[0]:
+            first[0] = False
+            entered.set()
+            assert release.wait(6)
+        return original_write(*args)
+
+    monkeypatch.setattr(submission_keys, "_write_keyring", slowed)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        revoked = executor.submit(
+            submission_keys.revoke_key, keyring, "a", approved=True,
+        )
+        assert entered.wait(6)
+        issued = executor.submit(
+            submission_keys.issue_key, keyring, handoff / "c.json",
+            "c", approved=True,
+        )
+        time.sleep(0.05)
+        release.set()
+        revoked.result(timeout=8)
+        issued.result(timeout=8)
+    assert set(load_keyring(keyring)) == {"b", "c"}
+
+
+def test_keyring_refuses_symlinked_or_unsafe_root_lock(
+    keys,
+):
+    keyring, handoff = keys
+    lock = keyring.parent / ".keyring.lock"
+    protected = keyring.parent / "other-file"
+    protected.write_text("test")
+    lock.symlink_to(protected)
+    with pytest.raises((SubmissionError, OSError)):
+        submission_keys.issue_key(
+            keyring, handoff / "a.json", "a", approved=True,
+        )
+    assert not (handoff / "a.json").exists()
+    assert not keyring.exists()

@@ -90,6 +90,24 @@ recipient must receive the file through a trusted, confidential, out-of-band
 method, then store it at the client with restrictive ownership. Existing
 offline `repocache-client repos submit --output` remains unchanged.
 
+**Credential transaction integrity (RC169-F01/F02):** root-only
+`issue` and `revoke` serialize their full read/modify/publish operation using
+a root-owned, private `.keyring.lock` within the protected keyring directory.
+Concurrent operators wait for bounded lock acquisition, then reread the
+current keyring; unsafe locks fail closed. The confidential client handoff is
+fsynced together with its parent directory *before* the service keyring
+is published. Publishing the keyring uses a staged, fsynced inode and atomic
+rename followed by parent directory fsync. If an error occurs within or after
+the rename boundary, the operation returns
+`credential_publication_uncertain`: for issuance the already durable
+root-private client credential is **retained**, not destroyed. Operators must
+stop/disable the optional intake, examine the protected handoff and effective
+keyring offline, reconcile without reusing key IDs, and explicitly decide on a
+controlled restart; revocation is similarly treated as uncertain until its
+effect has been verified. These steps do not execute automatically.
+A prepublication error removes and syncs away the uncommitted handoff.
+Crash/power-loss recovery on real native storage remains Gate B #49.
+
 **Rotation:** issue a *new* key ID, deliver and test the new credential,
 only then revoke the old key ID. The service currently loads its keyring
 at startup. A **controlled restart** is needed to enforce any issue/revoke;
