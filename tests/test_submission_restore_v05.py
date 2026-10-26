@@ -476,3 +476,29 @@ def test_restore_refuses_invalid_proposal_metadata_before_swap(
         )
     assert _ids(dbfile) == {first, second}
     assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))
+
+
+@pytest.mark.parametrize("trigger_sql", [
+    "CREATE TRIGGER skip_nonce BEFORE INSERT ON nonces "
+    "BEGIN SELECT RAISE(IGNORE); END",
+    "CREATE TRIGGER erase_pending AFTER INSERT ON nonces "
+    "BEGIN DELETE FROM proposals WHERE state='PENDING'; END",
+])
+def test_restore_refuses_executable_sqlite_triggers(
+    restored_state, trigger_sql,
+):
+    dbfile, backup, first, second = restored_state
+    # A service-writable backup may have valid pages and the right tables,
+    # yet run hostile DML during future replay tracking or queue updates.
+    with sqlite3.connect(backup) as db:
+        db.execute(trigger_sql)
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert db.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'"
+        ).fetchone() == (1,)
+    with pytest.raises(SubmissionError, match="invalid_restore_schema"):
+        recovery.restore_offline(
+            dbfile, backup, approved=True, service_stopped=lambda: True,
+        )
+    assert _ids(dbfile) == {first, second}
+    assert not list(backup.parent.glob("repocache-before-restore-*.sqlite3"))

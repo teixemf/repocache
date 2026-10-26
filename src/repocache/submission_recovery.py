@@ -75,6 +75,15 @@ def _verify_sqlite(path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             if not REQUIRED_TABLES.issubset(tables):
                 raise SubmissionError("invalid_restore_schema", 422)
+            # Persisted SQLite triggers are executable queue policy supplied by
+            # the untrusted intake UID. A BEFORE INSERT RAISE(IGNORE) trigger
+            # can silently disable nonce replay tracking; an AFTER INSERT
+            # trigger can erase PENDING proposals. The canonical queue has
+            # no application-managed triggers, so refuse all of them.
+            if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' LIMIT 1"
+            ).fetchone() is not None:
+                raise SubmissionError("invalid_restore_schema", 422)
             proposal_columns = {row[1] for row in db.execute("PRAGMA table_info(proposals)")}
             if not {"id", "os_id", "os_version", "items", "state", "version",
                     "created", "changed"}.issubset(proposal_columns):
