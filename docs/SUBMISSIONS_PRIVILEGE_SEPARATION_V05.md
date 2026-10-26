@@ -328,7 +328,9 @@ cap, fixed transaction snapshot, original decision-journal trust boundary
 and pending-only behavior are unchanged. A synthetic regression creates
 64 genuinely root-reviewed rows, removes SQLite uniqueness and duplicates
 the largest ID at the exact 64/65 boundary; the pending view must refuse
-it. This is an incremental security fix within the existing PR #169 scope,
+it. A positive 65-distinct-decisions fixture also verifies traversal to the
+second page without false rejection. This is an incremental security fix
+within the existing PR #169 scope,
 not production activation or a change to original acceptance.
 
 **PASS (source/diff analysis):** the skipped-boundary scenario and bounded
