@@ -1,0 +1,93 @@
+{
+  "kind": "repocache.server.install",
+  "schema_version": 1,
+  "deployment": {
+    "listen": {
+      "bind_address": "127.0.0.1",
+      "hostname": "cache.example.invalid",
+      "https_port": 443
+    },
+    "tls": {
+      "mode": "operator-provided",
+      "certificate_file": "/etc/repocache/tls/example-chain.pem",
+      "private_key_file": "/etc/repocache/tls/example-key.pem"
+    },
+    "native_packages": {
+      "policy": "explicit-review"
+    },
+    "nginx": {
+      "ownership": "new-managed-only"
+    },
+    "firewall": {
+      "modify": false
+    },
+    "paths": {
+      "generated_include": "/etc/nginx/conf.d/repocache-managed.conf",
+      "state_root": "/var/lib/repocache/server",
+      "cache_root": "/var/cache/nginx/repocache-managed",
+      "log_root": "/var/log/nginx/repocache-managed"
+    },
+    "logging": {
+      "metrics_opt_in": false,
+      "retention_days": 7
+    },
+    "cache_policy": {
+      "engine": "nginx-native",
+      "global": {
+        "inactive_seconds": 604800,
+        "max_size_bytes": 10737418240
+      },
+      "disk_pressure": {
+        "warning_free_bytes": 2147483648,
+        "critical_free_bytes": 1073741824
+      }
+    }
+  },
+  "repositories": [
+    {
+      "id": "debian-trixie-main",
+      "kind": "apt",
+      "desired_state": "disabled",
+      "upstream": {
+        "base_url": "https://mirror.example.invalid/debian/",
+        "allowed_hosts": [
+          "mirror.example.invalid"
+        ]
+      },
+      "layout": {
+        "suites": [
+          "trixie"
+        ],
+        "components": [
+          "main"
+        ],
+        "architectures": [
+          "amd64"
+        ],
+        "release_key_refs": [
+          "file:/etc/repocache/keys/example-debian-archive.gpg"
+        ]
+      },
+      "cache_overrides": {}
+    },
+    {
+      "kind": "dnf",
+      "desired_state": "disabled",
+      "upstream": {
+        "base_url": "https://mirror.example.invalid/almalinux/10/BaseOS/x86_64/os/",
+        "allowed_hosts": [
+          "mirror.example.invalid"
+        ]
+      },
+      "layout": {
+        "releasever": "10",
+        "basearch": "x86_64",
+        "metadata_path": "repodata/repomd.xml",
+        "gpg_key_refs": [
+          "file:/etc/repocache/keys/example-alma-public.gpg"
+        ]
+      },
+      "cache_overrides": {}
+    }
+  ]
+}
