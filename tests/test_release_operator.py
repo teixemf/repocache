@@ -143,8 +143,18 @@ def test_unsigned_candidate_checksum_strict_and_no_executed_download(monkeypatch
         (assets / (name + ".sha256")).write_text(
             hashlib.sha256((assets / name).read_bytes()).hexdigest() + "  " + name + "\n")
     called = []
-    monkeypatch.setattr(release.subprocess, "run", lambda *a, **kw:
-                        called.append(a) or SimpleNamespace(returncode=0))
+    real_popen = release.subprocess.Popen
+
+    def local_verifier(argv, **kwargs):
+        called.append(argv)
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdout"] == release.subprocess.DEVNULL
+        assert kwargs["stderr"] == release.subprocess.DEVNULL
+        # Use a harmless local verifier, not downloaded or unsigned code.
+        return real_popen([sys.executable, "-c", "import sys;sys.exit(0)"],
+                          **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "Popen", local_verifier)
     release.verify_unsigned(tmp_path, assets, version)
     assert len(called) == 1
     (assets / (base + ".sha256")).write_text("0" * 64 + "  " + base + "\n")
