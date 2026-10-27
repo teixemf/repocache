@@ -168,7 +168,7 @@ def _upstream(value: Any) -> tuple[str, int, str]:
     # Until #28 provides context-specific NGINX escaping, accept only
     # RFC 3986 unreserved characters and '/' path separators. In particular
     # reject '$' (NGINX variable expansion), brackets and URI sub-delimiters.
-    if not re.fullmatch(r"/[A-Za-z0-9._~/-]*/", path, re.ASCII):
+    if not re.fullmatch(r"/(?:[A-Za-z0-9._~-]+/)*", path, re.ASCII):
         _reject("upstream.base_url: unsupported unescaped path syntax")
     if ("//" in path or any(part in (".", "..") for part in path.split("/")[1:-1])):
         _reject("upstream.base_url: noncanonical slash-terminated path")
