@@ -6,6 +6,11 @@ from __future__ import annotations
 
 import os
 import select
+import socket
+import shutil
+import signal
+import threading
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -497,9 +502,9 @@ def _unsigned_verifier_fixture(tmp_path):
 
 def test_verify_unsigned_discards_verifier_output_and_limits_runtime(
         monkeypatch, tmp_path, capsys):
-    """Verifier output is unused and must never be buffered or exposed."""
+    """The reviewed verifier runs in its own session without output leaks."""
     version, assets = _unsigned_verifier_fixture(tmp_path)
-    original_run = release.subprocess.run
+    original_popen = release.subprocess.Popen
     calls = []
 
     def local_verifier(argv, **kwargs):
@@ -507,15 +512,14 @@ def test_verify_unsigned_discards_verifier_output_and_limits_runtime(
         assert kwargs["stdin"] == release.subprocess.DEVNULL
         assert kwargs["stdout"] == release.subprocess.DEVNULL
         assert kwargs["stderr"] == release.subprocess.DEVNULL
-        assert kwargs["timeout"] == 180
-        # Local-only fixture simulates a verifier flooding both streams.
-        return original_run(
+        assert kwargs["start_new_session"] is True
+        return original_popen(
             [sys.executable, "-c",
              'import sys; sys.stdout.buffer.write(b"x"*5000000); '
              'sys.stderr.buffer.write(b"y"*5000000)'],
             **kwargs)
 
-    monkeypatch.setattr(release.subprocess, "run", local_verifier)
+    monkeypatch.setattr(release.subprocess, "Popen", local_verifier)
     release.verify_unsigned(tmp_path, assets, version)
     assert len(calls) == 1
     assert capsys.readouterr() == ("", "")
@@ -524,17 +528,18 @@ def test_verify_unsigned_discards_verifier_output_and_limits_runtime(
 @pytest.mark.parametrize("failure", ["timeout", "unavailable", "nonzero"])
 def test_verify_unsigned_verifier_failures_are_sanitized(
         monkeypatch, tmp_path, failure):
-    """Never surface a subprocess traceback or output on verifier failure."""
     version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    monkeypatch.setattr(release, "VERIFIER_TIMEOUT", 0.15)
 
     def failing_verifier(argv, **kwargs):
-        if failure == "timeout":
-            raise release.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        assert kwargs["start_new_session"] is True
         if failure == "unavailable":
             raise OSError("fixture verifier unavailable")
-        return release.subprocess.CompletedProcess(argv, 7)
+        code = 'import time;time.sleep(10)' if failure == "timeout" else 'import sys;sys.exit(7)'
+        return original_popen([sys.executable, "-c", code], **kwargs)
 
-    monkeypatch.setattr(release.subprocess, "run", failing_verifier)
+    monkeypatch.setattr(release.subprocess, "Popen", failing_verifier)
     with pytest.raises(release.OperatorError) as caught:
         release.verify_unsigned(tmp_path, assets, version)
     assert caught.value.code == "BUILD_NOT_VERIFIED"
@@ -688,3 +693,166 @@ finally:
         [sys.executable, "-c", script], env=_release_subprocess_env(tmp_path),
         capture_output=True, timeout=5)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+def test_abstract_socket_name_cannot_deny_private_state_lock(monkeypatch, tmp_path):
+    """External occupation of the previously predictable name is irrelevant."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    name = f"\\0repocache-release:{os.getuid()}:v0.5.0"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as occupied:
+        occupied.bind(name)
+        with release.candidate_lock("v0.5.0"):
+            assert release.state_root().is_dir()
+
+
+def test_state_directory_inode_change_during_lock_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    base = release.state_root()
+    with pytest.raises(release.OperatorError) as caught:
+        with release.candidate_lock("v0.5.0"):
+            base.rename(tmp_path / "renamed-state")
+            base.mkdir(mode=0o700)
+    assert caught.value.code == "UNSAFE_STATE"
+
+
+def test_passphrase_pipe_fragmented_valid_input_requires_eof():
+    reader, writer = os.pipe()
+
+    def write_pieces():
+        try:
+            os.write(writer, b"valid-")
+            time.sleep(0.03)
+            os.write(writer, b"secret\\n")
+        finally:
+            os.close(writer)
+
+    worker = threading.Thread(target=write_pieces)
+    worker.start()
+    try:
+        assert release.read_passphrase(reader, timeout=1.0) == b"valid-secret"
+    finally:
+        os.close(reader)
+        worker.join(timeout=1)
+
+
+@pytest.mark.parametrize("payload", [b"", b"x\\x00y", b"x\\ry", b"x\\ny", b"x" * 4096 + b"z"])
+def test_passphrase_pipe_rejects_invalid_or_oversized_complete_input(payload):
+    reader, writer = os.pipe()
+    try:
+        if payload:
+            os.write(writer, payload)
+        os.close(writer)
+        writer = -1
+        with pytest.raises(release.OperatorError) as caught:
+            release.read_passphrase(reader, timeout=1.0)
+        assert caught.value.code == "INVALID_SECRET_FD"
+    finally:
+        os.close(reader)
+        if writer >= 0:
+            os.close(writer)
+
+
+@pytest.mark.parametrize("payload", [b"", b"partial-secret"])
+def test_passphrase_pipe_never_accepts_unterminated_open_writer(payload):
+    reader, writer = os.pipe()
+    try:
+        if payload:
+            os.write(writer, payload)
+        with pytest.raises(release.OperatorError) as caught:
+            release.read_passphrase(reader, timeout=0.12)
+        assert caught.value.code == "INVALID_SECRET_FD"
+    finally:
+        os.close(reader)
+        os.close(writer)
+
+
+def _running_pid(pid):
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii") as stream:
+            return stream.read().split(") ", 1)[1][0] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+def test_command_timeout_terminates_descendants_with_inherited_stdout(monkeypatch, tmp_path):
+    """Cancel a real local process group, not just its immediate leader."""
+    original_popen = release.subprocess.Popen
+    child_pid = tmp_path / "descendant.pid"
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(p.pid));time.sleep(20)"
+    )
+    def launch(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        return original_popen([sys.executable, "-c", script, str(child_pid)], **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=1.0)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert child_pid.is_file(), "Fixture descendant did not start"
+    pid = int(child_pid.read_text())
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and _running_pid(pid):
+            time.sleep(0.03)
+        assert not _running_pid(pid), "Descendant survived process-group cancellation"
+    finally:
+        if _running_pid(pid):
+            os.kill(pid, signal.SIGKILL)
+
+
+def test_namespace_isolated_candidate_sharing_same_state_still_serializes(tmp_path):
+    """Optional native test; requires permitted unprivileged user/net namespaces."""
+    executable = shutil.which("unshare")
+    if executable is None:
+        pytest.skip("util-linux unshare unavailable")
+    env = _release_subprocess_env(tmp_path)
+    owner = (
+        "from repocache_release.cli import candidate_lock;"
+        "import sys;"
+        "with candidate_lock('v0.5.0'):\\n"
+        " print('ENTERED',flush=True);sys.stdin.read(1)"
+    )
+    # Probe the target namespace feature independently of the lock.
+    probe = subprocess.run(
+        [executable, "--user", "--map-root-user", "--net", sys.executable,
+         "-c", "print('READY')"], env=env, capture_output=True, timeout=4)
+    if probe.returncode or probe.stdout.strip() != b"READY":
+        pytest.skip("Unprivileged user/net namespaces not permitted by host")
+    first = subprocess.Popen(
+        [sys.executable, "-c",
+         "from repocache_release.cli import candidate_lock\\n"
+         "import sys\\n"
+         "with candidate_lock('v0.5.0'):\\n"
+         " print('ENTERED',flush=True);sys.stdin.read(1)"],
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE)
+    try:
+        assert select.select([first.stdout], [], [], 5)[0]
+        assert first.stdout.readline() == b"ENTERED\\n"
+        candidate = (
+            "from repocache_release.cli import candidate_lock,OperatorError\\n"
+            "try:\\n"
+            " with candidate_lock('v0.5.0'):print('UNSAFE_DOUBLE_ENTRY')\\n"
+            "except OperatorError as exc: print(exc.code)\\n"
+        )
+        contender = subprocess.run(
+            [executable, "--user", "--map-root-user", "--net",
+             sys.executable, "-c", candidate], env=env,
+            capture_output=True, timeout=5)
+        assert contender.returncode == 0, contender.stderr
+        assert contender.stdout.strip() == b"BUSY"
+    finally:
+        if first.stdin is not None:
+            first.stdin.write(b"x")
+            first.stdin.flush()
+        try:
+            first.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.wait(timeout=5)
+        for stream in (first.stdin, first.stdout, first.stderr):
+            if stream is not None:
+                stream.close()
