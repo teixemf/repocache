@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import errno
 import hashlib
 import importlib.util
 import io
@@ -18,6 +19,7 @@ import zipfile
 import os
 import re
 import select
+import socket
 import shutil
 import stat
 import ssl
@@ -267,7 +269,22 @@ def candidate_lock(version: str):
     guard_state_dir(base, create=True)
     path = base / (version + ".lock")
     fd = -1
+    lease = None
     try:
+        # flock locks an inode, not its name. A same-UID replacement of the
+        # lock pathname during a critical section could otherwise create a
+        # second independent lock inode. Linux abstract AF_UNIX bind is a
+        # process-lifetime, pathname-independent *additional* exclusion guard.
+        # Another owner-UID process may deny service by binding the address,
+        # but cannot silently acquire a second legitimate candidate lease.
+        try:
+            lease = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            lease.set_inheritable(False)
+            lease.bind(f"\0repocache-release:{os.getuid()}:{version}")
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                raise OperatorError("BUSY", "Another release operation holds the candidate lock") from exc
+            raise OperatorError("UNSAFE_STATE", "Candidate lease cannot be acquired") from exc
         try:
             # O_NONBLOCK makes a pre-open FIFO substitution fail without a hang.
             fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
@@ -285,9 +302,15 @@ def candidate_lock(version: str):
             raise OperatorError("BUSY", "Another release operation holds the candidate lock") from exc
         _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
         yield
+        # Detect detached paths before reporting an otherwise successful stage.
+        # The abstract lease stays held throughout the operation even if the
+        # file pathname is unlinked or replaced after the initial check.
+        _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
     finally:
         if fd >= 0:
             os.close(fd)
+        if lease is not None:
+            lease.close()
 
 
 def state_file(version: str) -> Path:
@@ -738,11 +761,12 @@ def read_passphrase(fd: int) -> bytes:
     if fd < 3:
         raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor must be >= 3")
     try:
+        # A 4097-byte read already proves overlength. A second read from a
+        # still-open pipe could block indefinitely while holding the lock.
         data = os.read(fd, 4097)
-        extra = os.read(fd, 1) if len(data) == 4097 else b""
     except OSError as exc:
         raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor cannot be read") from exc
-    if (not data or len(data) > 4096 or extra or b"\x00" in data):
+    if (not data or len(data) > 4096 or b"\x00" in data):
         raise OperatorError("INVALID_SECRET_FD", "Missing or oversized signer passphrase")
     if data.endswith(b"\n"):
         data = data[:-1]
