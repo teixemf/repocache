@@ -20,6 +20,8 @@ import tempfile
 import threading
 import time
 
+import spike_nginx_eviction_v06 as cache_lab
+
 BODY_SIZE = 48 * 1024
 
 
@@ -103,8 +105,7 @@ def fetch(port: int, path: str, expected_status: int = 200) -> str:
 
 
 def usage(cache: Path) -> dict[str, int]:
-    files = [p for p in cache.rglob("*") if p.is_file()]
-    return {"files": len(files), "bytes": sum(p.stat().st_size for p in files)}
+    return cache_lab.cache_stats(cache)
 
 
 def observe(nginx: str, wait_seconds: int, workers: int) -> dict:
