@@ -43,6 +43,7 @@ SIGNED_SUFFIXES = (".manifest.json", ".manifest.json.sig",
 MAX_METADATA = 4_000_000
 MAX_ASSET = 2_000_000_000
 MAX_DOWNLOAD = 1_000_000_000
+VERIFIER_TIMEOUT = 180
 
 
 class OperatorError(Exception):
@@ -60,6 +61,25 @@ class SafeParser(argparse.ArgumentParser):
         raise SyntaxErrorFromParser(message)
 
 
+
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    """Cancel only the external tool's private POSIX process group.
+
+    No SIGKILL is ever sent to the caller's process group. Descendants which
+    deliberately create a new session remain outside this limited guarantee.
+    """
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        # The group has already been signalled; do not hang the operator.
+        pass
+
+
+
 def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> bytes:
     """Run trusted tools with bounded stdout, a deadline and no secret stderr."""
     if not argv or argv[0] not in ("git", "gh", "/usr/bin/openssl"):
@@ -73,7 +93,8 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
         # must not exhaust the owner workstation while preparing a release.
         process = subprocess.Popen(
             argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL, env=env, close_fds=True)
+            stdin=subprocess.DEVNULL, env=env, close_fds=True,
+            start_new_session=True)
         if process.stdout is None:
             raise OSError("missing command stdout")
         fd = process.stdout.fileno()
@@ -103,16 +124,7 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
                             "Required local tool unavailable") from exc
     finally:
         if process is not None:
-            try:
-                if process.poll() is None:
-                    process.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                # SIGKILL was already sent; do not block a release CLI forever.
-                pass
+            _terminate_process_group(process)
             if process.stdout is not None:
                 process.stdout.close()
 
@@ -713,21 +725,26 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
         if claimed != digest(assets / name) + "  " + name + "\n":
             raise OperatorError("ASSET_DRIFT", "Unsigned checksum differs from downloaded asset")
     script = worktree / "scripts/verify_release_candidate.py"
-    # Verifier output is never inspected. Buffering its stdout/stderr could
-    # exhaust owner-workstation memory or retain sensitive diagnostics from
-    # an unexpected child process. Discard both streams and fail closed on
-    # an unavailable or timed-out verifier without exposing its output.
+    # Run the reviewed source verifier in a private process group. A helper
+    # retaining stdio or creating descendants cannot outlive a failed or
+    # timed-out verification while remaining in that group.
+    process = None
     try:
-        result = subprocess.run([sys.executable, str(script), str(assets)],
-                                cwd=worktree, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, timeout=180,
-                                check=False)
+        process = subprocess.Popen(
+            [sys.executable, str(script), str(assets)], cwd=worktree,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True,
+            start_new_session=True)
+        result = process.wait(timeout=VERIFIER_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OperatorError("BUILD_NOT_VERIFIED",
                             "Source rebuild or signed dependency-lock verification failed") from exc
-    if result.returncode:
-        raise OperatorError("BUILD_NOT_VERIFIED", "Source rebuild or signed dependency-lock verification failed")
+    finally:
+        if process is not None:
+            _terminate_process_group(process)
+    if result:
+        raise OperatorError("BUILD_NOT_VERIFIED",
+                            "Source rebuild or signed dependency-lock verification failed")
 
 
 def prepare(version: str) -> dict[str, Any]:
