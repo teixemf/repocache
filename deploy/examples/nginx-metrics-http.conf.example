@@ -1,0 +1,14 @@
+# Opt-in example for issue #14. NEVER included or installed automatically.
+# Place the format ONCE in NGINX http{} on a reviewed staging configuration.
+# The trusted $repocache_metric_repo is set in each approved proxy location;
+# do NOT derive that label from a client header, submitted URL, query or IP.
+# See docs/METRICS_LOGGING_OPT_IN.md before adapting this snippet.
+#
+# No request URI, query, address, agent, header or credential is retained.
+log_format repocache_metrics escape=json
+    '{"time_iso8601":"$time_iso8601",'
+    '"repocache_repository":"$repocache_metric_repo",'
+    '"status":"$status",'
+    '"upstream_cache_status":"$upstream_cache_status",'
+    '"body_bytes_sent":"$body_bytes_sent",'
+    '"request_time":"$request_time"}';
