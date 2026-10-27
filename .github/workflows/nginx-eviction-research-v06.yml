@@ -5,8 +5,10 @@ on:
     paths:
       - scripts/spike_nginx_eviction_v06.py
       - scripts/spike_nginx_eviction_extended_v06.py
+      - scripts/spike_nginx_priority_availability_v06.py
       - tests/test_nginx_eviction_spike_v06.py
       - tests/test_nginx_eviction_extended_v06.py
+      - tests/test_nginx_priority_availability_v06.py
       - docs/NGINX_EVICTION_SPIKE_V06.md
       - .github/workflows/nginx-eviction-research-v06.yml
 
@@ -34,6 +36,8 @@ jobs:
               apt-get install -y --no-install-recommends nginx python3 util-linux >/dev/null
               setpriv --reuid 65534 --regid 65534 --clear-groups \
                 python3 -m unittest discover -s tests -p "test_nginx_eviction_*v06.py" -v
+              setpriv --reuid 65534 --regid 65534 --clear-groups \
+                python3 -m unittest discover -s tests -p "test_nginx_priority_availability_v06.py" -v
               for mode in shared isolated-keep isolated-drop; do
                 setpriv --reuid 65534 --regid 65534 --clear-groups \
                   python3 scripts/spike_nginx_eviction_extended_v06.py \
@@ -41,6 +45,8 @@ jobs:
                     --observe-seconds 40 --poll-seconds 10 \
                     --recovery-loader-seconds 70
               done
+              setpriv --reuid 65534 --regid 65534 --clear-groups \
+                python3 scripts/spike_nginx_priority_availability_v06.py --wait-seconds 15 --workers 8
             '
 
   almalinux-selinux-conditional:
