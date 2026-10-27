@@ -2,6 +2,20 @@
 
 **Scope:** disposable research only; no REPOCACHE installation, CLI, service, existing NGINX configuration, package-manager source, or production cache changes. Not approval to implement priority-aware eviction.
 
+## Maintainer-approved research disposition — 2026-10-27
+
+**Decision authority:** The maintainer explicitly authorized both decisions in the project conversation on 2026-10-27, now recorded at [issue #94](https://github.com/teixemf/repocache/issues/94). The approved direction is **NO-GO for building a custom global, multi-level cache priority/eviction engine**; use normal stock NGINX-managed `inactive`/`max_size`/`min_free` where supported, plus validated native per-repository policies where helpful. Native per-zone LRU **does not implement** a guaranteed cross-repository or metadata priority ranking.
+
+**Concluded optional research:** This bounded rootless experimental investigation is accepted as the **final negative feasibility research deliverable**. Remaining *optional advanced-prioritization* experiments are discontinued, rather than represented as successful. This is a prospective, explicitly approved disposition of the #94 research scope; it does not erase the original seven acceptance criteria or convert any FAIL/NOT VERIFIED into PASS. The exact historical record remains **2 PASS / 1 FAIL for the tested undeclared-zone orphan-reclaim design / 4 NOT VERIFIED**. Those discontinued experiments are no longer prerequisites to the **bounded research-only artifact**, not a waiver of any security, compatibility or testing criterion applicable to future production work.
+
+**Baseline remains mandatory and separately accepted:** #29 owns secure cache storage, isolation and persistence. #95 owns normal removal (withdraw route/catalog and retain eligible cached data without a removal-specific expiry, subject to native policy/pressure) plus fail-closed, ownership-verified force-cleanup. #97 owns native capacity/retention inheritance, limits, alerting, low-space recovery and safety. No unmanaged deletion of live NGINX cache objects is authorized. Supported Debian 13 / AlmaLinux 10 testing, SELinux, signed APT/DNF integrity and real fallback obligations remain mandatory **where applicable in these baseline issues**.
+
+**Current artifact status:** The research-only PR #188 remains Draft, not merged. A separate independent technical assessment found former HEAD `8e17f1031ac97f04b3c3a85f29c78f6c0da4b7ed` technically adequate for the bounded deliverable (32/32 checks SUCCESS, Debian 13 18/18 lab unit tests); this documentation decision update changes the PR HEAD, so prior HEAD-specific review evidence requires an applicability check and any formal Option B acceptance must target the final exact HEAD. NO-GO and research scope decisions **do not** authorize Ready-for-review, merging, closing #94, release/signing, production activation or destructive operations.
+
+The historical experimental sections below preserve what was originally measured and recommended before maintainer adoption.
+
+---
+
 ## Documented behavior and hypotheses
 
 Upstream reference: https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_path
@@ -103,9 +117,9 @@ The isolated GitHub Actions workflow added to this branch runs the tests in a di
 No runtime, release, v0.5.0 integration, production deployment or protected operation is approved by these experiments.
 
 
-## Final research decision proposal (not a maintainer approval)
+## Engineering evidence supporting the adopted NO-GO (original proposal)
 
-**Engineering recommendation: NO-GO for a custom multi-level eviction engine in v0.6.0.** Continue ordinary stock-NGINX cache manager configuration through baseline #97, with data-ownership and lifecycle design in #29/#95. Do **not** introduce a privileged sweeper, delete live opaque cache files, fork NGINX, rely on NGINX Plus purging, or infer per-package demand from incomplete metrics. This is a recommendation, not an accepted product change or authority to close #94.
+**Original engineering recommendation, adopted by maintainer on 2026-10-27: NO-GO for a custom multi-level eviction engine.** Continue ordinary stock-NGINX cache manager configuration through baseline #97, with data-ownership and lifecycle design in #29/#95. Do **not** introduce a privileged sweeper, delete live opaque cache files, fork NGINX, rely on NGINX Plus purging, or infer per-package demand from incomplete metrics. The adopted architecture does not authorize PR merge or #94 closure.
 
 Evidence supporting this engineering decision:
 1. A shared native zone applies its eviction policy across all objects without a repository-class priority guarantee. Separate zones enforce independent `max_size`/`inactive` controls; they do not create a global ordering between retired, low-demand, cold, hot and metadata objects. Per-object native LRU is *recency*, not a proven measure of request frequency, repository demand or metadata value.
@@ -136,7 +150,7 @@ This is **not** true ENOSPC, a full package-manager failover, a concurrency stre
 | Native crash/recovery & SELinux validation | Only scoped synthetic observations available | Only scoped synthetic observations available | None |
 | Per-repo/metadata priority promise | **Not supported by demonstrated control** | Best effort per-zone budgets only | **NOT VERIFIED; unsafe design not justified** |
 
-The memo does **not** endorse a particular lifecycle representation (parked NGINX zone vs removed zone). That design belongs to #18/#28/#29/#95/#97; whichever is chosen must preserve accepted normal-removal/cache-retention semantics and native baseline eviction without pretending undocumented automatic orphan cleanup exists. The final disposition still requires the maintainer's explicit product decision and independent exact-HEAD PR review.
+The memo does **not** endorse a particular lifecycle representation (parked NGINX zone vs removed zone). That design belongs to #18/#28/#29/#95/#97; whichever is chosen must preserve accepted normal-removal/cache-retention semantics and native baseline eviction without pretending undocumented automatic orphan cleanup exists. The maintainer adopted the NO-GO and bounded research disposition on 2026-10-27; PR acceptance and any final-HEAD independent-review substitution remain separate.
 
 ### Acceptance summary for #94 (after preparing decision)
 
@@ -148,9 +162,9 @@ The memo does **not** endorse a particular lifecycle representation (parked NGIN
 | Safety/availability/negative paths, metadata | **NOT VERIFIED** | New concurrency/outage synthetic test is a limited subset; ENOSPC, signed metadata, client failover, hostile dirs and interruption remain untested |
 | Debian 13 and AlmaLinux 10 with SELinux enforcing | **NOT VERIFIED** | Debian container passes targeted studies; Alma enforcing not available in allowed container and no native booted-host test |
 | Cost/performance/operational burden | **NOT VERIFIED (qualitative cost assessed)** | Nominal zone sizes/config complexity explained; measured CPU/RAM/I/O and native scale not executed |
-| Written GO / LIMITED GO / NO-GO outcome | **PASS as documented recommendation only** | Engineering NO-GO recommended, pending explicit maintainer adoption; cannot treat it as accepted policy or close issue |
+| Written GO / LIMITED GO / NO-GO outcome | **PASS as documented recommendation** | Engineering NO-GO was subsequently adopted on 2026-10-27; this does not close issue #94 or imply full acceptance |
 
-**Status:** recommendation proposed, review and complete mandatory evidence **NOT VERIFIED**, #94 remains OPEN and PR #188 remains DRAFT. No change to v0.5.0. Changes to acceptance requirements, milestone, merging, production and release all require separate owner permission.
+**Current disposition:** NO-GO and end of optional research approved on 2026-10-27, with original incomplete acceptance statuses preserved. #94 remains OPEN and PR #188 DRAFT; PR-specific independent-review acceptance, current-HEAD CI, branch freshness, merge and issue closure are separate gates. No v0.5.0 impact.
 
 ## Review-response addendum — 2026-10-27
 
