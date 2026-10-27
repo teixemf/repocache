@@ -34,6 +34,8 @@ class Origin(BaseHTTPRequestHandler):
         if not (path.startswith("/hot/") or path.startswith("/cold/")) or ".." in path:
             self.send_error(404)
             return
+        with self.server.request_lock:
+            self.server.request_counts[path] += 1
         if path.endswith("/concurrent"):
             time.sleep(0.15)
         body = body_for(path)
@@ -113,6 +115,8 @@ def observe(nginx: str, wait_seconds: int, workers: int) -> dict:
         (prefix / "cache").mkdir()
         (prefix / "tmp").mkdir()
         origin = ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+        origin.request_lock = threading.Lock()
+        origin.request_counts = Counter()
         thread = threading.Thread(target=origin.serve_forever, daemon=True)
         thread.start()
         port = free_port()
