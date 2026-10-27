@@ -850,3 +850,37 @@ def test_namespace_isolated_candidate_sharing_same_state_still_serializes(tmp_pa
         for stream in (first.stdin, first.stdout, first.stderr):
             if stream is not None:
                 stream.close()
+
+
+def test_unsigned_verifier_timeout_terminates_its_descendants(monkeypatch, tmp_path):
+    """The release source verifier must not leave children after timeout."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    pidfile = tmp_path / "verifier-child.pid"
+    monkeypatch.setattr(release, "VERIFIER_TIMEOUT", 1.0)
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(p.pid));time.sleep(20)"
+    )
+
+    def local_verifier(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdout"] == release.subprocess.DEVNULL
+        assert kwargs["stderr"] == release.subprocess.DEVNULL
+        return original_popen([sys.executable, "-c", script, str(pidfile)], **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "Popen", local_verifier)
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert pidfile.is_file()
+    child_pid = int(pidfile.read_text())
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and _running_pid(child_pid):
+            time.sleep(0.03)
+        assert not _running_pid(child_pid), "Verifier descendant remained active"
+    finally:
+        if _running_pid(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
