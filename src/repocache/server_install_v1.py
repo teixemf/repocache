@@ -49,6 +49,11 @@ def _depth(value: Any, level: int = 1) -> None:
     elif isinstance(value, list):
         for nested in value:
             _depth(nested, level + 1)
+    elif type(value) is int and not -MAX_INT <= value <= MAX_INT:
+        # Fail without formatting an attacker-controlled huge integer.
+        _reject("install document: integer exceeds signed 64-bit range")
+    elif type(value) is float:
+        _reject("install document: float forbidden")
 
 
 def _object(value: Any, name: str, required: set[str],
