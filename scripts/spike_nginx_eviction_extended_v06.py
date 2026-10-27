@@ -101,6 +101,20 @@ def stop_private_master(process: subprocess.Popen | None) -> None:
         process.wait(timeout=5)
 
 
+def start_private_master(nginx: str, prefix: Path, config_path: Path, opener, port: int) -> subprocess.Popen:
+    """Ensure any child is reaped even if loopback readiness raises."""
+    proc = subprocess.Popen(
+        [nginx, "-p", str(prefix) + "/", "-c", str(config_path),
+         "-g", "daemon off;"], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    try:
+        base.wait_for_listener(opener, port, proc)
+    except BaseException:
+        stop_private_master(proc)
+        raise
+    return proc
+
+
 def measure(nginx: str, mode: str, object_count: int,
             observe_seconds: int, recovery_seconds: int, poll_seconds: int) -> dict:
     with tempfile.TemporaryDirectory(prefix="repocache94-extended-") as tmp:
@@ -121,16 +135,8 @@ def measure(nginx: str, mode: str, object_count: int,
                                                         port, mode, name))
                 nginx_check(nginx, prefix, config_path)
 
-            def start() -> subprocess.Popen:
-                proc = subprocess.Popen(
-                    [nginx, "-p", str(prefix) + "/", "-c", str(config_path),
-                     "-g", "daemon off;"], stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL)
-                base.wait_for_listener(opener, port, proc)
-                return proc
-
             stage("warm")
-            process = start()
+            process = start_private_master(nginx, prefix, config_path, opener, port)
             warm = {}
             # 12 or more objects retained in a dedicated zone make the
             # lowered 128k retirement limit clearly exceed its target.
@@ -146,6 +152,7 @@ def measure(nginx: str, mode: str, object_count: int,
 
             stage("retired")
             process.send_signal(signal.SIGHUP)  # Only spawned sandbox master.
+            reload_sent = time.monotonic()
             for _ in range(100):
                 try:
                     base.request(opener, port, "/removed/package-0.rpm", expected_code=404)
@@ -155,7 +162,8 @@ def measure(nginx: str, mode: str, object_count: int,
             else:
                 raise AssertionError("retired route remained exposed after SIGHUP")
             active_state = base.request(opener, port, "/hot/package-0.rpm")
-            snapshots = [cache_snapshot(prefix, mode, 0)]
+            first_snapshot = cache_snapshot(prefix, mode, time.monotonic() - reload_sent)
+            snapshots = [first_snapshot]
             begin = time.monotonic()
             for elapsed in range(poll_seconds, observe_seconds + 1, poll_seconds):
                 target = begin + elapsed
@@ -173,7 +181,7 @@ def measure(nginx: str, mode: str, object_count: int,
                 stop_private_master(process)
                 process = None
                 stage("recover")
-                process = start()
+                process = start_private_master(nginx, prefix, config_path, opener, port)
                 recover_start = time.monotonic()
                 while time.monotonic() - recover_start < recovery_seconds:
                     if process.poll() is not None:
@@ -190,6 +198,7 @@ def measure(nginx: str, mode: str, object_count: int,
                     "before_retirement": before, "post_retirement_samples": snapshots,
                     "active_route_after_retirement": active_state,
                     "removed_route_status": 404, "reattach_after_restart": recovered,
+                    "reload_to_first_snapshot_seconds": first_snapshot["elapsed_seconds"],
                     "note": "observations only; no automatic global priority claim"}
         finally:
             stop_private_master(process)
