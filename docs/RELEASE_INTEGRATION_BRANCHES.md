@@ -1,10 +1,14 @@
 # Release integration lanes — v0.5.0 and v0.6.0
 
-**Status (2026-10-24):** both integration branches exist, but the CI extension
-is still under review in PR #158. Its `push` triggers are NOT active on
-`main` until merged; a green PR check is NOT a live integration-branch push.
-Tracking issue: #157. Do not interpret an integration branch as a signed or
-production-ready release.
+**Status (2026-10-26):** PR #158 is merged into protected `main`
+(`9e213d7beb6534181e3ff418a890c5fdf2db2017`), and the reviewed
+CI backports #170 and #171 are merged into protected `integration/v0.5.0`
+(`48fed70f4e67a6db45c1b4cba6098e4d6b718f9b`) and
+`integration/v0.6.0` (`d5aa5704075e6ba3c02f677cf94cc30a9451e61a`),
+respectively. **Both** protected integration refs have real `push` events
+with all nine required checks successful (11/11 total checks on each).
+Infrastructure issue #157 is closed after that verification. No integration
+branch is a signed or production-ready release.
 
 ## Canonical branches and provenance
 
@@ -68,9 +72,11 @@ GitHub immediately before each change; never infer the release from a PR title.
 
 ## Continuous integration
 
-The CI PR for #157 adds nonprivileged `push` triggers for both integration
-branches to FOUR existing workflows, preserving the full original nine
-mandatory unfiltered contexts plus a separate path-filtered compatibility check:
+Merged PR #158 added nonprivileged `push` triggers for the two named release
+integration branches to FOUR existing workflows, preserving the original nine
+mandatory unfiltered contexts plus a separate path-filtered compatibility check.
+PR #170 propagated that reviewed CI to the protected v0.5.0 lane; merged
+PR #171 did the same for protected v0.6.0. Both have verified live `push` CI:
 
 - `.github/workflows/tests.yml`: four jobs for Python 3.12/3.13 unit, CLI v1,
   mandatory security tests and Debian/Alma source bundle integrity.
@@ -88,13 +94,42 @@ legacy/offline/rollback and platform-specific jobs must continue to be
 required during appropriate PR/release gates; review their actual workflow
 branch filters before declaring complete `push` coverage.
 
+## Live integration push evidence and nine exact required contexts
+
+| Branch/event | SHA | Result and limitation |
+| --- | --- | --- |
+| `main` after PR #158 squash | `9e213d7beb6534181e3ff418a890c5fdf2db2017` | **PASS:** 9/9 required Actions contexts; this does not exercise a protected release-integration push |
+| `integration/v0.5.0` after PR #170 | `48fed70f4e67a6db45c1b4cba6098e4d6b718f9b` | **PASS:** real branch `push` with 11/11 successful checks, including all nine required; [Tests #40145596050](https://github.com/teixemf/repocache/actions/runs/40145596050), [offline #40145596035](https://github.com/teixemf/repocache/actions/runs/40145596035), [rollback #40145596044](https://github.com/teixemf/repocache/actions/runs/40145596044), [upstream #40145596053](https://github.com/teixemf/repocache/actions/runs/40145596053) |
+| `integration/v0.6.0` after merged PR #171 | `d5aa5704075e6ba3c02f677cf94cc30a9451e61a` | **PASS:** real protected-branch `push`, 11/11 successful check-runs including the nine required; [Tests #40182254261](https://github.com/teixemf/repocache/actions/runs/40182254261), [offline #40182254440](https://github.com/teixemf/repocache/actions/runs/40182254440), [rollback #40182254313](https://github.com/teixemf/repocache/actions/runs/40182254313), [upstream #40182254256](https://github.com/teixemf/repocache/actions/runs/40182254256). These are userspace/CI checks, not signed candidate acceptance |
+
+The **nine exact mandatory contexts** (Actions app `15368`) are:
+`Unit tests (Python 3.12)`, `Unit tests (Python 3.13)`,
+`Bundle integrity and unsigned-source refusal (almalinux10)`,
+`Bundle integrity and unsigned-source refusal (debian13)`,
+`Offline wheels (almalinux:10)`, `Offline wheels (debian:trixie-slim)`,
+`Signed release and native offline dependency artifact`,
+`Synthetic rootless update and rollback (almalinux:10)`, and
+`Synthetic rootless update and rollback (debian:trixie-slim)`.
+The separately path-filtered `Real PyPI pinned wheels` jobs are valuable
+compatibility evidence but are **not** required unconditionally.
+
+**NOT VERIFIED / follow-up #175:** current workflow `push` filters explicitly
+name only `integration/v0.5.0` and `integration/v0.6.0`. The GitHub
+ruleset covers a wider `integration/*` family. Draft PR #183 proposes
+`integration/**` push coverage (including experimental branches), but its
+policy approval, primary-issue milestone and review are unresolved; the
+milestone governance job has failed on its HEAD. Do not treat that proposed
+policy as merged or silently broaden triggers to experimental branches. Neither a successful CI run nor this documentation
+authorizes a feature merge, owner signing, staging, publication or production
+activation.
+
 CI in GitHub-hosted containers is not actual booted native-kernel/SELinux,
 owner-signed candidate acceptance, release publication or production
 installation.
 
 ## Branch protection — active ruleset and remaining verification
 
-**Observed 2026-10-24:** active GitHub ruleset `#25793496` matches
+**Reverified 2026-10-26:** active GitHub ruleset `#25793496` matches
 `refs/heads/integration/*` and nested integration refs. It requires PRs,
 strictly up-to-date nine GitHub Actions check contexts, resolved review
 threads, and rejects force pushes/deletion with **no bypass actors**.
@@ -102,8 +137,9 @@ The exact required contexts match protected-main ruleset `#25436501`
 (GitHub Actions app `15368`). Its `required_approving_review_count: 0`
 does **not** prove an independent security review or waive the project's
 documented reviewer gate. Ruleset presence is **PASS (API inspection)**;
-actual live integration push CI, review acceptance and the full release
-gate are still **NOT VERIFIED**.
+real protected-branch `push` CI on **both** v0.5.0 and v0.6.0 is **PASS**.
+Future-lane policy #175, new feature-PR reviews, and the actual owner-signed
+release/security acceptance gates remain **NOT VERIFIED**.
 
 The following operator controls remain to be verified or strengthened
 before accepting feature changes into **either** integration branch:
