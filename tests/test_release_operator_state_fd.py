@@ -944,3 +944,91 @@ def test_verifier_never_signals_reaped_or_reused_group(monkeypatch, tmp_path):
     monkeypatch.setattr(release.os, "killpg", checked_killpg)
     release.verify_unsigned(tmp_path, assets, version)
     assert observed == [signal.SIGKILL]
+
+
+def test_command_lost_waitable_identity_never_signals_group(monkeypatch):
+    """An externally reaped leader must never become a numeric kill target."""
+    children = _local_command_fixture(
+        monkeypatch, 'import sys;sys.stdout.write("ok")')
+    signaled = []
+
+    def lost_child(*args, **kwargs):
+        raise ChildProcessError("waitable child identity already lost")
+
+    monkeypatch.setattr(release.os, "waitid", lost_child)
+    monkeypatch.setattr(release.os, "killpg",
+                        lambda *args: signaled.append(args))
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=4)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert not signaled, "Never signal a potentially recycled process group"
+    assert len(children) == 1 and children[0].returncode is not None
+
+
+def test_verifier_lost_waitable_identity_never_signals_group(
+        monkeypatch, tmp_path):
+    """Source verification must also refuse uncertain process identity."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    children = []
+    signaled = []
+
+    def launch(argv, **kwargs):
+        child = original_popen(
+            [sys.executable, "-c", "import sys;sys.exit(0)"], **kwargs)
+        children.append(child)
+        return child
+
+    def lost_child(*args, **kwargs):
+        raise ChildProcessError("another waiter already reaped leader")
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    monkeypatch.setattr(release.os, "waitid", lost_child)
+    monkeypatch.setattr(release.os, "killpg",
+                        lambda *args: signaled.append(args))
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert not signaled, "Verifier must never signal an unpinned PGID"
+    assert len(children) == 1 and children[0].returncode is not None
+
+
+def test_command_refuses_inherited_sigchld_ignore_without_spawning(tmp_path):
+    """Exercise a real isolated Python parent with SIGCHLD=SIG_IGN."""
+    code = (
+        "import signal\n"
+        "signal.signal(signal.SIGCHLD, signal.SIG_IGN)\n"
+        "from repocache_release.cli import command, OperatorError\n"
+        "try:\n"
+        " command(['git', '--version'])\n"
+        " print('UNSAFE_ALLOWED')\n"
+        "except OperatorError as exc:\n"
+        " print(exc.code)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=_release_subprocess_env(tmp_path),
+        capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == b"TOOL_UNAVAILABLE"
+
+
+def test_verifier_refuses_custom_sigchld_reaper_before_spawn(
+        monkeypatch, tmp_path):
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    real_getsignal = release.signal.getsignal
+    launched = []
+
+    def incoming_disposition(sig):
+        if sig == signal.SIGCHLD:
+            return signal.SIG_IGN
+        return real_getsignal(sig)
+
+    monkeypatch.setattr(release.signal, "getsignal",
+                        incoming_disposition)
+    monkeypatch.setattr(
+        release.subprocess, "Popen",
+        lambda *args, **kwargs: launched.append((args, kwargs)))
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert not launched
