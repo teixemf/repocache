@@ -74,7 +74,7 @@ class NativePreflightReport:
 
     @property
     def all_verified(self) -> bool:
-        return all(c.status is PreflightStatus.PASS for c in self.checks)
+        return False  # This API is always a partial observation, never a readiness certificate.
 
     @property
     def authorizes_installation(self) -> bool:
@@ -175,7 +175,15 @@ def _read_os_release(path: str) -> str:
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError("os-release is not a regular file")
-        data = os.read(fd, MAX_OS_RELEASE_BYTES + 1)
+        chunks = []
+        remaining = MAX_OS_RELEASE_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break  # Actual EOF; short reads are not proof of completeness.
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
         if len(data) > MAX_OS_RELEASE_BYTES:
             raise OSError("os-release exceeds read limit")
         return data.decode("utf-8", "strict")
@@ -191,8 +199,10 @@ def _manager_exists(system: str | None) -> bool | None:
         return None
     try:
         info = os.stat(binary)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return None  # Permission/IO errors cannot prove absence.
     return stat.S_ISREG(info.st_mode) and bool(info.st_mode & 0o111)
 
 

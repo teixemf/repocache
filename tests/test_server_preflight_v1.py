@@ -246,3 +246,42 @@ def test_manager_presence_only_checks_fixed_native_binary(monkeypatch):
     assert native._manager_exists("almalinux") is True
     assert native._manager_exists("unknown") is None
     assert paths == ["/usr/bin/apt-get", "/usr/bin/dnf"]
+
+
+def test_manager_permission_denied_does_not_claim_missing(monkeypatch):
+    import errno
+    def deny(_path):
+        raise PermissionError(errno.EACCES, "denied")
+    monkeypatch.setattr(native, "os", SimpleNamespace(stat=deny))
+    assert native._manager_exists("debian") is None
+    def absent(_path):
+        raise FileNotFoundError(errno.ENOENT, "absent")
+    monkeypatch.setattr(native, "os", SimpleNamespace(stat=absent))
+    assert native._manager_exists("debian") is False
+
+
+def test_os_release_short_reads_consume_entire_identity(monkeypatch):
+    import stat
+    chunks = iter([b"ID=debian\nVERSION_ID=13\n", b"ID=almalinux\n", b""])
+    calls = []
+    def fake_read(fd, count):
+        calls.append((fd, count))
+        return next(chunks)
+    fake_os = SimpleNamespace(
+        O_RDONLY=0, O_CLOEXEC=0, O_NONBLOCK=0,
+        open=lambda *_: 42, read=fake_read, close=lambda _: None,
+        fstat=lambda _: SimpleNamespace(st_mode=stat.S_IFREG | 0o444),
+    )
+    monkeypatch.setattr(native, "os", fake_os)
+    full = native._read_os_release("/etc/os-release")
+    assert full.count("ID=") == 2 and len(calls) == 3
+    result = assess_native_host(facts(os_release=full))
+    assert status(result, "supported_os_and_python") is PreflightStatus.FAIL
+
+
+def test_partial_report_never_claims_complete_readiness():
+    assert native.NativePreflightReport(()).all_verified is False
+    assert native.NativePreflightReport((
+        native.PreflightCheck("effective_uid", PreflightStatus.PASS,
+                              "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),
+    )).all_verified is False
