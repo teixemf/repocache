@@ -264,3 +264,159 @@ def test_no_subprocess_network_or_filesystem_side_effects(monkeypatch):
     assert validate_install_document(doc) == doc
     doc["deployment"]["nginx"]["ownership"] = "adopt"
     refuse(doc)
+
+
+# Independent security review (RC-192-01 through RC-192-09) regressions.
+
+
+def _with_second_apt(doc: dict, url: str) -> dict:
+    other = copy.deepcopy(doc["repositories"][0])
+    other["id"] = "second-apt"
+    other["upstream"]["base_url"] = url
+    doc["repositories"].append(other)
+    return doc
+
+
+def test_review_duplicate_effective_https_origin_default_port():
+    doc = _with_second_apt(
+        fixture(), "https://mirror.example.invalid:443/debian/")
+    refuse(doc)
+
+
+def test_review_reordered_apt_component_set_is_same_identity():
+    doc = fixture()
+    doc["repositories"][0]["layout"]["components"] = ["main", "contrib"]
+    second = copy.deepcopy(doc["repositories"][0])
+    second["id"] = "apt-duplicate-set"
+    second["layout"]["components"] = ["contrib", "main"]
+    doc["repositories"].append(second)
+    refuse(doc)
+
+
+def test_review_case_sensitive_url_paths_are_distinct():
+    doc = _with_second_apt(
+        fixture(), "https://mirror.example.invalid/Debian/")
+    assert parse_install_bytes(as_bytes(doc)) == doc
+
+
+def test_review_effective_port_normalization_and_canonical_root_path():
+    doc = fixture()
+    doc["repositories"][0]["upstream"]["base_url"] = (
+        "https://mirror.example.invalid/")
+    assert parse_install_bytes(as_bytes(doc)) == doc
+    doc["repositories"][0]["upstream"]["base_url"] = (
+        "https://mirror.example.invalid:000443/")
+    assert parse_install_bytes(as_bytes(doc)) == doc
+
+
+@pytest.mark.parametrize("control", ["\u0085", "\u202e", "\u200b", "\u0001"])
+def test_review_control_or_format_unicode_rejected(control):
+    doc = fixture()
+    doc["deployment"]["paths"]["cache_root"] = (
+        "/var/cache/repocache/x" + control + "y")
+    refuse(doc)
+
+
+@pytest.mark.parametrize("suffix", ["a[0]/", "$arg_target/", "a;b/",
+                                      "a?token/", "a b/", "a%20b/"])
+def test_review_unsafe_unescaped_upstream_paths_rejected(suffix):
+    doc = fixture()
+    doc["repositories"][0]["upstream"]["base_url"] = (
+        "https://mirror.example.invalid/" + suffix)
+    refuse(doc)
+
+
+def test_review_oversize_predecoded_document_rejected():
+    doc = fixture()
+    doc["repositories"] = []
+    for i in range(500):
+        entry = copy.deepcopy(fixture()["repositories"][0])
+        entry["id"] = f"apt{i}"
+        entry["upstream"]["base_url"] = (
+            f"https://mirror.example.invalid/debian{i}/")
+        entry["layout"]["release_key_refs"] = [
+            "file:/etc/repocache/keys/" + "a" * 1870]
+        doc["repositories"].append(entry)
+    payload = as_bytes(doc)
+    assert len(payload) > 1024 * 1024
+    refuse(doc)
+    with pytest.raises(InstallInputError):
+        validate_install_document(doc)
+
+
+def test_review_python_version_elements_must_be_real_ints():
+    with pytest.raises(InstallInputError):
+        validate_os_identity(
+            "ID=debian\nVERSION_ID=13\n", (3.0, 13.0))
+
+
+def test_review_private_tls_key_cannot_overlap_generated_include():
+    doc = fixture()
+    doc["deployment"]["tls"]["private_key_file"] = (
+        doc["deployment"]["paths"]["generated_include"])
+    refuse(doc)
+
+
+def test_review_public_trust_reference_cannot_reference_private_tls_key():
+    doc = fixture()
+    doc["repositories"][0]["layout"]["release_key_refs"] = [
+        "file:" + doc["deployment"]["tls"]["private_key_file"]]
+    refuse(doc)
+
+
+def test_review_managed_directory_and_key_path_overlap_rejected():
+    doc = fixture()
+    doc["deployment"]["tls"]["private_key_file"] = (
+        doc["deployment"]["paths"]["cache_root"] + "/key.pem")
+    refuse(doc)
+    doc = fixture()
+    doc["deployment"]["paths"]["log_root"] = (
+        doc["deployment"]["paths"]["state_root"] + "/logs")
+    refuse(doc)
+
+
+def test_review_public_ref_inside_managed_cache_directory_rejected():
+    doc = fixture()
+    doc["repositories"][1]["layout"]["gpg_key_refs"] = [
+        "file:" + doc["deployment"]["paths"]["cache_root"] + "/key.gpg"]
+    refuse(doc)
+
+
+def test_review_validated_return_is_an_independent_deep_snapshot():
+    doc = fixture()
+    checked = validate_install_document(doc)
+    doc["repositories"][0]["upstream"]["base_url"] = "http://127.0.0.1/"
+    doc["deployment"]["tls"]["private_key_file"] = "/unsafe/key"
+    assert checked["repositories"][0]["upstream"]["base_url"] == (
+        "https://mirror.example.invalid/debian/")
+    assert checked["deployment"]["tls"]["private_key_file"] == (
+        "/etc/repocache/tls/example-key.pem")
+
+
+def test_review_oversize_integer_token_rejected_without_global_int_limit():
+    import sys
+
+    get_limit = getattr(sys, "get_int_max_str_digits", None)
+    set_limit = getattr(sys, "set_int_max_str_digits", None)
+    old = get_limit() if get_limit else None
+    try:
+        if set_limit:
+            set_limit(0)
+        payload = b'{"schema_version":' + b"9" * 100000 + b"}"
+        with pytest.raises(InstallInputError):
+            parse_install_bytes(payload)
+    finally:
+        if set_limit and old is not None:
+            set_limit(old)
+
+
+def test_review_invalid_predecoded_json_values_rejected():
+    doc = fixture()
+    doc["deployment"]["listen"]["https_port"] = float("nan")
+    with pytest.raises(InstallInputError):
+        validate_install_document(doc)
+
+
+def test_review_false_for_apply_argument_rejected():
+    with pytest.raises(InstallInputError):
+        validate_install_document(fixture(), for_apply="false")
