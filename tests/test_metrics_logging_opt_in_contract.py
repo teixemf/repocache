@@ -58,7 +58,7 @@ def test_location_fragment_has_literal_approved_label_and_no_route_creation():
 def test_ndjson_records_from_proposed_format_are_usable_and_route_isolated(tmp_path):
     rows = [
         {
-            "time_iso8601": "2026-10-17T23:00:00Z",
+            "time_iso8601": "2026-10-18T00:00:00+01:00",
             "repocache_repository": "/debian/",
             "status": "200",
             "upstream_cache_status": "HIT",
@@ -74,7 +74,7 @@ def test_ndjson_records_from_proposed_format_are_usable_and_route_isolated(tmp_p
             "request_time": "0.250",
         },
         {
-            "time_iso8601": "2026-10-17T23:20:00Z",
+            "time_iso8601": "2026-10-17T18:20:00-05:00",
             "repocache_repository": "/debian/",
             "status": "200",
             "upstream_cache_status": "BYPASS",
@@ -96,6 +96,7 @@ def test_ndjson_records_from_proposed_format_are_usable_and_route_isolated(tmp_p
         now=datetime(2026, 10, 18, tzinfo=timezone.utc),
     )
     assert report["requests"] == 2
+    assert report["first_seen"] == "2026-10-17T23:00:00+00:00"
     assert (report["hit"], report["miss"], report["bypass"]) == (1, 0, 1)
     assert report["bytes_sent"] == 200
     assert report["cache_observed"] == 2
