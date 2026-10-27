@@ -94,6 +94,11 @@ def _host(value: Any, name: str) -> str:
         _reject(f"{name}: invalid DNS label")
     if len(value.split(".")) < 2:
         _reject(f"{name}: expected DNS hostname")
+    # inet_aton/getaddrinfo may interpret legacy dotted octal/hex or
+    # abbreviated numbers as IP literals even when ipaddress rejects them.
+    numeric = re.compile(r"(?:[0-9]+|0[xX][0-9A-Fa-f]+)\Z", re.ASCII)
+    if all(numeric.fullmatch(part) for part in value.split(".")):
+        _reject(f"{name}: numeric IP-like host forbidden")
     try:
         ipaddress.ip_address(value)
     except ValueError:
@@ -149,12 +154,15 @@ def _upstream(value: Any) -> str:
     except ValueError:
         _reject("upstream.base_url: invalid URL")
     if (parsed.scheme != "https" or not parsed.netloc
+            or parsed.netloc.endswith(":")
             or parsed.username is not None or parsed.password is not None
             or parsed.query or parsed.fragment or "?" in value or "#" in value):
         _reject("upstream.base_url: only credential-free HTTPS is permitted")
     if port is not None and not 1 <= port <= 65535:
         _reject("upstream.base_url: invalid port")
     path = parsed.path
+    if any(ord(ch) < 33 or ord(ch) > 126 for ch in path):
+        _reject("upstream.base_url: invalid or unescaped path characters")
     if (not path.startswith("/") or not path.endswith("/") or "//" in path
             or any(part in (".", "..") for part in path.split("/")[1:-1])):
         _reject("upstream.base_url: noncanonical slash-terminated path")
@@ -311,7 +319,10 @@ def parse_install_bytes(payload: bytes, *, for_apply: bool = False) -> dict:
         document = json.loads(data, object_pairs_hook=_pairs,
                               parse_constant=lambda _v: _reject(
                                   "install document: nonfinite number"))
-    except (UnicodeError, json.JSONDecodeError, RecursionError, OverflowError):
+    except InstallInputError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, RecursionError,
+            OverflowError, ValueError):
         _reject("install document: invalid UTF-8 JSON")
     return validate_install_document(document, for_apply=for_apply)
 
