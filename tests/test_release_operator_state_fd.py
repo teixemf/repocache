@@ -771,8 +771,39 @@ def _running_pid(pid):
     try:
         with open(f"/proc/{pid}/stat", encoding="ascii") as stream:
             return stream.read().split(") ", 1)[1][0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # A /proc entry can disappear after open() but before read() when
+        # the observed descendant exits. This is successful termination,
+        # not a reason for the security regression test itself to fail.
         return False
+
+
+@pytest.mark.parametrize("error_class, error_number", [
+    (FileNotFoundError, errno.ENOENT),
+    (ProcessLookupError, errno.ESRCH),
+])
+def test_running_pid_accepts_proc_disappearance_during_read(
+        monkeypatch, error_class, error_number):
+    """Procfs may report a vanished process from read(), not just open()."""
+    original_open = open
+
+    class VanishedProcStat:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            raise error_class(error_number, "process exited during procfs read")
+
+    def proc_stat_open(path, *args, **kwargs):
+        if path == "/proc/12345678/stat":
+            return VanishedProcStat()
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", proc_stat_open)
+    assert _running_pid(12345678) is False
 
 
 def test_command_timeout_terminates_descendants_with_inherited_stdout(monkeypatch, tmp_path):
