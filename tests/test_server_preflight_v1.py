@@ -274,7 +274,7 @@ def test_os_release_short_reads_consume_entire_identity(monkeypatch):
     )
     monkeypatch.setattr(native, "os", fake_os)
     full = native._read_os_release("/etc/os-release")
-    assert full.count("ID=") == 2 and len(calls) == 3
+    assert full.splitlines() == ["ID=debian", "VERSION_ID=13", "ID=almalinux"] and len(calls) == 3
     result = assess_native_host(facts(os_release=full))
     assert status(result, "supported_os_and_python") is PreflightStatus.FAIL
 
