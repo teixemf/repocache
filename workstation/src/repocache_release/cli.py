@@ -17,6 +17,8 @@ import json
 import zipfile
 import os
 import re
+import select
+import signal
 import shutil
 import stat
 import ssl
@@ -26,6 +28,7 @@ import urllib.parse
 import urllib.request
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +43,7 @@ SIGNED_SUFFIXES = (".manifest.json", ".manifest.json.sig",
 MAX_METADATA = 4_000_000
 MAX_ASSET = 2_000_000_000
 MAX_DOWNLOAD = 1_000_000_000
+VERIFIER_TIMEOUT = 180
 
 
 class OperatorError(Exception):
@@ -57,23 +61,137 @@ class SafeParser(argparse.ArgumentParser):
         raise SyntaxErrorFromParser(message)
 
 
+
+
+def _require_waitable_children() -> None:
+    """Refuse tools when another SIGCHLD policy can auto-reap their leaders.
+
+    Python subprocess assumes its own child wait semantics; an inherited
+    SIG_IGN or a custom SIGCHLD handler can invalidate the PID/PGID lifetime
+    guarantee required for safe group signaling.
+    """
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise OSError("unsupported SIGCHLD disposition for process cleanup")
+
+
+def _wait_unreaped(process: subprocess.Popen, *, deadline: float,
+                   timeout: float) -> None:
+    """Observe child exit without freeing the private process-group ID.
+
+    With the default SIGCHLD disposition and no external child reaper,
+    WNOWAIT pins the original leader until cleanup signals the group.
+    """
+    while True:
+        if os.waitid(os.P_PID, process.pid,
+                     os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        time.sleep(min(0.02, remaining))
+
+
+def _terminate_process_group(process: subprocess.Popen) -> bool:
+    """Cancel a verified child group before reaping its leader.
+
+    Never signal a numeric PGID after losing the original waitable child.
+    False means group identity could not be established, so callers must
+    refuse success rather than treating a possibly auto-reaped child as OK.
+    Deliberately detached descendants are outside this limited guarantee.
+    This owner-workstation CLI assumes no concurrent external waitpid reaper;
+    PID/PGID identity cannot be preserved against another thread reaping it.
+    """
+    safe_group = signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
+    if safe_group:
+        try:
+            os.waitid(os.P_PID, process.pid,
+                      os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            # The leader was reaped elsewhere (or automatically). A reused
+            # numeric PGID must not receive an unrelated SIGKILL.
+            safe_group = False
+        except OSError:
+            safe_group = False
+    if safe_group:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            # The verified leader can already have exited with no live group.
+            pass
+        except OSError:
+            # Signalling failed; do not report successful cancellation or
+            # attempt to signal an uncertain numeric group ID again.
+            safe_group = False
+    try:
+        # Even when killpg fails, always attempt bounded collection of the
+        # original child. A failure cannot certify descendant termination.
+        process.wait(timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return safe_group and process.returncode is not None
+
+
 def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> bytes:
-    """Trusted binary/arguments only; never disclose gh stderr or credentials."""
+    """Run trusted tools with bounded stdout, a deadline and no secret stderr."""
     if not argv or argv[0] not in ("git", "gh", "/usr/bin/openssl"):
         raise OperatorError("INVALID_COMMAND", "Unapproved external executable")
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
+               GH_PROMPT_DISABLED="1", GCM_INTERACTIVE="Never")
+    process = None
+    cleanup_attempted = False
     try:
-        env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
-                   GH_PROMPT_DISABLED="1", GCM_INTERACTIVE="Never")
-        result = subprocess.run(argv, cwd=cwd, capture_output=True,
-                                stdin=subprocess.DEVNULL, env=env,
-                                timeout=timeout, check=False)
+        _require_waitable_children()
+        # subprocess.run(capture_output=True) buffers arbitrarily large output
+        # before the old MAX_METADATA check. A malformed API/tool response
+        # must not exhaust the owner workstation while preparing a release.
+        process = subprocess.Popen(
+            argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=env, close_fds=True,
+            start_new_session=True)
+        if process.stdout is None:
+            raise OSError("missing command stdout")
+        fd = process.stdout.fileno()
+        chunks: list[bytes] = []
+        total = 0
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            # Read at most one byte beyond the cap, then terminate the child.
+            chunk = os.read(fd, min(65536, MAX_METADATA + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_METADATA:
+                raise OperatorError("OVERSIZED_RESPONSE",
+                                    "Tool output exceeded supported size")
+            chunks.append(chunk)
+        _wait_unreaped(process, deadline=deadline, timeout=timeout)
+        cleanup_attempted = True
+        if not _terminate_process_group(process):
+            raise OperatorError("TOOL_UNAVAILABLE",
+                                "Required local tool unavailable")
+        if process.returncode:
+            raise OperatorError("OPERATION_FAILED",
+                                "Git, GitHub or OpenSSL validation failed")
+        return b"".join(chunks)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise OperatorError("TOOL_UNAVAILABLE", "Required local tool unavailable") from exc
-    if result.returncode:
-        raise OperatorError("OPERATION_FAILED", "Git, GitHub or OpenSSL validation failed")
-    if len(result.stdout) > MAX_METADATA:
-        raise OperatorError("OVERSIZED_RESPONSE", "Tool output exceeded supported size")
-    return result.stdout
+        raise OperatorError("TOOL_UNAVAILABLE",
+                            "Required local tool unavailable") from exc
+    finally:
+        if process is not None:
+            try:
+                if not cleanup_attempted and process.returncode is None:
+                    try:
+                        _terminate_process_group(process)
+                    except OSError:
+                        # Never mask the sanitized failure while unwinding.
+                        pass
+            finally:
+                # Cleanup itself must never bypass descriptor closure.
+                if process.stdout is not None:
+                    process.stdout.close()
 
 
 def gh_json(endpoint: str) -> dict[str, Any]:
@@ -85,21 +203,72 @@ def gh_json(endpoint: str) -> dict[str, Any]:
         raise OperatorError("OVERSIZED_RESPONSE", "GitHub API response is too large")
     try:
         data = json.loads(raw)
-    except (ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        # Even a size-bounded GitHub response may exceed JSON decoder depth.
         raise OperatorError("INVALID_RESPONSE", "GitHub API response is invalid") from exc
     if not isinstance(data, dict):
         raise OperatorError("INVALID_RESPONSE", "GitHub API returned a nonobject")
     return data
 
 
+def _assert_stable_inode(path: Path, fd: int, before: os.stat_result,
+                         *, code: str) -> None:
+    """Fail closed if a verified file changes or its pathname is replaced.
+
+    Reading through a safe descriptor prevents symlink following, but alone
+    cannot attest that the *named* file is still the one just verified.
+    This is a best-effort local race guard, not protection from a compromised
+    owner account or a swap after the final check.
+    """
+    try:
+        after = os.fstat(fd)
+        named = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise OperatorError(code, "Verified file changed during read") from exc
+    if (not stat.S_ISREG(named.st_mode) or after.st_nlink != 1
+            or named.st_nlink != 1
+            or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+            or (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino)
+            or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or after.st_ctime_ns != before.st_ctime_ns
+            or named.st_size != after.st_size
+            or named.st_mtime_ns != after.st_mtime_ns
+            or named.st_ctime_ns != after.st_ctime_ns):
+        raise OperatorError(code, "Verified file changed during read")
+
+
 def digest(path: Path) -> str:
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_ASSET:
-        raise OperatorError("UNSAFE_ASSET", "Missing, symlinked or oversized asset")
-    h = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(131072), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    """Hash the validated asset inode, not a path that can change before open."""
+    try:
+        # A symlink/FIFO substituted after a path precheck must not be followed
+        # or allowed to block an offline release operation.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise OperatorError("UNSAFE_ASSET", "Asset cannot be opened safely") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ASSET
+                or info.st_nlink != 1):
+            raise OperatorError("UNSAFE_ASSET", "Asset inode is unsafe or oversized")
+        h = hashlib.sha256()
+        remaining = MAX_ASSET
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            while True:
+                chunk = stream.read(min(131072, remaining + 1))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                if remaining < 0:
+                    raise OperatorError("UNSAFE_ASSET", "Asset exceeded the size limit")
+                h.update(chunk)
+        _assert_stable_inode(path, fd, info, code="UNSAFE_ASSET")
+        return h.hexdigest()
+    except OSError as exc:
+        raise OperatorError("UNSAFE_ASSET", "Asset could not be read") from exc
+    finally:
+        os.close(fd)
 
 
 def check_tag(version: str) -> str:
@@ -131,11 +300,36 @@ def state_root() -> Path:
     return base / "repocache-release"
 
 
+def _guard_state_ancestors(path: Path) -> None:
+    """Refuse symlinked or untrusted writable ancestors of owner-only state.
+
+    Root-owned sticky directories (for example /tmp in isolated tests) may
+    contain a private owner directory; non-root writable ancestors may be
+    renamed by another principal and cannot anchor candidate state.
+    This is a best-effort path check, not a substitute for owner-account trust.
+    """
+    for ancestor in path.parents:
+        try:
+            info = ancestor.lstat()
+        except FileNotFoundError:
+            # A not-yet-created XDG parent is checked again after mkdir.
+            continue
+        except OSError as exc:
+            raise OperatorError("UNSAFE_STATE", "State path ancestor is unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in (0, os.getuid())
+                or ((info.st_mode & 0o022)
+                    and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX))):
+            raise OperatorError("UNSAFE_STATE", "State path has an untrusted ancestor")
+
+
 def guard_state_dir(path: Path, *, create: bool = False) -> None:
+    _guard_state_ancestors(path)
     if path.is_symlink():
         raise OperatorError("UNSAFE_STATE", "Refusing symlinked state directory")
     if create:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _guard_state_ancestors(path)
     if path.exists():
         info = path.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
@@ -143,16 +337,56 @@ def guard_state_dir(path: Path, *, create: bool = False) -> None:
             raise OperatorError("UNSAFE_STATE", "State directory must be private and owned")
 
 
+def _check_state_root_anchor(base: Path, fd: int) -> None:
+    """Require the named private state root to remain the locked directory."""
+    try:
+        opened = os.fstat(fd)
+        named = os.stat(base, follow_symlinks=False)
+    except OSError as exc:
+        raise OperatorError("UNSAFE_STATE", "Candidate state root changed") from exc
+    if (not stat.S_ISDIR(opened.st_mode) or not stat.S_ISDIR(named.st_mode)
+            or opened.st_uid != os.getuid() or named.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+            or stat.S_IMODE(named.st_mode) != 0o700
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+        raise OperatorError("UNSAFE_STATE", "Candidate state root changed")
+
+
 @contextlib.contextmanager
 def candidate_lock(version: str):
-    """Serialize local candidate mutations without deleting an active flock."""
+    """Serialize candidate mutations on the private state-directory inode.
+
+    Linux flock is filesystem-based and shared between network/user
+    namespaces, unlike an abstract AF_UNIX socket. Locking the private state
+    directory also protects against replacement of an individual .lock name.
+    This serializes different candidate versions conservatively. A hostile
+    process already controlling the owner's UID or replacing the whole state
+    directory is outside this workstation trust boundary, and detected where
+    possible, not claimed as impossible.
+    """
     check_tag(version)
     base = state_root()
     guard_state_dir(base, create=True)
     path = base / (version + ".lock")
+    anchor = -1
     fd = -1
     try:
-        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            anchor = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                             | getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            raise OperatorError("UNSAFE_STATE", "Candidate state root is unsafe") from exc
+        _check_state_root_anchor(base, anchor)
+        try:
+            fcntl.flock(anchor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise OperatorError("BUSY", "Another release operation holds the state lock") from exc
+        _check_state_root_anchor(base, anchor)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
+                         | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0), 0o600)
+        except OSError as exc:
+            raise OperatorError("UNSAFE_STATE", "Candidate lock cannot be opened safely") from exc
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or stat.S_IMODE(info.st_mode) != 0o600
@@ -162,10 +396,19 @@ def candidate_lock(version: str):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise OperatorError("BUSY", "Another release operation holds the candidate lock") from exc
-        yield
+        _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
+        try:
+            yield
+        finally:
+            # The directory lock remains held even if the per-version lock
+            # pathname is detached during an operation. Refuse stale state.
+            _check_state_root_anchor(base, anchor)
+            _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
     finally:
         if fd >= 0:
             os.close(fd)
+        if anchor >= 0:
+            os.close(anchor)
 
 
 def state_file(version: str) -> Path:
@@ -178,15 +421,37 @@ def read_state(version: str) -> dict[str, Any] | None:
     path = state_file(version)
     if path.is_symlink():
         raise OperatorError("UNSAFE_STATE", "State file symlink refused")
-    if not path.exists():
-        return None
-    info = path.stat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_mode & 0o077 or info.st_size > 65536):
-        raise OperatorError("UNSAFE_STATE", "State file is not private or is oversized")
+    # Validate the opened inode, not a path inspected before open: an
+    # interrupted or locally replaced record must never be followed through
+    # a symlink or a hardlink to another owner file.
     try:
-        record = json.loads(path.read_text())
-    except (ValueError, UnicodeError, OSError) as exc:
+        # O_NONBLOCK prevents a replaced FIFO from stalling before fstat() can reject it.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | getattr(os, "O_CLOEXEC", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise OperatorError("UNSAFE_STATE", "State file cannot be safely opened") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1
+                or info.st_size > 65536):
+            raise OperatorError("UNSAFE_STATE", "State file is not private, unique or is oversized")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(65537)
+        _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
+    except OSError as exc:
+        raise OperatorError("INVALID_STATE", "Release state record could not be read") from exc
+    finally:
+        os.close(fd)
+    if len(raw) > 65536:
+        raise OperatorError("UNSAFE_STATE", "State file exceeded the size limit")
+    try:
+        record = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        # A bounded-size state file can still contain thousands of nested
+        # JSON containers. Parser recursion is invalid state, not a traceback.
         raise OperatorError("INVALID_STATE", "Release state record corrupted") from exc
     if (not isinstance(record, dict) or record.get("schema") != 1
             or record.get("version") != version
@@ -482,6 +747,34 @@ def verify_checkout(version: str, record: dict[str, Any]) -> Path:
     return checkout
 
 
+def read_checksum(path: Path) -> str:
+    """Read a downloaded checksum from one validated, size-bounded inode.
+
+    The earlier digest() precheck cannot protect a later path-based read from
+    a same-user replacement with a symlink, FIFO or oversized file.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise OperatorError("UNSAFE_ASSET", "Checksum cannot be safely opened") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_size > 512):
+            raise OperatorError("UNSAFE_ASSET", "Checksum inode is unsafe or oversized")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(513)
+        _assert_stable_inode(path, fd, info, code="UNSAFE_ASSET")
+        if len(raw) > 512:
+            raise OperatorError("UNSAFE_ASSET", "Checksum exceeded the size limit")
+        return raw.decode("ascii")
+    except (OSError, UnicodeError) as exc:
+        raise OperatorError("UNSAFE_ASSET", "Checksum could not be read safely") from exc
+    finally:
+        os.close(fd)
+
+
 def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     expected = set(files_for(version))
     actual = {f.name for f in assets.iterdir()}
@@ -493,15 +786,44 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     for suffix in ("", ".wheelhouse.tar.gz"):
         name = base + suffix
         sha_path = assets / (name + ".sha256")
-        claimed = sha_path.read_text("ascii")
+        claimed = read_checksum(sha_path)
         if claimed != digest(assets / name) + "  " + name + "\n":
             raise OperatorError("ASSET_DRIFT", "Unsigned checksum differs from downloaded asset")
     script = worktree / "scripts/verify_release_candidate.py"
-    result = subprocess.run([sys.executable, str(script), str(assets)],
-                            cwd=worktree, capture_output=True, timeout=180,
-                            check=False)
-    if result.returncode:
-        raise OperatorError("BUILD_NOT_VERIFIED", "Source rebuild or signed dependency-lock verification failed")
+    # Run the reviewed source verifier in a private process group. A helper
+    # retaining stdio or creating descendants cannot outlive a failed or
+    # timed-out verification while remaining in that group.
+    process = None
+    cleanup_attempted = False
+    try:
+        _require_waitable_children()
+        process = subprocess.Popen(
+            [sys.executable, str(script), str(assets)], cwd=worktree,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True,
+            start_new_session=True)
+        _wait_unreaped(process,
+                       deadline=time.monotonic() + VERIFIER_TIMEOUT,
+                       timeout=VERIFIER_TIMEOUT)
+        cleanup_attempted = True
+        if not _terminate_process_group(process):
+            raise OperatorError("BUILD_NOT_VERIFIED",
+                                "Source rebuild or signed dependency-lock verification failed")
+        result = process.returncode
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OperatorError("BUILD_NOT_VERIFIED",
+                            "Source rebuild or signed dependency-lock verification failed") from exc
+    finally:
+        if (process is not None and not cleanup_attempted
+                and process.returncode is None):
+            try:
+                _terminate_process_group(process)
+            except OSError:
+                # Verification already failed; keep errors redacted.
+                pass
+    if result:
+        raise OperatorError("BUILD_NOT_VERIFIED",
+                            "Source rebuild or signed dependency-lock verification failed")
 
 
 def prepare(version: str) -> dict[str, Any]:
@@ -552,21 +874,55 @@ def prepare(version: str) -> dict[str, Any]:
         raise
 
 
-def read_passphrase(fd: int) -> bytes:
-    if fd < 3:
-        raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor must be >= 3")
+def read_passphrase(fd: int, *, timeout: float = 15.0) -> bytes:
+    """Read one bounded, EOF-terminated passphrase from a protected FD.
+
+    Pipe writes may arrive in fragments. Requiring EOF prevents a short read
+    from silently truncating the secret. No interactive prompt is supported.
+    """
+    if fd < 3 or timeout <= 0:
+        raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor is invalid")
+    data = bytearray()
+    original_flags = None
     try:
-        data = os.read(fd, 4097)
-        extra = os.read(fd, 1) if len(data) == 4097 else b""
+        original_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+        deadline = time.monotonic() + timeout
+        poller = select.poll()
+        poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OperatorError("INVALID_SECRET_FD", "Protected passphrase input timed out")
+            if not poller.poll(max(1, int(remaining * 1000))):
+                raise OperatorError("INVALID_SECRET_FD", "Protected passphrase input timed out")
+            try:
+                block = os.read(fd, 4097 - len(data))
+            except BlockingIOError:
+                continue
+            if not block:
+                break  # EOF: all bytes were received.
+            data.extend(block)
+            if len(data) > 4096:
+                raise OperatorError("INVALID_SECRET_FD", "Missing or oversized signer passphrase")
+        if not data or b"\x00" in data:
+            raise OperatorError("INVALID_SECRET_FD", "Missing or oversized signer passphrase")
+        if data.endswith(b"\n"):
+            del data[-1:]
+        if not data or b"\r" in data or b"\n" in data:
+            raise OperatorError("INVALID_SECRET_FD", "Invalid passphrase encoding")
+        return bytes(data)
     except OSError as exc:
         raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor cannot be read") from exc
-    if (not data or len(data) > 4096 or extra or b"\x00" in data):
-        raise OperatorError("INVALID_SECRET_FD", "Missing or oversized signer passphrase")
-    if data.endswith(b"\n"):
-        data = data[:-1]
-    if not data or b"\r" in data or b"\n" in data:
-        raise OperatorError("INVALID_SECRET_FD", "Invalid passphrase encoding")
-    return data
+    finally:
+        data.clear()
+        if original_flags is not None:
+            try:
+                fcntl.fcntl(fd, fcntl.F_SETFL, original_flags)
+            except OSError:
+                # Caller-owned descriptor; a subsequent operation must not
+                # assume its flags were restored after an OS-level failure.
+                pass
 
 
 def sign(version: str, fd: int) -> dict[str, Any]:

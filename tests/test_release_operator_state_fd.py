@@ -1,0 +1,1247 @@
+"""Fail-closed local state inode checks for the optional release operator (#88).
+
+These tests never use signing keys, network, GitHub releases or publish APIs.
+"""
+from __future__ import annotations
+
+import errno
+import os
+import select
+import socket
+import shutil
+import signal
+import threading
+import time
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "workstation/src"))
+from repocache_release import cli as release
+
+
+def _state(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    version = "v0.5.0"
+    release.state_root().mkdir(mode=0o700)
+    record = {
+        "schema": 1, "version": version, "commit": "a" * 40,
+        "run_id": 123, "attempt": 1, "phase": "prepared",
+        "assets": {name: "b" * 64 for name in release.files_for(version)},
+    }
+    release.save_state(version, record)
+    return release.state_file(version), record
+
+
+def test_state_refuses_hardlinked_private_record(monkeypatch, tmp_path):
+    path, record = _state(monkeypatch, tmp_path)
+    assert release.read_state("v0.5.0") == record
+    os.link(path, path.with_name("another-link.json"))
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert caught.value.code == "UNSAFE_STATE"
+
+
+def test_state_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
+    path, _ = _state(monkeypatch, tmp_path)
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"not": "a release state"}')
+    original_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            path.rename(path.with_name("original.json"))
+            path.symlink_to(outside)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert swapped
+    assert caught.value.code == "UNSAFE_STATE"
+    assert outside.read_text() == '{"not": "a release state"}'
+
+
+def test_state_refuses_path_replacement_after_open(monkeypatch, tmp_path):
+    path, record = _state(monkeypatch, tmp_path)
+    original_open = os.open
+    swapped = False
+
+    def replace_after_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if dir_fd is None:
+            fd = original_open(file, flags, mode)
+        else:
+            fd = original_open(file, flags, mode, dir_fd=dir_fd)
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            path.rename(path.with_name("original.json"))
+            path.write_text('{"untrusted": true}')
+        return fd
+
+    monkeypatch.setattr(release.os, "open", replace_after_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert caught.value.code == "UNSAFE_STATE"
+    assert swapped
+    assert path.read_text() == '{"untrusted": true}'
+
+def test_state_refuses_fifo_swapped_before_open_without_blocking(monkeypatch, tmp_path):
+    """A FIFO substituted for the JSON record must not block before fstat."""
+    path, _ = _state(monkeypatch, tmp_path)
+    original_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            # Fail the test before a blocking open if this protection regresses.
+            assert flags & os.O_NONBLOCK, "state read must open nonblocking"
+            path.rename(path.with_name("original.json"))
+            os.mkfifo(path, mode=0o600)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert swapped
+    assert caught.value.code == "UNSAFE_STATE"
+    assert path.is_fifo()
+
+
+def test_asset_digest_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
+    """The release operator must never hash a substituted private-file link."""
+    import hashlib
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original unsigned candidate")
+    private = tmp_path / "private-secret"
+    private.write_bytes(b"not an asset")
+    original_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(asset) and not swapped:
+            swapped = True
+            assert flags & os.O_NOFOLLOW
+            asset.unlink()
+            asset.symlink_to(private)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert private.read_bytes() == b"not an asset"
+
+
+def test_asset_digest_refuses_path_replacement_after_open(monkeypatch, tmp_path):
+    """A changed pathname after open cannot change the bytes being hashed."""
+    import hashlib
+    asset = tmp_path / "candidate.tar.gz"
+    original = b"approved unsigned candidate bytes"
+    asset.write_bytes(original)
+    original_open = os.open
+    swapped = False
+
+    def replace_after_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if dir_fd is None:
+            fd = original_open(file, flags, mode)
+        else:
+            fd = original_open(file, flags, mode, dir_fd=dir_fd)
+        if os.fspath(file) == os.fspath(asset) and not swapped:
+            swapped = True
+            asset.rename(tmp_path / "old-candidate")
+            asset.write_bytes(b"substituted candidate")
+        return fd
+
+    monkeypatch.setattr(release.os, "open", replace_after_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert caught.value.code == "UNSAFE_ASSET"
+    assert swapped and asset.read_bytes() == b"substituted candidate"
+
+
+def test_asset_digest_refuses_fifo_swapped_at_open(monkeypatch, tmp_path):
+    """Reject a FIFO before a blocking read or a misleading size check."""
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original")
+    original_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(asset) and not swapped:
+            swapped = True
+            assert flags & os.O_NONBLOCK
+            asset.unlink()
+            os.mkfifo(asset, mode=0o600)
+        if dir_fd is None:
+            return original_open(file, flags, mode)
+        return original_open(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert asset.is_fifo()
+
+
+def test_asset_digest_refuses_hardlinked_inode(monkeypatch, tmp_path):
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original")
+    os.link(asset, tmp_path / "second-link")
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_asset_digest_rechecks_limit_during_read(monkeypatch, tmp_path):
+    """A stale size observation cannot permit reading past the hard cap."""
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"12345")
+    monkeypatch.setattr(release, "MAX_ASSET", 4)
+    real_fstat = os.fstat
+    from types import SimpleNamespace
+
+    def stale_size(fd):
+        st = real_fstat(fd)
+        return SimpleNamespace(st_mode=st.st_mode, st_size=4,
+                               st_nlink=st.st_nlink)
+
+    monkeypatch.setattr(release.os, "fstat", stale_size)
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_checksum_read_refuses_path_replacement_after_open(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    original = "a" * 64 + "  candidate.tar.gz\n"
+    path.write_text(original, encoding="ascii")
+    real_open = os.open
+    swapped = False
+
+    def replace_after_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        fd = (real_open(file, flags, mode) if dir_fd is None
+              else real_open(file, flags, mode, dir_fd=dir_fd))
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            path.rename(tmp_path / "original.sha256")
+            path.write_text("untrusted replacement", encoding="ascii")
+        return fd
+
+    monkeypatch.setattr(release.os, "open", replace_after_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
+    assert swapped
+    assert path.read_text() == "untrusted replacement"
+
+
+
+def test_checksum_read_accepts_stable_small_ascii_file(tmp_path):
+    path = tmp_path / "candidate.sha256"
+    expected = "a" * 64 + "  candidate.tar.gz\n"
+    path.write_text(expected, encoding="ascii")
+    assert release.read_checksum(path) == expected
+
+
+def test_asset_digest_refuses_inplace_growth_during_stream(monkeypatch, tmp_path):
+    """An opened inode changing mid-hash must not be reported as verified."""
+    asset = tmp_path / "candidate.tar.gz"
+    asset.write_bytes(b"original unsigned bytes")
+    original_fdopen = os.fdopen
+    mutated = False
+
+    class MutatingReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def read(self, size=-1):
+            nonlocal mutated
+            chunk = self.stream.read(size)
+            if chunk and not mutated:
+                mutated = True
+                with asset.open("ab") as stream:
+                    stream.write(b"unreviewed appended bytes")
+            return chunk
+
+    monkeypatch.setattr(release.os, "fdopen",
+                        lambda fd, *a, **kw: MutatingReader(
+                            original_fdopen(fd, *a, **kw)))
+    with pytest.raises(release.OperatorError) as caught:
+        release.digest(asset)
+    assert mutated and caught.value.code == "UNSAFE_ASSET"
+
+
+def test_checksum_read_refuses_symlink_swapped_at_open(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_text("a" * 64, encoding="ascii")
+    private = tmp_path / "private-data"
+    private.write_text("not a checksum")
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            assert flags & os.O_NOFOLLOW
+            path.unlink()
+            path.symlink_to(private)
+        return (real_open(file, flags, mode) if dir_fd is None
+                else real_open(file, flags, mode, dir_fd=dir_fd))
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert private.read_text() == "not a checksum"
+
+
+def test_checksum_read_refuses_fifo_swapped_at_open(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_text("a" * 64, encoding="ascii")
+    real_open = os.open
+    swapped = False
+
+    def replace_before_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            assert flags & os.O_NONBLOCK, "FIFO checksum must never block"
+            path.unlink()
+            os.mkfifo(path, 0o600)
+        return (real_open(file, flags, mode) if dir_fd is None
+                else real_open(file, flags, mode, dir_fd=dir_fd))
+
+    monkeypatch.setattr(release.os, "open", replace_before_open)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert swapped and caught.value.code == "UNSAFE_ASSET"
+    assert path.is_fifo()
+
+
+def test_checksum_read_refuses_hardlink_and_oversized_inode(tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_text("a" * 64, encoding="ascii")
+    second = tmp_path / "second-link"
+    os.link(path, second)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
+    second.unlink()
+    path.write_bytes(b"a" * 513)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_checksum_read_rechecks_limit_after_stale_inode_size(monkeypatch, tmp_path):
+    path = tmp_path / "candidate.sha256"
+    path.write_bytes(b"a" * 513)
+    real_fstat = os.fstat
+    from types import SimpleNamespace
+
+    def stale_size(fd):
+        st = real_fstat(fd)
+        return SimpleNamespace(st_mode=st.st_mode, st_size=512,
+                               st_nlink=st.st_nlink, st_dev=st.st_dev,
+                               st_ino=st.st_ino, st_mtime_ns=st.st_mtime_ns,
+                               st_ctime_ns=st.st_ctime_ns)
+
+    monkeypatch.setattr(release.os, "fstat", stale_size)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_checksum(path)
+    assert caught.value.code == "UNSAFE_ASSET"
+
+
+def test_state_refuses_excessively_nested_json_without_traceback(monkeypatch, tmp_path):
+    path, _ = _state(monkeypatch, tmp_path)
+    # Less than the 64 KiB size limit, but beyond typical JSON decoder depth.
+    path.write_text("[" * 12000 + "0" + "]" * 12000, encoding="utf-8")
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert caught.value.code == "INVALID_STATE"
+
+
+def test_state_maps_json_decoder_recursion_to_invalid_state(monkeypatch, tmp_path):
+    _state(monkeypatch, tmp_path)
+
+    def recursion_limit(_raw):
+        raise RecursionError("decoder nesting exceeded")
+
+    monkeypatch.setattr(release.json, "loads", recursion_limit)
+    with pytest.raises(release.OperatorError) as caught:
+        release.read_state("v0.5.0")
+    assert caught.value.code == "INVALID_STATE"
+
+
+
+def test_gh_json_refuses_excessively_nested_remote_json(monkeypatch):
+    """A small but deeply nested remote response must fail as INVALID_RESPONSE."""
+    payload = b"[" * 12000 + b"0" + b"]" * 12000
+    monkeypatch.setattr(release, "command", lambda argv, **kwargs: payload)
+    with pytest.raises(release.OperatorError) as caught:
+        release.gh_json("repos/teixemf/repocache/actions/runs/123")
+    assert caught.value.code == "INVALID_RESPONSE"
+
+
+def test_gh_json_maps_decoder_recursion_to_invalid_response(monkeypatch):
+    """Decoder recursion faults must not escape the CLI's finite error contract."""
+    monkeypatch.setattr(release, "command",
+                        lambda argv, **kwargs: b'{"ok": true}')
+
+    def recurse(_raw):
+        raise RecursionError("nested remote metadata")
+
+    monkeypatch.setattr(release.json, "loads", recurse)
+    with pytest.raises(release.OperatorError) as caught:
+        release.gh_json("repos/teixemf/repocache/actions/runs/123")
+    assert caught.value.code == "INVALID_RESPONSE"
+
+
+# The release operator runs Git/GitHub/OpenSSL locally. Tests intercept the
+# allowed command before spawn and execute a Python fixture instead: no GitHub
+# token, network, private key, signature, stage or publication is used.
+_COMMAND_FIXTURE = ["gh", "api", "repos/teixemf/repocache/actions/runs/1"]
+
+
+def _local_command_fixture(monkeypatch, script):
+    original = release.subprocess.Popen
+    launched = []
+
+    def launch(argv, **kwargs):
+        assert argv == _COMMAND_FIXTURE
+        assert kwargs["stdin"] == release.subprocess.DEVNULL
+        assert kwargs["stderr"] == release.subprocess.DEVNULL
+        child = original([sys.executable, "-c", script], **kwargs)
+        launched.append(child)
+        return child
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    return launched
+
+
+def test_command_fails_closed_on_stdout_flood_before_child_exit(monkeypatch):
+    """A tool cannot fill unbounded parent memory before returning."""
+    monkeypatch.setattr(release, "MAX_METADATA", 1024)
+    children = _local_command_fixture(
+        monkeypatch,
+        'import sys,time;sys.stdout.buffer.write(b"x"*8192);'
+        'sys.stdout.flush();time.sleep(10)')
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=4)
+    assert caught.value.code == "OVERSIZED_RESPONSE"
+    assert len(children) == 1 and children[0].poll() is not None
+
+
+def test_command_returns_small_output_and_discards_sensitive_stderr(monkeypatch):
+    children = _local_command_fixture(
+        monkeypatch,
+        'import sys;sys.stdout.write("ok\\n");'
+        'sys.stderr.write("sensitive stderr\\n")')
+    assert release.command(_COMMAND_FIXTURE, timeout=4) == b"ok\n"
+    assert len(children) == 1 and children[0].returncode == 0
+
+
+def test_command_timeout_terminates_unresponsive_child(monkeypatch):
+    children = _local_command_fixture(monkeypatch, 'import time;time.sleep(10)')
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=0.2)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert len(children) == 1 and children[0].poll() is not None
+
+
+def test_command_nonzero_exit_remains_fail_closed(monkeypatch):
+    children = _local_command_fixture(monkeypatch, 'import sys;sys.exit(7)')
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=4)
+    assert caught.value.code == "OPERATION_FAILED"
+    assert len(children) == 1 and children[0].returncode == 7
+
+
+def _unsigned_verifier_fixture(tmp_path):
+    """Four harmless local placeholders; no candidate, signing or network."""
+    import hashlib
+
+    version = "v0.5.0"
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    base = "repocache-" + version + ".tar.gz"
+    for suffix in ("", ".wheelhouse.tar.gz"):
+        name = base + suffix
+        payload = ("synthetic " + suffix).encode()
+        (assets / name).write_bytes(payload)
+        checksum = hashlib.sha256(payload).hexdigest() + "  " + name + "\n"
+        (assets / (name + ".sha256")).write_text(checksum, encoding="ascii")
+    return version, assets
+
+
+def test_verify_unsigned_discards_verifier_output_and_limits_runtime(
+        monkeypatch, tmp_path, capsys):
+    """The reviewed verifier runs in its own session without output leaks."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    calls = []
+
+    def local_verifier(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert kwargs["stdin"] == release.subprocess.DEVNULL
+        assert kwargs["stdout"] == release.subprocess.DEVNULL
+        assert kwargs["stderr"] == release.subprocess.DEVNULL
+        assert kwargs["start_new_session"] is True
+        return original_popen(
+            [sys.executable, "-c",
+             'import sys; sys.stdout.buffer.write(b"x"*5000000); '
+             'sys.stderr.buffer.write(b"y"*5000000)'],
+            **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "Popen", local_verifier)
+    release.verify_unsigned(tmp_path, assets, version)
+    assert len(calls) == 1
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unavailable", "nonzero"])
+def test_verify_unsigned_verifier_failures_are_sanitized(
+        monkeypatch, tmp_path, failure):
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    monkeypatch.setattr(release, "VERIFIER_TIMEOUT", 0.15)
+
+    def failing_verifier(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        if failure == "unavailable":
+            raise OSError("fixture verifier unavailable")
+        code = 'import time;time.sleep(10)' if failure == "timeout" else 'import sys;sys.exit(7)'
+        return original_popen([sys.executable, "-c", code], **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "Popen", failing_verifier)
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert str(caught.value) == (
+        "Source rebuild or signed dependency-lock verification failed")
+
+
+def test_state_rejects_symlinked_xdg_ancestor_before_creation(monkeypatch, tmp_path):
+    """A private leaf under a redirected XDG parent is not trusted state."""
+    actual = tmp_path / "actual-state-home"
+    actual.mkdir(mode=0o700)
+    alias = tmp_path / "linked-state-home"
+    alias.symlink_to(actual, target_is_directory=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(alias))
+    with pytest.raises(release.OperatorError) as caught:
+        release.guard_state_dir(release.state_root(), create=True)
+    assert caught.value.code == "UNSAFE_STATE"
+    assert not (actual / "repocache-release").exists()
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o777])
+def test_state_rejects_nonroot_writable_xdg_ancestor(monkeypatch, tmp_path, mode):
+    """An owner-controlled but shared writable parent is renameable."""
+    parent = tmp_path / "shared-state-home"
+    parent.mkdir()
+    parent.chmod(mode)
+    monkeypatch.setenv("XDG_STATE_HOME", str(parent))
+    with pytest.raises(release.OperatorError) as caught:
+        release.guard_state_dir(release.state_root(), create=True)
+    assert caught.value.code == "UNSAFE_STATE"
+    assert not (parent / "repocache-release").exists()
+
+
+def test_candidate_lock_refuses_fifo_without_blocking(monkeypatch, tmp_path):
+    """A malicious FIFO in place of a lock must not hang an owner operation."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    base = release.state_root()
+    base.mkdir(mode=0o700)
+    path = base / "v0.5.0.lock"
+    os.mkfifo(path, mode=0o600)
+    with pytest.raises(release.OperatorError) as caught:
+        with release.candidate_lock("v0.5.0"):
+            pytest.fail("FIFO must never acquire the release lock")
+    assert caught.value.code == "UNSAFE_STATE"
+
+
+def test_candidate_lock_refuses_named_inode_swapped_after_open(monkeypatch, tmp_path):
+    """An inode lock no longer named by the path cannot serialize candidates."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    base = release.state_root()
+    base.mkdir(mode=0o700)
+    path = base / "v0.5.0.lock"
+    real_open = os.open
+    swapped = False
+
+    def replace_after_open(file, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        fd = (real_open(file, flags, mode) if dir_fd is None
+              else real_open(file, flags, mode, dir_fd=dir_fd))
+        if os.fspath(file) == os.fspath(path) and not swapped:
+            swapped = True
+            assert flags & os.O_NONBLOCK
+            path.rename(base / "detached.lock")
+            path.write_bytes(b"new untrusted lock")
+        return fd
+
+    monkeypatch.setattr(release.os, "open", replace_after_open)
+    with pytest.raises(release.OperatorError) as caught:
+        with release.candidate_lock("v0.5.0"):
+            pytest.fail("Detached lock must never protect a candidate")
+    assert swapped and caught.value.code == "UNSAFE_STATE"
+    assert path.read_bytes() == b"new untrusted lock"
+
+
+def _release_subprocess_env(tmp_path):
+    return dict(os.environ, XDG_STATE_HOME=str(tmp_path),
+                PYTHONPATH=str(ROOT / "workstation/src"))
+
+
+def test_candidate_lock_remains_exclusive_if_name_detached_mid_operation(tmp_path):
+    """Two independent OS processes cannot acquire different same-version locks."""
+    owner_script = """
+import sys
+from repocache_release.cli import candidate_lock, OperatorError
+try:
+    with candidate_lock("v0.5.0"):
+        print("ENTERED", flush=True)
+        sys.stdin.buffer.read(1)
+except OperatorError as exc:
+    print(exc.code, flush=True)
+"""
+    contender_script = """
+from repocache_release.cli import candidate_lock, OperatorError
+try:
+    with candidate_lock("v0.5.0"):
+        print("UNSAFE_DOUBLE_ENTRY", flush=True)
+except OperatorError as exc:
+    print(exc.code, flush=True)
+"""
+    env = _release_subprocess_env(tmp_path)
+    first = subprocess.Popen(
+        [sys.executable, "-c", owner_script], env=env, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        assert first.stdout is not None and first.stdin is not None
+        assert select.select([first.stdout], [], [], 5)[0], "First lock timed out"
+        assert first.stdout.readline() == b"ENTERED\n", (
+            first.stderr.read() if first.poll() is not None else "No lock acquired")
+        lock = tmp_path / "repocache-release" / "v0.5.0.lock"
+        lock.rename(lock.with_name("detached.lock"))
+        # A replacement pathname has a distinct inode, but B must not enter.
+        lock.write_bytes(b"replacement")
+        second = subprocess.run(
+            [sys.executable, "-c", contender_script], env=env,
+            capture_output=True, timeout=5, check=True)
+        assert second.stdout.strip() == b"BUSY", second.stderr
+        first.stdin.write(b"x")
+        first.stdin.flush()
+        assert first.wait(timeout=5) == 0
+        assert first.stdout.read().strip() == b"UNSAFE_STATE"
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.wait(timeout=5)
+        if first.stdin is not None:
+            first.stdin.close()
+        if first.stdout is not None:
+            first.stdout.close()
+        if first.stderr is not None:
+            first.stderr.close()
+
+
+def test_oversized_passphrase_pipe_refuses_without_waiting_for_writer_close(tmp_path):
+    """4097 bytes are already an error; a second pipe read would deadlock."""
+    script = """
+import os
+from repocache_release.cli import read_passphrase, OperatorError
+reader, writer = os.pipe()
+os.write(writer, b"x" * 4097)
+try:
+    read_passphrase(reader)
+except OperatorError as exc:
+    assert exc.code == "INVALID_SECRET_FD"
+else:
+    raise AssertionError("Oversized secret was accepted")
+finally:
+    os.close(reader)
+    os.close(writer)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=_release_subprocess_env(tmp_path),
+        capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+def test_abstract_socket_name_cannot_deny_private_state_lock(monkeypatch, tmp_path):
+    """External occupation of the previously predictable name is irrelevant."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    name = f"\0repocache-release:{os.getuid()}:v0.5.0"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as occupied:
+        occupied.bind(name)
+        with release.candidate_lock("v0.5.0"):
+            assert release.state_root().is_dir()
+
+
+def test_state_directory_inode_change_during_lock_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    base = release.state_root()
+    with pytest.raises(release.OperatorError) as caught:
+        with release.candidate_lock("v0.5.0"):
+            base.rename(tmp_path / "renamed-state")
+            base.mkdir(mode=0o700)
+    assert caught.value.code == "UNSAFE_STATE"
+
+
+def test_passphrase_pipe_fragmented_valid_input_requires_eof():
+    reader, writer = os.pipe()
+
+    def write_pieces():
+        try:
+            os.write(writer, b"valid-")
+            time.sleep(0.03)
+            os.write(writer, b"secret\n")
+        finally:
+            os.close(writer)
+
+    worker = threading.Thread(target=write_pieces)
+    worker.start()
+    try:
+        assert release.read_passphrase(reader, timeout=1.0) == b"valid-secret"
+    finally:
+        os.close(reader)
+        worker.join(timeout=1)
+
+
+@pytest.mark.parametrize("payload", [b"", b"x\x00y", b"x\ry", b"x\ny", b"x" * 4096 + b"z"])
+def test_passphrase_pipe_rejects_invalid_or_oversized_complete_input(payload):
+    reader, writer = os.pipe()
+    try:
+        if payload:
+            os.write(writer, payload)
+        os.close(writer)
+        writer = -1
+        with pytest.raises(release.OperatorError) as caught:
+            release.read_passphrase(reader, timeout=1.0)
+        assert caught.value.code == "INVALID_SECRET_FD"
+    finally:
+        os.close(reader)
+        if writer >= 0:
+            os.close(writer)
+
+
+@pytest.mark.parametrize("payload", [b"", b"partial-secret"])
+def test_passphrase_pipe_never_accepts_unterminated_open_writer(payload):
+    reader, writer = os.pipe()
+    try:
+        if payload:
+            os.write(writer, payload)
+        with pytest.raises(release.OperatorError) as caught:
+            release.read_passphrase(reader, timeout=0.12)
+        assert caught.value.code == "INVALID_SECRET_FD"
+    finally:
+        os.close(reader)
+        os.close(writer)
+
+
+def _running_pid(pid):
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii") as stream:
+            return stream.read().split(") ", 1)[1][0] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+def test_command_timeout_terminates_descendants_with_inherited_stdout(monkeypatch, tmp_path):
+    """Cancel a real local process group, not just its immediate leader."""
+    original_popen = release.subprocess.Popen
+    child_pid = tmp_path / "descendant.pid"
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(p.pid));time.sleep(20)"
+    )
+    def launch(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        return original_popen([sys.executable, "-c", script, str(child_pid)], **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=1.0)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert child_pid.is_file(), "Fixture descendant did not start"
+    pid = int(child_pid.read_text())
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and _running_pid(pid):
+            time.sleep(0.03)
+        assert not _running_pid(pid), "Descendant survived process-group cancellation"
+    finally:
+        if _running_pid(pid):
+            os.kill(pid, signal.SIGKILL)
+
+
+def test_namespace_isolated_candidate_sharing_same_state_still_serializes(tmp_path):
+    """Optional native test; requires permitted unprivileged user/net namespaces."""
+    executable = shutil.which("unshare")
+    if executable is None:
+        pytest.skip("util-linux unshare unavailable")
+    env = _release_subprocess_env(tmp_path)
+    # Probe the target namespace feature independently of the lock.
+    probe = subprocess.run(
+        [executable, "--user", "--map-root-user", "--net", sys.executable,
+         "-c", "print('READY')"], env=env, capture_output=True, timeout=4)
+    if probe.returncode or probe.stdout.strip() != b"READY":
+        pytest.skip("Unprivileged user/net namespaces not permitted by host")
+    first = subprocess.Popen(
+        [sys.executable, "-c",
+         "from repocache_release.cli import candidate_lock\n"
+         "import sys\n"
+         "with candidate_lock('v0.5.0'):\n"
+         " print('ENTERED',flush=True);sys.stdin.read(1)"],
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE)
+    try:
+        assert select.select([first.stdout], [], [], 5)[0]
+        assert first.stdout.readline() == b"ENTERED\n"
+        candidate = (
+            "from repocache_release.cli import candidate_lock,OperatorError\n"
+            "try:\n"
+            " with candidate_lock('v0.5.0'):print('UNSAFE_DOUBLE_ENTRY')\n"
+            "except OperatorError as exc: print(exc.code)\n"
+        )
+        contender = subprocess.run(
+            [executable, "--user", "--map-root-user", "--net",
+             sys.executable, "-c", candidate], env=env,
+            capture_output=True, timeout=5)
+        assert contender.returncode == 0, contender.stderr
+        if contender.stdout.strip() == b"UNSAFE_STATE":
+            # UID remapping can make a root-owned host ancestor appear
+            # untrusted. This is a safe refusal, NOT executed evidence of
+            # filesystem-lock contention across namespaces.
+            pytest.skip("Remapped namespace refused shared state before locking")
+        assert contender.stdout.strip() == b"BUSY"
+    finally:
+        if first.stdin is not None:
+            first.stdin.write(b"x")
+            first.stdin.flush()
+        try:
+            first.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.wait(timeout=5)
+        for stream in (first.stdin, first.stdout, first.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def test_unsigned_verifier_timeout_terminates_its_descendants(monkeypatch, tmp_path):
+    """The release source verifier must not leave children after timeout."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    pidfile = tmp_path / "verifier-child.pid"
+    monkeypatch.setattr(release, "VERIFIER_TIMEOUT", 1.0)
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(p.pid));time.sleep(20)"
+    )
+
+    def local_verifier(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        assert kwargs["stdout"] == release.subprocess.DEVNULL
+        assert kwargs["stderr"] == release.subprocess.DEVNULL
+        return original_popen([sys.executable, "-c", script, str(pidfile)], **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "Popen", local_verifier)
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert pidfile.is_file()
+    child_pid = int(pidfile.read_text())
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and _running_pid(child_pid):
+            time.sleep(0.03)
+        assert not _running_pid(child_pid), "Verifier descendant remained active"
+    finally:
+        if _running_pid(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize(
+    "script, timeout, expected_error",
+    [
+        ("import sys;sys.stdout.write('ok')", 3.0, None),
+        ("import sys;sys.exit(9)", 3.0, "OPERATION_FAILED"),
+        ("import time;time.sleep(10)", 0.15, "TOOL_UNAVAILABLE"),
+    ],
+)
+def test_command_never_signals_reaped_or_reused_process_group(
+        monkeypatch, script, timeout, expected_error):
+    """The original group leader is still our child at every killpg call."""
+    _local_command_fixture(monkeypatch, script)
+    real_killpg = os.killpg
+    signals = []
+
+    def check_group_identity(pid, sig):
+        # WNOWAIT observes the original child without allowing PID reuse.
+        # ChildProcessError would prove process.wait()/poll() already reaped it.
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        signals.append((pid, sig))
+        return real_killpg(pid, sig)
+
+    monkeypatch.setattr(release.os, "killpg", check_group_identity)
+    if expected_error:
+        with pytest.raises(release.OperatorError) as caught:
+            release.command(_COMMAND_FIXTURE, timeout=timeout)
+        assert caught.value.code == expected_error
+    else:
+        assert release.command(_COMMAND_FIXTURE, timeout=timeout) == b"ok"
+    assert len(signals) == 1
+    assert signals[0][1] == signal.SIGKILL
+
+
+def test_verifier_never_signals_reaped_or_reused_group(monkeypatch, tmp_path):
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    real_popen = release.subprocess.Popen
+    real_killpg = os.killpg
+    observed = []
+
+    def launch(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        return real_popen([sys.executable, "-c", "import sys;sys.exit(0)"],
+                          **kwargs)
+
+    def checked_killpg(pid, sig):
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        observed.append(sig)
+        return real_killpg(pid, sig)
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    monkeypatch.setattr(release.os, "killpg", checked_killpg)
+    release.verify_unsigned(tmp_path, assets, version)
+    assert observed == [signal.SIGKILL]
+
+
+def test_command_lost_waitable_identity_never_signals_group(monkeypatch):
+    """An externally reaped leader must never become a numeric kill target."""
+    children = _local_command_fixture(
+        monkeypatch, 'import sys;sys.stdout.write("ok")')
+    signaled = []
+
+    def lost_child(*args, **kwargs):
+        raise ChildProcessError("waitable child identity already lost")
+
+    monkeypatch.setattr(release.os, "waitid", lost_child)
+    monkeypatch.setattr(release.os, "killpg",
+                        lambda *args: signaled.append(args))
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=4)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert not signaled, "Never signal a potentially recycled process group"
+    assert len(children) == 1 and children[0].returncode is not None
+
+
+def test_verifier_lost_waitable_identity_never_signals_group(
+        monkeypatch, tmp_path):
+    """Source verification must also refuse uncertain process identity."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    children = []
+    signaled = []
+
+    def launch(argv, **kwargs):
+        child = original_popen(
+            [sys.executable, "-c", "import sys;sys.exit(0)"], **kwargs)
+        children.append(child)
+        return child
+
+    def lost_child(*args, **kwargs):
+        raise ChildProcessError("another waiter already reaped leader")
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    monkeypatch.setattr(release.os, "waitid", lost_child)
+    monkeypatch.setattr(release.os, "killpg",
+                        lambda *args: signaled.append(args))
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert not signaled, "Verifier must never signal an unpinned PGID"
+    assert len(children) == 1 and children[0].returncode is not None
+
+
+def test_command_refuses_inherited_sigchld_ignore_without_spawning(tmp_path):
+    """Exercise a real isolated Python parent with SIGCHLD=SIG_IGN."""
+    code = (
+        "import signal\n"
+        "signal.signal(signal.SIGCHLD, signal.SIG_IGN)\n"
+        "from repocache_release.cli import command, OperatorError\n"
+        "try:\n"
+        " command(['git', '--version'])\n"
+        " print('UNSAFE_ALLOWED')\n"
+        "except OperatorError as exc:\n"
+        " print(exc.code)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=_release_subprocess_env(tmp_path),
+        capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == b"TOOL_UNAVAILABLE"
+
+
+def test_verifier_refuses_custom_sigchld_reaper_before_spawn(
+        monkeypatch, tmp_path):
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    real_getsignal = release.signal.getsignal
+    launched = []
+
+    def incoming_disposition(sig):
+        if sig == signal.SIGCHLD:
+            return signal.SIG_IGN
+        return real_getsignal(sig)
+
+    monkeypatch.setattr(release.signal, "getsignal",
+                        incoming_disposition)
+    monkeypatch.setattr(
+        release.subprocess, "Popen",
+        lambda *args, **kwargs: launched.append((args, kwargs)))
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert not launched
+
+
+def test_group_cleanup_refuses_wait_timeout_as_success(monkeypatch):
+    """A sent SIGKILL never proves child collection actually completed."""
+    signaled = []
+
+    class StuckChild:
+        pid = 12345
+        args = ["synthetic"]
+        returncode = None
+
+        def wait(self, *, timeout):
+            assert timeout == 3
+            raise subprocess.TimeoutExpired(self.args, timeout)
+
+    original_getsignal = release.signal.getsignal
+    monkeypatch.setattr(
+        release.signal, "getsignal",
+        lambda which: (
+            signal.SIG_DFL if which == signal.SIGCHLD
+            else original_getsignal(which)))
+    monkeypatch.setattr(release.os, "waitid",
+                        lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg",
+                        lambda *args: signaled.append(args))
+    assert release._terminate_process_group(StuckChild()) is False
+    assert signaled == [(12345, signal.SIGKILL)]
+
+
+def test_command_refuses_success_if_cleanup_cannot_reap_child(monkeypatch):
+    """A false cleanup result must invalidate otherwise valid tool output."""
+    launched = _local_command_fixture(
+        monkeypatch, 'import sys;sys.stdout.write("ok")')
+    called = []
+
+    def failed_cleanup(process):
+        called.append(process.pid)
+        process.wait(timeout=3)  # Prevent a zombie in this disposable fixture.
+        return False
+
+    monkeypatch.setattr(release, "_terminate_process_group", failed_cleanup)
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=3)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert len(launched) == 1
+    assert called == [launched[0].pid]
+
+@pytest.mark.parametrize("failure_errno", [errno.EPERM, errno.EINTR, errno.EIO])
+def test_group_signal_failure_always_attempts_bounded_reap(
+        monkeypatch, failure_errno):
+    """Failed killpg must be false even when the original child is reaped."""
+    waited = []
+    signaled = []
+
+    class ExitedChild:
+        pid = 12345
+        returncode = None
+
+        def wait(self, *, timeout):
+            waited.append(timeout)
+            self.returncode = 0
+            return 0
+
+    def failed_signal(pid, sig):
+        signaled.append((pid, sig))
+        raise OSError(failure_errno, "synthetic group-signal error")
+
+    monkeypatch.setattr(release.os, "waitid", lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg", failed_signal)
+    assert release._terminate_process_group(ExitedChild()) is False
+    assert waited == [3]
+    assert signaled == [(12345, signal.SIGKILL)]
+
+
+def test_group_signal_esrch_still_reaps_verified_leader(monkeypatch):
+    """ESRCH is benign only with a waitable and successfully reaped leader."""
+    waited = []
+
+    class ExitedChild:
+        pid = 12345
+        returncode = None
+
+        def wait(self, *, timeout):
+            waited.append(timeout)
+            self.returncode = 0
+            return 0
+
+    def no_group(_pid, _sig):
+        raise ProcessLookupError(errno.ESRCH, "synthetic group gone")
+
+    monkeypatch.setattr(release.os, "waitid", lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg", no_group)
+    assert release._terminate_process_group(ExitedChild()) is True
+    assert waited == [3]
+
+
+def test_group_signal_error_and_reap_timeout_are_not_success(monkeypatch):
+    """An undelivered signal plus an incomplete reap is always a failure."""
+    waited = []
+
+    class RunningChild:
+        pid = 12345
+        args = ["synthetic"]
+        returncode = None
+
+        def wait(self, *, timeout):
+            waited.append(timeout)
+            raise subprocess.TimeoutExpired(self.args, timeout)
+
+    def denied_signal(_pid, _sig):
+        raise PermissionError(errno.EPERM, "synthetic permission denial")
+
+    monkeypatch.setattr(release.os, "waitid", lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg", denied_signal)
+    assert release._terminate_process_group(RunningChild()) is False
+    assert waited == [3]
+
+
+def test_command_group_signal_failure_refuses_success_and_closes_stdout(
+        monkeypatch):
+    children = _local_command_fixture(
+        monkeypatch, 'import sys;sys.stdout.write("ok")')
+    attempted = []
+
+    def denied_signal(pid, sig):
+        attempted.append((pid, sig))
+        raise PermissionError(errno.EPERM, "synthetic permission denial")
+
+    monkeypatch.setattr(release.os, "killpg", denied_signal)
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=3)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert len(children) == 1
+    assert children[0].returncode == 0
+    assert children[0].stdout.closed
+    assert attempted == [(children[0].pid, signal.SIGKILL)]
+
+
+def test_command_exceptional_cleanup_still_closes_stdout(monkeypatch):
+    """A surprising cleanup exception may not bypass stdout.close()."""
+    children = _local_command_fixture(monkeypatch, 'import time;time.sleep(10)')
+
+    def raised_cleanup(_process):
+        raise OSError(errno.EIO, "synthetic exceptional cleanup")
+
+    monkeypatch.setattr(release, "_terminate_process_group", raised_cleanup)
+    try:
+        with pytest.raises(release.OperatorError) as caught:
+            release.command(_COMMAND_FIXTURE, timeout=0.15)
+        assert caught.value.code == "TOOL_UNAVAILABLE"
+        assert len(children) == 1 and children[0].stdout.closed
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+
+def test_verifier_group_signal_failure_refuses_success(monkeypatch, tmp_path):
+    """A completed verifier is not trusted if group cleanup failed."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    launched = []
+    signaled = []
+
+    def verifier(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        child = original_popen(
+            [sys.executable, "-c", "import sys;sys.exit(0)"], **kwargs)
+        launched.append(child)
+        return child
+
+    def denied_signal(pid, sig):
+        signaled.append((pid, sig))
+        raise PermissionError(errno.EPERM, "synthetic permission denial")
+
+    monkeypatch.setattr(release.subprocess, "Popen", verifier)
+    monkeypatch.setattr(release.os, "killpg", denied_signal)
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert len(launched) == 1 and launched[0].returncode == 0
+    assert signaled == [(launched[0].pid, signal.SIGKILL)]
+
+
+def test_verifier_exceptional_cleanup_preserves_sanitized_failure(
+        monkeypatch, tmp_path):
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    launched = []
+    monkeypatch.setattr(release, "VERIFIER_TIMEOUT", 0.15)
+
+    def verifier(argv, **kwargs):
+        child = original_popen(
+            [sys.executable, "-c", "import time;time.sleep(10)"], **kwargs)
+        launched.append(child)
+        return child
+
+    def raised_cleanup(_process):
+        raise OSError(errno.EIO, "synthetic exceptional cleanup")
+
+    monkeypatch.setattr(release.subprocess, "Popen", verifier)
+    monkeypatch.setattr(release, "_terminate_process_group", raised_cleanup)
+    try:
+        with pytest.raises(release.OperatorError) as caught:
+            release.verify_unsigned(tmp_path, assets, version)
+        assert caught.value.code == "BUILD_NOT_VERIFIED"
+    finally:
+        for child in launched:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)

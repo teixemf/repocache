@@ -1,0 +1,41 @@
+name: Opt-in NGINX metrics runtime smoke (#14)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/metrics-nginx-smoke.yml'
+      - 'scripts/ci_metrics_nginx_runtime.py'
+      - 'scripts/smoke_metrics_nginx_containers.sh'
+      - 'deploy/examples/nginx-metrics-*.conf.example'
+      - 'docs/METRICS_LOGGING_OPT_IN.md'
+      - 'src/repocache/core.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/metrics-nginx-smoke.yml'
+      - 'scripts/ci_metrics_nginx_runtime.py'
+      - 'scripts/smoke_metrics_nginx_containers.sh'
+      - 'deploy/examples/nginx-metrics-*.conf.example'
+      - 'docs/METRICS_LOGGING_OPT_IN.md'
+      - 'src/repocache/core.py'
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-nginx-logging:
+    name: Opt-in real NGINX logging (${{ matrix.os_image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os_image: ['debian:trixie-slim', 'almalinux:10']
+    steps:
+      - name: Checkout unprivileged test source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run sandboxed NGINX opt-in and rollback checks
+        shell: bash
+        run: bash scripts/smoke_metrics_nginx_containers.sh '${{ matrix.os_image }}'
