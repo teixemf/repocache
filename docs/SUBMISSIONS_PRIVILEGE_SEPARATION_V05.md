@@ -36,8 +36,13 @@ That design is a **security FAIL** even when all synthetic CI jobs pass.
   communicates via bounded JSON pipes. SQL and parameters originate from
   trusted parent code, not from a submitted repository payload. Every
   command has bounded input/output and a timeout; errors and unavailable
-  worker binaries fail closed. A child exit or lost acknowledgement is not
-  reported as a successful decision.
+  worker binaries fail closed. Control replies for ping, SQL execution,
+  schema scripts and commit/rollback must contain exactly their documented
+  fields; cursor IDs must be positive and SQLite row counts at least -1.
+  Malformed or extra fields fail closed rather than being silently ignored.
+  These shape checks cannot authenticate a compromised worker's positive
+  acknowledgement or replace protected-journal reconciliation. A child exit
+  or lost acknowledgement is not reported as a successful decision.
 - The parent holds the root decision-journal lock across the worker
   transaction. Root writes a durable, hash-linked decision receipt first;
   the child then updates the untrusted queue. If the queue commit fails,
@@ -144,3 +149,215 @@ review, source/wheel compatibility with the immutable public v0.4.0 updater,
 and full original #17 acceptance. Do not merge, enable intake, sign or publish
 on this checkpoint. Previous successful CI runs apply only to their exact
 historical commits.
+
+
+## 2026-10-24 bounded backup IPC follow-up (feature PR, #17/#57)
+
+**Threat addressed (code-level):** a service-UID worker could repeatedly send
+empty or tiny syntactically valid backup frames. The former parent loop
+enforced a 128 MiB byte cap and a timeout **per response**, but neither
+bounded the number of zero-length frames nor enforced a deadline for the
+whole transfer. A misbehaving worker could therefore keep the privileged
+backup operation open indefinitely without producing a valid snapshot.
+
+**Proposed mitigation:** reject empty frames and decoded chunks larger than
+the worker's fixed 64 KiB protocol, cap the stream at 2048 data frames,
+and apply a 120-second total monotonic deadline in addition to the existing
+10-second per-response limit. The normal worker sends 64 KiB chunks followed
+by a terminal frame; a valid snapshot still requires downstream SQLite
+integrity verification. This change does **not** relax backup-size,
+root-private staging, trusted inode, journal, or restore requirements.
+
+**PASS (source inspection):** the bounded-progress checks and deterministic
+positive/negative regression tests have been added on a separate feature
+branch. **NOT VERIFIED:** exact-final-head Python 3.12/3.13 tests, all nine
+required Actions jobs, independent security review, real native UID/SELinux
+and power-loss behavior, and the full #17/#57 acceptance matrix. No merge
+or production activation is authorized by this scoped fix.
+
+
+### Privileged backup staging inode guard (same scoped feature PR)
+
+The root-side backup stream now opens the pre-created private staging path
+with `O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC` and checks the **opened inode**
+before sending the backup request. A FIFO substituted at open cannot hang
+root; hardlinked or nonempty staging files are rejected rather than reused.
+The caller still creates a fresh root-private 0600 temporary file and checks
+SQLite integrity before atomically publishing a non-overwriting backup.
+
+Synthetic negative regressions cover a FIFO swap at open, a second hardlink
+and stale bytes, plus the existing bounded-frame and deadline tests. These
+are **code-level defenses, not proof of hostile-root resistance**: native
+service-UID, SELinux, power-loss and operational custody remain Gate B #49.
+All new tests and nine required contexts on the updated PR HEAD are **NOT
+VERIFIED** until their fresh GitHub Actions jobs complete successfully;
+previous-head CI results must not be reused.
+
+
+### 2026-10-25 global backup read deadline refinement
+
+A further scoped adversarial review found that the 120-second backup deadline
+was previously checked **around** `_recv()`, while each final pipe read could
+still wait for its own fresh 10-second timeout. The worker transport now
+accepts an optional absolute deadline and uses the **minimum** of its
+per-message timeout and the remaining overall backup deadline. Normal SQL
+requests retain the original per-message limit. Deterministic tests verify
+that a stalled last frame receives only the remaining two-second wait and
+that every backup frame uses the same absolute deadline.
+
+**PASS (implementation review only):** no key, host, listener, release, or
+privilege configuration changes. **NOT VERIFIED:** exact-new-HEAD nine GitHub
+Actions jobs, independent security review, original #17/#57 acceptance and
+native host gates; earlier SHA results cannot be reused after this change.
+
+
+### 2026-10-25 strict backup IPC frame and symlink regressions
+
+The root-side backup parser now accepts exactly two documented worker
+response shapes: a nonempty base64 data frame (`ok`, `chunk`) or a
+terminal frame (`ok`, `done`). Mixed, unexpected or extra fields fail
+closed before any bytes are accepted. An isolated negative test also checks
+that a swapped symlink to an otherwise safe-looking staging file is refused
+by the existing no-follow open. These tests strengthen the same scoped
+privileged-backup IPC boundary; they do not claim a native hostile-UID,
+power-loss, SELinux or production backup-custody acceptance.
+
+**PASS (source-level review):** the frame allowlist is consistent with the
+worker's existing reply emitter and does not change ordinary SQL requests.
+**NOT VERIFIED:** exact-new-HEAD GitHub Actions 9/9 and Python test results
+until they finish; independent review/merge approval and original #17/#57,
+#76 and #49 criteria remain separate. No endpoint, release or host mutation.
+
+
+### 2026-10-25 duplicate-key worker JSON refusal (same #17/#57 feature branch)
+
+A hostile service-UID worker could encode repeated JSON object keys (for
+example, conflicting `ok`, `done` or `chunk` values), which Python's
+ordinary JSON decoder otherwise resolves by silently retaining the last
+value. The privileged parent now rejects duplicate keys at **any depth**
+before evaluating the already strict backup-frame allowlist. Deterministic
+negative wire tests cover duplicate status/data/terminal and nested keys;
+a positive wire test preserves the legitimate single-key protocol.
+
+**PASS (isolated stdlib parser smoke and source inspection); NOT VERIFIED**
+for exact-new-HEAD GitHub Python 3.12/3.13 and nine required checks until
+executed. No changes to normal SQL semantics, UID drop, root journal, signing,
+release, production or rollback. Independent security review, original Gate A
+#17/#57 and native Gate B #49 remain separate blockers.
+
+
+### 2026-10-25 non-finite worker numeric IPC refusal (#17/#57)
+
+**Scoped candidate hardening:** Python's permissive JSON decoder accepts
+`NaN`/`Infinity` and converts exponent-overflowing `1e400` to infinity,
+despite these not being valid finite JSON numbers. The privileged parent now
+rejects both classes at the wire boundary, including nested values, and
+refuses non-finite values in cursor rows even when injected directly.
+Legitimate finite SQL floating-point results remain supported.
+
+**PASS (isolated stdlib parser smoke):** five hostile wire-number forms
+rejected; finite floating-point values accepted. **NOT VERIFIED:** exact
+new PR HEAD Python 3.12/3.13 tests, all nine required GitHub contexts,
+independent security review, original #17/#57 acceptance and native host
+Gate B #49. No claim of worker authenticity, signer custody, real signed
+candidate acceptance, production activation or release approval.
+
+
+### 2026-10-26 decided-row metadata binding (scoped #17/#57 follow-up)
+
+**Finding:** the root administrator's pending-list preflight previously compared
+only a service-UID-controlled decided row's ID, state and version against the
+protected decision receipt. A compromised intake SQLite database could retain
+those values while changing stored OS, repositories or creation time; the
+pending view would silently skip the row without detecting metadata drift.
+The root receipt remained authoritative, but listing verification was incomplete.
+
+**Candidate fix:** validate all seven decided-row fields and compare the exact
+proposal metadata SHA-256 to the root-owned receipt under the existing journal
+lock and one SQLite transaction. Keyset pages of at most 64 rows avoid
+exceeding the 16 MiB service-worker response limit; reject duplicate/out-of-
+order pages and more than the queue's 50,000-record limit. Three persisted
+metadata-tamper tests and two hostile-worker pagination tests were added.
+
+**Evidence:** PASS for source-level scope inspection; exact-new-HEAD Python
+3.12/3.13 tests and nine mandatory GitHub checks **NOT VERIFIED** until runs
+complete. This does not authenticate the intake-owned queue itself, prove
+native SELinux/systemd, accept #17/#57 in full or satisfy #76 signing.
+No endpoint, key, tag, release, production or rollback gate changed.
+Independent security review and PR-specific merge permission remain pending.
+
+
+### 2026-10-26 duplicate-ID schema downgrade: root decisions and retention
+
+The intake identity owns SQLite and can replace the proposals table without
+its PRIMARY KEY constraint. An administrator decision's `UPDATE ... WHERE id=?`
+could then change multiple rows under one protected root receipt. More
+critically, retention's `DELETE ... WHERE id=?` could erase a forged
+same-ID PENDING row while purging a legitimate expired decided row.
+
+The scoped fix checks that exactly one SQLite proposal matches the identifier
+under the existing `BEGIN IMMEDIATE` transaction **before** writing a root
+decision receipt, reconciling a decision, or deleting an expired row.
+Malformed count replies fail closed. Three adversarial SQLite regressions
+remove the uniqueness constraint and verify that decide, reconcile and
+retention refuse the duplicate without modifying receipts, rows or nonces.
+The underlying intake queue remains untrusted and may lose availability.
+
+**PASS (isolated SQLite reproduction):** removing PRIMARY KEY allows two
+same-ID rows; the old UPDATE affects both and DELETE removes a pending
+duplicate. **NOT VERIFIED until fresh exact-HEAD CI:** both Python suites,
+nine protected contexts, independent security review, native-host UID/SELinux,
+original #17/#57 and actual signed #76 acceptance. No release, production
+listener, security gate or rollback behavior is changed.
+
+
+### 2026-10-26 decided-ID keyset boundary lookahead (#17/#57)
+
+A separate pagination ambiguity remained after the root receipt metadata
+check: when the intake UID removes the SQLite primary key and duplicates
+the **64th** decided proposal ID, `ORDER BY id LIMIT 64` can return
+64 individually valid rows while the strict next-page `id > last_id`
+predicate silently skips the 65th, duplicated row. Within-page duplicate
+checks alone do not detect this case.
+
+The privileged pending preflight now fetches **at most 65** rows, verifies
+only the first 64 against the protected root journal and checks the 65th
+lookahead ID against the previous page boundary before continuing. A
+duplicate or out-of-order lookahead fails closed. The 50,000-row total
+cap, fixed transaction snapshot, original decision-journal trust boundary
+and pending-only behavior are unchanged. A synthetic regression creates
+64 genuinely root-reviewed rows, removes SQLite uniqueness and duplicates
+the largest ID at the exact 64/65 boundary; the pending view must refuse
+it. A positive 65-distinct-decisions fixture also verifies traversal to the
+second page without false rejection. This is an incremental security fix
+within the existing PR #169 scope,
+not production activation or a change to original acceptance.
+
+**PASS (source/diff analysis):** the skipped-boundary scenario and bounded
+lookahead are explicit. **NOT VERIFIED pending exact-new-HEAD CI:** Python
+3.12/3.13 execution, nine required contexts, independent security review,
+original #17/#57, native #49 and authentic owner-signed #76. No signing
+key, tag, release, service activation or rollback gate changed.
+
+
+### 2026-10-26 bounded privileged retention enumeration (#17/#57)
+
+The administrator-only `maintain()` path previously fetched **all** expired
+decided proposals in one service-worker IPC reply. A service-writable queue
+can contain up to 50,000 rows with large repository metadata; the worker
+caps replies at 16 MiB. The unbounded fetch therefore failed closed but could
+make legitimate retention unavailable at scale. The root-side retention scan
+now uses the same 64-row keyset pages plus one-row lookahead as the pending
+preflight, validates row order and a 50,000-row ceiling, and verifies each
+unique proposal against its protected journal receipt **before** any deletion.
+The original `BEGIN IMMEDIATE` transaction, non-overwriting root journal,
+PENDING preservation and fail-closed duplicate-ID guard remain unchanged.
+
+**PASS (scoped design / local SQLite query rehearsal):** 65 distinct rows are
+visited in two bounded pages (65 including lookahead, then one). A new
+repository regression exercises actual SQLite and root receipts across the
+page boundary and verifies that retention preserves protected history.
+**NOT VERIFIED:** the new exact-HEAD GitHub Actions nine contexts, Python
+3.12/3.13 test execution, independent security review, original Gate A
+#17/#57 and native Gate B #49 until separately evidenced. This does not
+authorize merge, signing, release or production activation.

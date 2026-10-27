@@ -74,6 +74,61 @@ def main() -> int:
 
     from repocache.submissions import SubmissionQueue, SubmissionError
     from repocache.submission_db_worker import WorkerError
+    from repocache.submission_keys import issue_key, revoke_key
+    from repocache.intake import load_keyring
+
+    # Real OS-account check for root-owned credential integrity. Only a
+    # disposable container is used; never load any operator key material.
+    keydir = Path("/etc/repocache-intake")
+    if keydir.exists():
+        raise RuntimeError("refusing preexisting intake configuration")
+    keydir.mkdir(mode=0o750)
+    os.chown(keydir, 0, account.pw_gid)
+    keydir.chmod(0o750)
+    keyring = keydir / "keyring.json"
+    handoff = root / "handoff"
+    handoff.mkdir(mode=0o700)
+    client_a = handoff / "client-a.json"
+    client_b = handoff / "client-b.json"
+    issue_key(keyring, client_a, "client_A", approved=True)
+    info = keyring.stat()
+    assert info.st_uid == 0 and info.st_gid == account.pw_gid
+    assert stat.S_IMODE(info.st_mode) == 0o640 and info.st_nlink == 1
+    assert set(load_keyring(keyring)) == {"client_A"}
+
+    unprivileged_probe = (
+        "from pathlib import Path\n"
+        "from repocache.intake import load_keyring\n"
+        "p=Path(" + repr(str(keyring)) + ")\n"
+        "assert set(load_keyring(p)) == {'client_A'}\n"
+        "for op in (lambda: p.write_text('unexpected'),"
+        " lambda: p.chmod(0o600), lambda: p.unlink()):\n"
+        "    try: op()\n"
+        "    except PermissionError: pass\n"
+        "    else: raise AssertionError('intake altered protected keyring')\n"
+    )
+    _run_as_intake(account.pw_uid, account.pw_gid, unprivileged_probe)
+    issue_key(keyring, client_b, "client_B", approved=True)
+    revoke_key(keyring, "client_A", approved=True)
+    assert set(load_keyring(keyring)) == {"client_B"}
+    _run_as_intake(
+        account.pw_uid, account.pw_gid,
+        "from repocache.intake import load_keyring; from pathlib import Path;"
+        " assert set(load_keyring(Path(" + repr(str(keyring)) + "))) == {'client_B'}",
+    )
+    # Previous service-owned layout is rejected, never implicitly accepted
+    # or modified by the root helper or unprivileged intake reader.
+    os.chown(keyring, account.pw_uid, account.pw_gid)
+    os.chmod(keyring, 0o600)
+    try:
+        load_keyring(keyring)
+    except SubmissionError as exc:
+        assert exc.code == "invalid_credentials"
+    else:
+        raise AssertionError("old service-owned keyring was accepted")
+    os.chown(keyring, 0, account.pw_gid)
+    os.chmod(keyring, 0o640)
+    print("PASS: real service UID reads root-controlled keyring but cannot modify it; rotation and legacy refusal")
 
     # A root SQLite call on an intake-owned queue path is a test failure.
     native_connect = sqlite3.connect
