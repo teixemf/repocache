@@ -178,24 +178,29 @@ def test_invalid_api_intent_rejected():
 def test_bounded_read_rejects_oversize_and_nonregular(tmp_path):
     file = tmp_path / "os-release"
     file.write_bytes(b"x" * (native.MAX_OS_RELEASE_BYTES + 1))
-    with pytest.raises(InstallInputError, match="unreadable"):
-        capture_native_host_facts(os_release_path=str(file))
-    with pytest.raises(InstallInputError, match="unreadable"):
-        capture_native_host_facts(os_release_path=str(tmp_path))
+    with pytest.raises(OSError):
+        native._read_os_release(str(file))
+    with pytest.raises(OSError):
+        native._read_os_release(str(tmp_path))
 
 
 def test_bounded_read_rejects_invalid_utf8_or_missing(tmp_path):
     file = tmp_path / "os-release"
     file.write_bytes(b"\xff")
-    with pytest.raises(InstallInputError, match="unreadable"):
-        capture_native_host_facts(os_release_path=str(file))
-    with pytest.raises(InstallInputError, match="unreadable"):
-        capture_native_host_facts(os_release_path=str(tmp_path / "does-not-exist"))
+    with pytest.raises(UnicodeError):
+        native._read_os_release(str(file))
+    with pytest.raises(OSError):
+        native._read_os_release(str(tmp_path / "does-not-exist"))
 
 
 def test_capture_is_local_only_without_mutation_or_subprocess(monkeypatch, tmp_path):
     release = tmp_path / "os-release"
     release.write_text(DEBIAN, encoding="utf-8")
+    observed_paths = []
+    def read_release(path):
+        observed_paths.append(path)
+        return native._read_os_release(str(release))
+    monkeypatch.setattr(native, "_read_os_release", read_release)
     monkeypatch.setattr(native, "sys", SimpleNamespace(
         version_info=SimpleNamespace(major=3, minor=13),
         prefix="/usr", base_prefix="/usr",
@@ -213,7 +218,8 @@ def test_capture_is_local_only_without_mutation_or_subprocess(monkeypatch, tmp_p
     monkeypatch.setattr(subprocess, "run", forbid)
     monkeypatch.setattr(os, "system", forbid)
     monkeypatch.setattr(socket, "create_connection", forbid)
-    snapshot = capture_native_host_facts(os_release_path=str(release))
+    snapshot = capture_native_host_facts()
+    assert observed_paths == ["/etc/os-release"]
     assert snapshot.python_version == (3, 13)
     assert snapshot.native_manager_visible is True
     assert snapshot.euid == 1000
