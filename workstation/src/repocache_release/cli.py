@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
-import errno
 import hashlib
 import importlib.util
 import io
@@ -19,7 +18,7 @@ import zipfile
 import os
 import re
 import select
-import socket
+import signal
 import shutil
 import stat
 import ssl
@@ -261,32 +260,52 @@ def guard_state_dir(path: Path, *, create: bool = False) -> None:
             raise OperatorError("UNSAFE_STATE", "State directory must be private and owned")
 
 
+def _check_state_root_anchor(base: Path, fd: int) -> None:
+    """Require the named private state root to remain the locked directory."""
+    try:
+        opened = os.fstat(fd)
+        named = os.stat(base, follow_symlinks=False)
+    except OSError as exc:
+        raise OperatorError("UNSAFE_STATE", "Candidate state root changed") from exc
+    if (not stat.S_ISDIR(opened.st_mode) or not stat.S_ISDIR(named.st_mode)
+            or opened.st_uid != os.getuid() or named.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+            or stat.S_IMODE(named.st_mode) != 0o700
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+        raise OperatorError("UNSAFE_STATE", "Candidate state root changed")
+
+
 @contextlib.contextmanager
 def candidate_lock(version: str):
-    """Serialize local candidate mutations without deleting an active flock."""
+    """Serialize candidate mutations on the private state-directory inode.
+
+    Linux flock is filesystem-based and shared between network/user
+    namespaces, unlike an abstract AF_UNIX socket. Locking the private state
+    directory also protects against replacement of an individual .lock name.
+    This serializes different candidate versions conservatively. A hostile
+    process already controlling the owner's UID or replacing the whole state
+    directory is outside this workstation trust boundary, and detected where
+    possible, not claimed as impossible.
+    """
     check_tag(version)
     base = state_root()
     guard_state_dir(base, create=True)
     path = base / (version + ".lock")
+    anchor = -1
     fd = -1
-    lease = None
     try:
-        # flock locks an inode, not its name. A same-UID replacement of the
-        # lock pathname during a critical section could otherwise create a
-        # second independent lock inode. Linux abstract AF_UNIX bind is a
-        # process-lifetime, pathname-independent *additional* exclusion guard.
-        # Another owner-UID process may deny service by binding the address,
-        # but cannot silently acquire a second legitimate candidate lease.
         try:
-            lease = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            lease.set_inheritable(False)
-            lease.bind(f"\0repocache-release:{os.getuid()}:{version}")
+            anchor = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                             | getattr(os, "O_CLOEXEC", 0))
         except OSError as exc:
-            if exc.errno == errno.EADDRINUSE:
-                raise OperatorError("BUSY", "Another release operation holds the candidate lock") from exc
-            raise OperatorError("UNSAFE_STATE", "Candidate lease cannot be acquired") from exc
+            raise OperatorError("UNSAFE_STATE", "Candidate state root is unsafe") from exc
+        _check_state_root_anchor(base, anchor)
         try:
-            # O_NONBLOCK makes a pre-open FIFO substitution fail without a hang.
+            fcntl.flock(anchor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise OperatorError("BUSY", "Another release operation holds the state lock") from exc
+        _check_state_root_anchor(base, anchor)
+        try:
             fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW
                          | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0), 0o600)
         except OSError as exc:
@@ -301,16 +320,18 @@ def candidate_lock(version: str):
         except BlockingIOError as exc:
             raise OperatorError("BUSY", "Another release operation holds the candidate lock") from exc
         _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
-        yield
-        # Detect detached paths before reporting an otherwise successful stage.
-        # The abstract lease stays held throughout the operation even if the
-        # file pathname is unlinked or replaced after the initial check.
-        _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
+        try:
+            yield
+        finally:
+            # The directory lock remains held even if the per-version lock
+            # pathname is detached during an operation. Refuse stale state.
+            _check_state_root_anchor(base, anchor)
+            _assert_stable_inode(path, fd, info, code="UNSAFE_STATE")
     finally:
         if fd >= 0:
             os.close(fd)
-        if lease is not None:
-            lease.close()
+        if anchor >= 0:
+            os.close(anchor)
 
 
 def state_file(version: str) -> Path:
@@ -757,22 +778,55 @@ def prepare(version: str) -> dict[str, Any]:
         raise
 
 
-def read_passphrase(fd: int) -> bytes:
-    if fd < 3:
-        raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor must be >= 3")
+def read_passphrase(fd: int, *, timeout: float = 15.0) -> bytes:
+    """Read one bounded, EOF-terminated passphrase from a protected FD.
+
+    Pipe writes may arrive in fragments. Requiring EOF prevents a short read
+    from silently truncating the secret. No interactive prompt is supported.
+    """
+    if fd < 3 or timeout <= 0:
+        raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor is invalid")
+    data = bytearray()
+    original_flags = None
     try:
-        # A 4097-byte read already proves overlength. A second read from a
-        # still-open pipe could block indefinitely while holding the lock.
-        data = os.read(fd, 4097)
+        original_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+        deadline = time.monotonic() + timeout
+        poller = select.poll()
+        poller.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OperatorError("INVALID_SECRET_FD", "Protected passphrase input timed out")
+            if not poller.poll(max(1, int(remaining * 1000))):
+                raise OperatorError("INVALID_SECRET_FD", "Protected passphrase input timed out")
+            try:
+                block = os.read(fd, 4097 - len(data))
+            except BlockingIOError:
+                continue
+            if not block:
+                break  # EOF: all bytes were received.
+            data.extend(block)
+            if len(data) > 4096:
+                raise OperatorError("INVALID_SECRET_FD", "Missing or oversized signer passphrase")
+        if not data or b"\x00" in data:
+            raise OperatorError("INVALID_SECRET_FD", "Missing or oversized signer passphrase")
+        if data.endswith(b"\n"):
+            del data[-1:]
+        if not data or b"\r" in data or b"\n" in data:
+            raise OperatorError("INVALID_SECRET_FD", "Invalid passphrase encoding")
+        return bytes(data)
     except OSError as exc:
         raise OperatorError("INVALID_SECRET_FD", "Protected passphrase descriptor cannot be read") from exc
-    if (not data or len(data) > 4096 or b"\x00" in data):
-        raise OperatorError("INVALID_SECRET_FD", "Missing or oversized signer passphrase")
-    if data.endswith(b"\n"):
-        data = data[:-1]
-    if not data or b"\r" in data or b"\n" in data:
-        raise OperatorError("INVALID_SECRET_FD", "Invalid passphrase encoding")
-    return data
+    finally:
+        data.clear()
+        if original_flags is not None:
+            try:
+                fcntl.fcntl(fd, fcntl.F_SETFL, original_flags)
+            except OSError:
+                # Caller-owned descriptor; a subsequent operation must not
+                # assume its flags were restored after an OS-level failure.
+                pass
 
 
 def sign(version: str, fd: int) -> dict[str, Any]:
