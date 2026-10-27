@@ -77,6 +77,18 @@ def test_proc_parser_limits_and_rejects_malformed_rows():
     with pytest.raises(ValueError): host._parse_tcp_listeners(b"garbage")
     with pytest.raises(ValueError): host._parse_tcp_listeners(b"local_address\n")
     with pytest.raises(ValueError): host._parse_tcp_listeners(proc((4443,"GG")))
+    for state in ("FF", "00", "0D"):
+        with pytest.raises(ValueError):
+            host._parse_tcp_listeners(proc((4443, state)))
+    assert host._parse_tcp_listeners(proc((4443, "0C"))) == set()
+    assert host._parse_tcp_listeners(proc((4443, "0a"))) == {4443}
+    for header in (
+        "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout",
+        "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt inode timeout uid",
+        "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt inode",
+    ):
+        with pytest.raises(ValueError):
+            host._parse_tcp_listeners((header + "\n").encode())
     with pytest.raises(ValueError): host._parse_tcp_listeners(proc()+b"evil malformed record\n")
 
 
@@ -243,7 +255,10 @@ def test_incomplete_or_forged_probe_reports_are_rejected():
 
 @pytest.mark.parametrize("mode,expected", [
     (0o770, "UNSAFE_WRITABLE_PATH"),
+    (0o775, "UNSAFE_WRITABLE_PATH"),
     (0o777, "UNSAFE_WRITABLE_PATH"),
+    (0o700, "PATH_PARENT_OBSERVED_ONLY"),
+    (0o750, "PATH_PARENT_OBSERVED_ONLY"),
     (0o755, "PATH_PARENT_OBSERVED_ONLY"),
 ])
 def test_nginx_untrusted_group_or_world_writable_ancestor(monkeypatch, mode, expected):
@@ -331,3 +346,54 @@ def test_full_readonly_probe_orchestration_with_isolated_os_paths(monkeypatch, t
     assert byname(report.checks, "selinux_kernel_mode").status is PreflightStatus.PASS
     assert byname(report.checks, "storage_free_space").status is PreflightStatus.PASS
     assert not report.all_verified and not report.authorizes_installation
+
+
+
+@pytest.mark.parametrize("tcp", [
+    proc((4443, "FF")),
+    proc((4443, "00")),
+    proc((4443, "0D")),
+    b"sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout\n",
+    b"sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt inode timeout uid\n",
+])
+def test_invalid_kernel_inventory_never_claims_listen_port_free(monkeypatch, tcp):
+    monkeypatch.setattr(host, "_read_fixed", lambda *_: tcp)
+    result = host._port_check(spec())
+    assert result.status is PreflightStatus.NOT_VERIFIED
+    assert result.code == "LISTEN_PORT_INVENTORY_INCOMPLETE"
+
+
+@pytest.mark.parametrize("root,index,capacity,inode_count,expected,code", [
+    ("state", 0, 0, 20, PreflightStatus.FAIL, "STATE_OR_LOG_SPACE_EXHAUSTED"),
+    ("state", 0, 1, 20, PreflightStatus.NOT_VERIFIED, "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED"),
+    ("state", 0, 1024*1024 - 1, 20, PreflightStatus.NOT_VERIFIED, "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED"),
+    ("state", 0, 1024*1024, 20, PreflightStatus.PASS, "CURRENT_STORAGE_SPACE_OBSERVED_ONLY"),
+    ("log", 2, 0, 20, PreflightStatus.FAIL, "STATE_OR_LOG_SPACE_EXHAUSTED"),
+    ("log", 2, 1024*1024 - 1, 20, PreflightStatus.NOT_VERIFIED, "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED"),
+    ("log", 2, 1024*1024, 20, PreflightStatus.PASS, "CURRENT_STORAGE_SPACE_OBSERVED_ONLY"),
+    ("inode", 0, 1024*1024, 0, PreflightStatus.FAIL, "FILESYSTEM_INODES_EXHAUSTED"),
+    ("inode", 0, 1024*1024, 1, PreflightStatus.NOT_VERIFIED, "FILESYSTEM_INODES_LOW_HEADROOM_UNVERIFIED"),
+    ("inode", 0, 1024*1024, 15, PreflightStatus.NOT_VERIFIED, "FILESYSTEM_INODES_LOW_HEADROOM_UNVERIFIED"),
+    ("inode", 0, 1024*1024, 16, PreflightStatus.PASS, "CURRENT_STORAGE_SPACE_OBSERVED_ONLY"),
+    ("cache", 1, 999, 20, PreflightStatus.FAIL, "STORAGE_SPACE_BELOW_CRITICAL_THRESHOLD"),
+    ("cache", 1, 1000, 20, PreflightStatus.NOT_VERIFIED, "CACHE_SPACE_BELOW_WARNING_THRESHOLD"),
+    ("cache", 1, 1999, 20, PreflightStatus.NOT_VERIFIED, "CACHE_SPACE_BELOW_WARNING_THRESHOLD"),
+    ("cache", 1, 2000, 20, PreflightStatus.PASS, "CURRENT_STORAGE_SPACE_OBSERVED_ONLY"),
+])
+def test_space_and_inode_policy_boundaries(
+        monkeypatch, root, index, capacity, inode_count, expected, code):
+    monkeypatch.setattr(host, "_safe_existing_ancestor",
+                        lambda path: (path, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"))
+    free = [3*1024*1024, 3000, 3*1024*1024]
+    free[index] = capacity
+    inodes = [20, 20, 20]
+    inodes[index] = inode_count
+    counter = {"i": 0}
+    def statvfs(_path):
+        i = counter["i"] % 3
+        counter["i"] += 1
+        return SimpleNamespace(f_bavail=free[i], f_frsize=1,
+                               f_favail=inodes[i], f_fsid=i+1)
+    monkeypatch.setattr(host.os, "statvfs", statvfs)
+    result = byname(host._storage_checks(spec()), "storage_free_space")
+    assert (result.status, result.code) == (expected, code)

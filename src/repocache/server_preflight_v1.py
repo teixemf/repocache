@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import errno
 import os
 import platform
 import re
@@ -34,6 +35,76 @@ _NOT_VERIFIED = (
     ("application_dependency_profile", "SIGNED_DEPENDENCY_PROFILE_UNVERIFIED"),
     ("managed_state_and_rollback", "PROTECTED_STATE_ROLLBACK_UNVERIFIED"),
 )
+
+
+# Report serialization accepts only audited, static symbolic diagnostics.
+# Add new codes here and to their probe status map when extending preflight.
+_REPORT_CODES = frozenset((
+    "ALMALINUX_SELINUX_NOT_ENFORCING",
+    "ARCHITECTURE_IDENTITY_OBSERVED",
+    "CACHE_SPACE_BELOW_WARNING_THRESHOLD",
+    "CURRENT_STORAGE_SPACE_OBSERVED_ONLY",
+    "DEBIAN_SELINUX_MODE_NOT_REQUIRED",
+    "DEBIAN_SELINUX_PERMISSIVE_OBSERVED",
+    "EXISTING_INCLUDE_REQUIRES_OWNERSHIP_PROOF",
+    "FILESYSTEM_INODES_EXHAUSTED",
+    "FILESYSTEM_INODES_LOW_HEADROOM_UNVERIFIED",
+    "HTTPS_PORT_ALREADY_LISTENING",
+    "HTTPS_PORT_NOT_OBSERVED_IN_PROC_SNAPSHOT",
+    "INVALID_ARCHITECTURE_IDENTITY",
+    "INVALID_EFFECTIVE_UID",
+    "INVALID_PACKAGE_MANAGER_OBSERVATION",
+    "INVALID_PYTHON_ENVIRONMENT_OBSERVATION",
+    "LISTENER_OWNERSHIP_UNVERIFIED",
+    "LISTEN_PORT_INVENTORY_INCOMPLETE",
+    "MANAGED_INCLUDE_ACCESS_UNVERIFIED",
+    "NATIVE_ARCH_POLICY_UNVERIFIED",
+    "NATIVE_EXECUTABLE_ACCESS_UNVERIFIED",
+    "NATIVE_MANAGER_PRESENCE_UNVERIFIED",
+    "NATIVE_PACKAGE_MANAGER_FILE_OBSERVED",
+    "NATIVE_PACKAGE_MANAGER_MISSING",
+    "NATIVE_PACKAGE_METADATA_UNVERIFIED",
+    "NEW_MANAGED_INCLUDE_NOT_PRESENT",
+    "NGINX_EXECUTABLE_ACCESS_UNVERIFIED",
+    "NGINX_EXECUTABLE_MISSING",
+    "NGINX_EXECUTABLE_OBSERVED_ONLY",
+    "NGINX_INCLUDE_PARENT_ACCESS_UNVERIFIED",
+    "NGINX_INCLUDE_PARENT_UNSAFE",
+    "NGINX_OWNERSHIP_MODULES_UNVERIFIED",
+    "NO_ACTIVE_VENV_OBSERVED",
+    "OS_PYTHON_PROVENANCE_UNVERIFIED",
+    "PRIVILEGED_INSTALL_REQUIRES_ROOT",
+    "PROTECTED_STATE_ROLLBACK_UNVERIFIED",
+    "READ_ONLY_INSPECTION_NO_ROOT_REQUIRED",
+    "REQUIRED_NATIVE_EXECUTABLES_OBSERVED_ONLY",
+    "REQUIRED_NATIVE_EXECUTABLE_MISSING",
+    "ROOT_EFFECTIVE_UID_OBSERVED_ONLY",
+    "SELINUX_ENFORCING_KERNEL_OBSERVED_ONLY",
+    "SELINUX_KERNEL_MODE_UNAVAILABLE",
+    "SELINUX_KERNEL_MODE_UNRECOGNIZED",
+    "SELINUX_NATIVE_ENFORCING_UNVERIFIED",
+    "SIGNED_DEPENDENCY_PROFILE_UNVERIFIED",
+    "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED",
+    "STATE_OR_LOG_SPACE_EXHAUSTED",
+    "STORAGE_CAPACITY_UNVERIFIED",
+    "STORAGE_MOUNT_OR_POLICY_UNVERIFIED",
+    "STORAGE_OWNERSHIP_CAPACITY_UNVERIFIED",
+    "STORAGE_OWNERSHIP_MANIFEST_UNVERIFIED",
+    "STORAGE_PATH_ACCESS_UNVERIFIED",
+    "STORAGE_PATH_UNSAFE_OR_CONFLICTING",
+    "STORAGE_SPACE_BELOW_CRITICAL_THRESHOLD",
+    "SUPPORTED_OS_AND_PYTHON_VERSION",
+    "SYSTEMD_CLIENT_ACCESS_UNVERIFIED",
+    "SYSTEMD_CLIENT_MISSING",
+    "SYSTEMD_CLIENT_OBSERVED_ONLY",
+    "SYSTEMD_NATIVE_PID1_NOT_OBSERVED",
+    "SYSTEMD_NATIVE_RUNTIME_UNVERIFIED",
+    "SYSTEMD_PID1_NOT_VERIFIED",
+    "SYSTEMD_PID1_OBSERVED_ONLY",
+    "TLS_CA_TRUST_UNVERIFIED",
+    "UNSUPPORTED_OS_OR_PYTHON",
+    "VENV_PYTHON_NOT_NATIVE_PROVENANCE",
+))
 
 
 class PreflightStatus(str, Enum):
@@ -67,6 +138,16 @@ class PreflightCheck:
 @dataclass(frozen=True)
 class NativePreflightReport:
     checks: tuple[PreflightCheck, ...]
+
+    def __post_init__(self) -> None:
+        if (type(self.checks) is not tuple
+                or any(type(c) is not PreflightCheck
+                       or type(c.name) is not str or not re.fullmatch(
+                           r"[a-z][a-z0-9_]{0,63}", c.name, re.ASCII)
+                       or type(c.status) is not PreflightStatus
+                       or type(c.code) is not str or c.code not in _REPORT_CODES
+                       for c in self.checks)):
+            raise ValueError("invalid unsanitized native preflight report")
 
     @property
     def has_failures(self) -> bool:
@@ -173,8 +254,15 @@ def _read_os_release(path: str) -> str:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     fd = os.open(path, flags)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        first = os.fstat(fd)
+        if not stat.S_ISREG(first.st_mode):
             raise OSError("os-release is not a regular file")
+        # A descriptor identifies the opened inode even when /etc/os-release
+        # is a distribution-managed symlink to /usr/lib/os-release.
+        identity = lambda value: (
+            value.st_dev, value.st_ino, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns,
+        )
         chunks = []
         remaining = MAX_OS_RELEASE_BYTES + 1
         while remaining:
@@ -186,6 +274,15 @@ def _read_os_release(path: str) -> str:
         data = b"".join(chunks)
         if len(data) > MAX_OS_RELEASE_BYTES:
             raise OSError("os-release exceeds read limit")
+        # Detect observable in-place edits and path replacement before
+        # accepting a coherent snapshot. Metadata checks are NOT immunity
+        # against all races or proof of the file's authentic origin.
+        final = os.fstat(fd)
+        path_now = os.stat(path)
+        if (identity(first) != identity(final)
+                or identity(first) != identity(path_now)
+                or len(data) != first.st_size):
+            raise OSError(errno.ESTALE, "os-release changed during observation")
         return data.decode("utf-8", "strict")
     finally:
         os.close(fd)

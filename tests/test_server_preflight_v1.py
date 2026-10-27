@@ -270,7 +270,16 @@ def test_os_release_short_reads_consume_entire_identity(monkeypatch):
     fake_os = SimpleNamespace(
         O_RDONLY=0, O_CLOEXEC=0, O_NONBLOCK=0,
         open=lambda *_: 42, read=fake_read, close=lambda _: None,
-        fstat=lambda _: SimpleNamespace(st_mode=stat.S_IFREG | 0o444),
+        fstat=lambda _: SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o444, st_dev=1, st_ino=42,
+            st_size=len(b"ID=debian\nVERSION_ID=13\nID=almalinux\n"),
+            st_mtime_ns=100, st_ctime_ns=100,
+        ),
+        stat=lambda _: SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o444, st_dev=1, st_ino=42,
+            st_size=len(b"ID=debian\nVERSION_ID=13\nID=almalinux\n"),
+            st_mtime_ns=100, st_ctime_ns=100,
+        ),
     )
     monkeypatch.setattr(native, "os", fake_os)
     full = native._read_os_release("/etc/os-release")
@@ -285,3 +294,69 @@ def test_partial_report_never_claims_complete_readiness():
         native.PreflightCheck("effective_uid", PreflightStatus.PASS,
                               "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),
     )).all_verified is False
+
+
+@pytest.mark.parametrize("change_field", [
+    "st_size", "st_mtime_ns", "st_ctime_ns", "st_dev", "st_ino",
+])
+@pytest.mark.parametrize("change_target", ["descriptor", "path"])
+def test_os_release_detects_observable_concurrent_change(
+        monkeypatch, change_field, change_target):
+    import dataclasses
+    import stat
+
+    @dataclasses.dataclass(frozen=True)
+    class Identity:
+        st_mode: int = stat.S_IFREG | 0o644
+        st_dev: int = 1
+        st_ino: int = 42
+        st_size: int = len(DEBIAN.encode())
+        st_mtime_ns: int = 900
+        st_ctime_ns: int = 900
+
+    stable = Identity()
+    value = getattr(stable, change_field)
+    changed = dataclasses.replace(stable, **{change_field: value + 1})
+    chunks = iter([DEBIAN.encode(), b""])
+    snapshots = iter([stable, changed if change_target == "descriptor" else stable])
+    fake_os = SimpleNamespace(
+        O_RDONLY=0, O_CLOEXEC=0, O_NONBLOCK=0,
+        open=lambda *_: 41, close=lambda _: None,
+        read=lambda fd, n: next(chunks),
+        fstat=lambda _: next(snapshots),
+        stat=lambda path: changed if change_target == "path" else stable,
+    )
+    monkeypatch.setattr(native, "os", fake_os)
+    with pytest.raises(OSError):
+        native._read_os_release("/etc/os-release")
+
+
+def test_os_release_missing_after_read_and_size_mismatch_fail_closed(
+        monkeypatch, tmp_path):
+    path = tmp_path / "os-release"
+    path.write_text(DEBIAN)
+    original_stat = native.os.stat
+
+    def missing_after_read(target):
+        if target == str(path):
+            raise FileNotFoundError("path replaced during read")
+        return original_stat(target)
+
+    monkeypatch.setattr(native.os, "stat", missing_after_read)
+    with pytest.raises(OSError):
+        native._read_os_release(str(path))
+
+
+def test_report_direct_construction_rejects_unsanitized_values():
+    for values in (
+        (native.PreflightCheck("effective_uid", PreflightStatus.PASS, "/home/private/secret"),),
+        (native.PreflightCheck("effective_uid", PreflightStatus.PASS, "SECRET_TOKEN"),),
+        (native.PreflightCheck("not a name", PreflightStatus.PASS, "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),),
+        (native.PreflightCheck("effective_uid", "PASS", "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),),
+    ):
+        with pytest.raises(ValueError):
+            native.NativePreflightReport(values)
+    with pytest.raises(ValueError):
+        native.NativePreflightReport([
+            native.PreflightCheck("effective_uid", PreflightStatus.PASS, "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),
+        ])

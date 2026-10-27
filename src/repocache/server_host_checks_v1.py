@@ -23,7 +23,7 @@ from repocache.server_preflight_v1 import (
 _MAX_PROC_BYTES = 4 * 1024 * 1024
 _MAX_PID_BYTES = 128
 _MIN_STATE_LOG_FREE_BYTES = 1024 * 1024  # Conservative observation floor, not an approved capacity policy.
-_MIN_FREE_INODES = 16  # Observation floor only; not a provisioning reservation.
+_MIN_FREE_INODES = 16  # Low-headroom diagnostic only; not an exhaustion or install threshold.
 _READ_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
 _EXECUTABLES = {
     "debian": ("/usr/bin/apt-get", "/usr/bin/python3.13", "/usr/sbin/nginx"),
@@ -154,30 +154,44 @@ def _storage_checks(spec: HostInspectionSpec) -> tuple[PreflightCheck, Preflight
     except (OSError, ValueError, OverflowError, AttributeError):
         return path_check, _check("storage_free_space", PreflightStatus.NOT_VERIFIED,
                                   "STORAGE_CAPACITY_UNVERIFIED")
-    # Cache has its own explicit configured policy; state/log only have a
-    # conservative minimum for an observation, not an approved sizing policy.
+    # A cache critical threshold is part of the validated deployment document.
+    # State/log byte and filesystem inode floors are diagnostic heuristics:
+    # low headroom cannot prove exhaustion or an approved capacity policy.
     if free[1] < spec.critical_free_bytes:
         disk = _check("storage_free_space", PreflightStatus.FAIL,
                       "STORAGE_SPACE_BELOW_CRITICAL_THRESHOLD")
-    elif free[0] < _MIN_STATE_LOG_FREE_BYTES or free[2] < _MIN_STATE_LOG_FREE_BYTES:
+    elif free[0] == 0 or free[2] == 0:
         disk = _check("storage_free_space", PreflightStatus.FAIL,
-                      "STATE_OR_LOG_SPACE_INSUFFICIENT")
-    elif any(count < _MIN_FREE_INODES for count in inodes):
+                      "STATE_OR_LOG_SPACE_EXHAUSTED")
+    elif any(count == 0 for count in inodes):
         disk = _check("storage_free_space", PreflightStatus.FAIL,
                       "FILESYSTEM_INODES_EXHAUSTED")
+    elif free[0] < _MIN_STATE_LOG_FREE_BYTES or free[2] < _MIN_STATE_LOG_FREE_BYTES:
+        disk = _check("storage_free_space", PreflightStatus.NOT_VERIFIED,
+                      "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED")
+    elif any(count < _MIN_FREE_INODES for count in inodes):
+        disk = _check("storage_free_space", PreflightStatus.NOT_VERIFIED,
+                      "FILESYSTEM_INODES_LOW_HEADROOM_UNVERIFIED")
     elif free[1] < spec.warning_free_bytes:
         disk = _check("storage_free_space", PreflightStatus.NOT_VERIFIED,
                       "CACHE_SPACE_BELOW_WARNING_THRESHOLD")
     elif (any(code != "EXISTING_PATH_OWNERSHIP_UNVERIFIED"
               for _, code in observations)
           or any(getattr(item, "f_fsid", None) is None for item in stats)):
-        # Capacity of the parent does not prove capacity of a future mount.
+        # A missing mount or directory is not proof of its future capacity.
         disk = _check("storage_free_space", PreflightStatus.NOT_VERIFIED,
                       "STORAGE_MOUNT_OR_POLICY_UNVERIFIED")
     else:
         disk = _check("storage_free_space", PreflightStatus.PASS,
-                      "CURRENT_STORAGE_SPACE_ABOVE_POLICY_THRESHOLDS")
+                      "CURRENT_STORAGE_SPACE_OBSERVED_ONLY")
     return path_check, disk
+
+
+_TCP_HEADER = ("sl", "local_address", "rem_address", "st", "tx_queue",
+               "rx_queue", "tr", "tm->when", "retrnsmt", "uid",
+               "timeout", "inode")
+# Linux include/net/tcp_states.h: 01..0C, including TCP_NEW_SYN_RECV.
+_TCP_STATES = frozenset(range(1, 0x0D))
 
 
 def _parse_tcp_listeners(raw: bytes) -> set[int]:
@@ -186,9 +200,9 @@ def _parse_tcp_listeners(raw: bytes) -> set[int]:
         lines = raw.decode("ascii", "strict").splitlines()
     except UnicodeError as exc:
         raise ValueError("invalid proc net input") from exc
-    if (not lines or len(lines[0].split()) < 10
-            or lines[0].split()[:4] != ["sl", "local_address", "rem_address", "st"]
-            or "inode" not in lines[0].split()):
+    # Require the complete, ordered common procfs header; optional trailing
+    # kernel columns remain compatible with newer distributions.
+    if not lines or tuple(lines[0].split()[:len(_TCP_HEADER)]) != _TCP_HEADER:
         raise ValueError("invalid proc net header")
     ports: set[int] = set()
     for line in lines[1:]:
@@ -201,7 +215,10 @@ def _parse_tcp_listeners(raw: bytes) -> set[int]:
                 or len(columns[3]) != 2
                 or any(c not in "0123456789abcdefABCDEF" for c in columns[3])):
             raise ValueError("invalid proc net address or TCP state")
-        if columns[3].upper() == "0A":
+        tcp_state = int(columns[3], 16)
+        if tcp_state not in _TCP_STATES:
+            raise ValueError("invalid kernel TCP state")
+        if tcp_state == 0x0A:
             ports.add(int(port_hex, 16))
     return ports
 
@@ -335,11 +352,13 @@ _PROBE_CODES: dict[str, dict[str, PreflightStatus]] = {
     "storage_free_space": {
         "STORAGE_CAPACITY_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
         "STORAGE_SPACE_BELOW_CRITICAL_THRESHOLD": PreflightStatus.FAIL,
-        "STATE_OR_LOG_SPACE_INSUFFICIENT": PreflightStatus.FAIL,
+        "STATE_OR_LOG_SPACE_EXHAUSTED": PreflightStatus.FAIL,
+        "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
+        "FILESYSTEM_INODES_LOW_HEADROOM_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
         "FILESYSTEM_INODES_EXHAUSTED": PreflightStatus.FAIL,
         "CACHE_SPACE_BELOW_WARNING_THRESHOLD": PreflightStatus.NOT_VERIFIED,
         "STORAGE_MOUNT_OR_POLICY_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "CURRENT_STORAGE_SPACE_ABOVE_POLICY_THRESHOLDS": PreflightStatus.PASS,
+        "CURRENT_STORAGE_SPACE_OBSERVED_ONLY": PreflightStatus.PASS,
     },
     "listen_port_conflicts": {
         "HTTPS_PORT_ALREADY_LISTENING": PreflightStatus.FAIL,
