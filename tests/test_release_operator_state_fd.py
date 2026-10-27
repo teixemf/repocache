@@ -4,6 +4,7 @@ These tests never use signing keys, network, GitHub releases or publish APIs.
 """
 from __future__ import annotations
 
+import errno
 import os
 import select
 import socket
@@ -1078,3 +1079,169 @@ def test_command_refuses_success_if_cleanup_cannot_reap_child(monkeypatch):
     assert caught.value.code == "TOOL_UNAVAILABLE"
     assert len(launched) == 1
     assert called == [launched[0].pid]
+
+@pytest.mark.parametrize("failure_errno", [errno.EPERM, errno.EINTR, errno.EIO])
+def test_group_signal_failure_always_attempts_bounded_reap(
+        monkeypatch, failure_errno):
+    """Failed killpg must be false even when the original child is reaped."""
+    waited = []
+    signaled = []
+
+    class ExitedChild:
+        pid = 12345
+        returncode = None
+
+        def wait(self, *, timeout):
+            waited.append(timeout)
+            self.returncode = 0
+            return 0
+
+    def failed_signal(pid, sig):
+        signaled.append((pid, sig))
+        raise OSError(failure_errno, "synthetic group-signal error")
+
+    monkeypatch.setattr(release.os, "waitid", lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg", failed_signal)
+    assert release._terminate_process_group(ExitedChild()) is False
+    assert waited == [3]
+    assert signaled == [(12345, signal.SIGKILL)]
+
+
+def test_group_signal_esrch_still_reaps_verified_leader(monkeypatch):
+    """ESRCH is benign only with a waitable and successfully reaped leader."""
+    waited = []
+
+    class ExitedChild:
+        pid = 12345
+        returncode = None
+
+        def wait(self, *, timeout):
+            waited.append(timeout)
+            self.returncode = 0
+            return 0
+
+    def no_group(_pid, _sig):
+        raise ProcessLookupError(errno.ESRCH, "synthetic group gone")
+
+    monkeypatch.setattr(release.os, "waitid", lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg", no_group)
+    assert release._terminate_process_group(ExitedChild()) is True
+    assert waited == [3]
+
+
+def test_group_signal_error_and_reap_timeout_are_not_success(monkeypatch):
+    """An undelivered signal plus an incomplete reap is always a failure."""
+    waited = []
+
+    class RunningChild:
+        pid = 12345
+        args = ["synthetic"]
+        returncode = None
+
+        def wait(self, *, timeout):
+            waited.append(timeout)
+            raise subprocess.TimeoutExpired(self.args, timeout)
+
+    def denied_signal(_pid, _sig):
+        raise PermissionError(errno.EPERM, "synthetic permission denial")
+
+    monkeypatch.setattr(release.os, "waitid", lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg", denied_signal)
+    assert release._terminate_process_group(RunningChild()) is False
+    assert waited == [3]
+
+
+def test_command_group_signal_failure_refuses_success_and_closes_stdout(
+        monkeypatch):
+    children = _local_command_fixture(
+        monkeypatch, 'import sys;sys.stdout.write("ok")')
+    attempted = []
+
+    def denied_signal(pid, sig):
+        attempted.append((pid, sig))
+        raise PermissionError(errno.EPERM, "synthetic permission denial")
+
+    monkeypatch.setattr(release.os, "killpg", denied_signal)
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=3)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert len(children) == 1
+    assert children[0].returncode == 0
+    assert children[0].stdout.closed
+    assert attempted == [(children[0].pid, signal.SIGKILL)]
+
+
+def test_command_exceptional_cleanup_still_closes_stdout(monkeypatch):
+    """A surprising cleanup exception may not bypass stdout.close()."""
+    children = _local_command_fixture(monkeypatch, 'import time;time.sleep(10)')
+
+    def raised_cleanup(_process):
+        raise OSError(errno.EIO, "synthetic exceptional cleanup")
+
+    monkeypatch.setattr(release, "_terminate_process_group", raised_cleanup)
+    try:
+        with pytest.raises(release.OperatorError) as caught:
+            release.command(_COMMAND_FIXTURE, timeout=0.15)
+        assert caught.value.code == "TOOL_UNAVAILABLE"
+        assert len(children) == 1 and children[0].stdout.closed
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+
+def test_verifier_group_signal_failure_refuses_success(monkeypatch, tmp_path):
+    """A completed verifier is not trusted if group cleanup failed."""
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    launched = []
+    signaled = []
+
+    def verifier(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        child = original_popen(
+            [sys.executable, "-c", "import sys;sys.exit(0)"], **kwargs)
+        launched.append(child)
+        return child
+
+    def denied_signal(pid, sig):
+        signaled.append((pid, sig))
+        raise PermissionError(errno.EPERM, "synthetic permission denial")
+
+    monkeypatch.setattr(release.subprocess, "Popen", verifier)
+    monkeypatch.setattr(release.os, "killpg", denied_signal)
+    with pytest.raises(release.OperatorError) as caught:
+        release.verify_unsigned(tmp_path, assets, version)
+    assert caught.value.code == "BUILD_NOT_VERIFIED"
+    assert len(launched) == 1 and launched[0].returncode == 0
+    assert signaled == [(launched[0].pid, signal.SIGKILL)]
+
+
+def test_verifier_exceptional_cleanup_preserves_sanitized_failure(
+        monkeypatch, tmp_path):
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    original_popen = release.subprocess.Popen
+    launched = []
+    monkeypatch.setattr(release, "VERIFIER_TIMEOUT", 0.15)
+
+    def verifier(argv, **kwargs):
+        child = original_popen(
+            [sys.executable, "-c", "import time;time.sleep(10)"], **kwargs)
+        launched.append(child)
+        return child
+
+    def raised_cleanup(_process):
+        raise OSError(errno.EIO, "synthetic exceptional cleanup")
+
+    monkeypatch.setattr(release.subprocess, "Popen", verifier)
+    monkeypatch.setattr(release, "_terminate_process_group", raised_cleanup)
+    try:
+        with pytest.raises(release.OperatorError) as caught:
+            release.verify_unsigned(tmp_path, assets, version)
+        assert caught.value.code == "BUILD_NOT_VERIFIED"
+    finally:
+        for child in launched:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)

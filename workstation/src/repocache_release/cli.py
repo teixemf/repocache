@@ -98,6 +98,8 @@ def _terminate_process_group(process: subprocess.Popen) -> bool:
     False means group identity could not be established, so callers must
     refuse success rather than treating a possibly auto-reaped child as OK.
     Deliberately detached descendants are outside this limited guarantee.
+    This owner-workstation CLI assumes no concurrent external waitpid reaper;
+    PID/PGID identity cannot be preserved against another thread reaping it.
     """
     safe_group = signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
     if safe_group:
@@ -114,11 +116,17 @@ def _terminate_process_group(process: subprocess.Popen) -> bool:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
+            # The verified leader can already have exited with no live group.
             pass
+        except OSError:
+            # Signalling failed; do not report successful cancellation or
+            # attempt to signal an uncertain numeric group ID again.
+            safe_group = False
     try:
+        # Even when killpg fails, always attempt bounded collection of the
+        # original child. A failure cannot certify descendant termination.
         process.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        # A bounded but incomplete reap is not successful process cleanup.
+    except (OSError, subprocess.TimeoutExpired):
         return False
     return safe_group and process.returncode is not None
 
@@ -130,6 +138,7 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
                GH_PROMPT_DISABLED="1", GCM_INTERACTIVE="Never")
     process = None
+    cleanup_attempted = False
     try:
         _require_waitable_children()
         # subprocess.run(capture_output=True) buffers arbitrarily large output
@@ -159,6 +168,7 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
                                     "Tool output exceeded supported size")
             chunks.append(chunk)
         _wait_unreaped(process, deadline=deadline, timeout=timeout)
+        cleanup_attempted = True
         if not _terminate_process_group(process):
             raise OperatorError("TOOL_UNAVAILABLE",
                                 "Required local tool unavailable")
@@ -171,10 +181,17 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
                             "Required local tool unavailable") from exc
     finally:
         if process is not None:
-            if process.returncode is None:
-                _terminate_process_group(process)
-            if process.stdout is not None:
-                process.stdout.close()
+            try:
+                if not cleanup_attempted and process.returncode is None:
+                    try:
+                        _terminate_process_group(process)
+                    except OSError:
+                        # Never mask the sanitized failure while unwinding.
+                        pass
+            finally:
+                # Cleanup itself must never bypass descriptor closure.
+                if process.stdout is not None:
+                    process.stdout.close()
 
 
 def gh_json(endpoint: str) -> dict[str, Any]:
@@ -777,6 +794,7 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     # retaining stdio or creating descendants cannot outlive a failed or
     # timed-out verification while remaining in that group.
     process = None
+    cleanup_attempted = False
     try:
         _require_waitable_children()
         process = subprocess.Popen(
@@ -787,6 +805,7 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
         _wait_unreaped(process,
                        deadline=time.monotonic() + VERIFIER_TIMEOUT,
                        timeout=VERIFIER_TIMEOUT)
+        cleanup_attempted = True
         if not _terminate_process_group(process):
             raise OperatorError("BUILD_NOT_VERIFIED",
                                 "Source rebuild or signed dependency-lock verification failed")
@@ -795,8 +814,13 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
         raise OperatorError("BUILD_NOT_VERIFIED",
                             "Source rebuild or signed dependency-lock verification failed") from exc
     finally:
-        if process is not None and process.returncode is None:
-            _terminate_process_group(process)
+        if (process is not None and not cleanup_attempted
+                and process.returncode is None):
+            try:
+                _terminate_process_group(process)
+            except OSError:
+                # Verification already failed; keep errors redacted.
+                pass
     if result:
         raise OperatorError("BUILD_NOT_VERIFIED",
                             "Source rebuild or signed dependency-lock verification failed")
