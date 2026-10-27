@@ -94,6 +94,12 @@ def _host(value: Any, name: str) -> str:
         _reject(f"{name}: invalid DNS label")
     if len(value.split(".")) < 2:
         _reject(f"{name}: expected DNS hostname")
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        pass
+    else:
+        _reject(f"{name}: IP literals are not permitted for upstream hosts")
     return value.lower()
 
 
