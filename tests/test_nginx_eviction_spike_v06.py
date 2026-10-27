@@ -33,6 +33,22 @@ class CacheSpikeTests(unittest.TestCase):
             self.assertIn("keys_zone=cold:1m", config)
             self.assertIn("keys_zone=hot:1m", config)
 
+    def test_stats_do_not_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            cache.mkdir()
+            outside = root / "outside"
+            outside.write_bytes(b"external")
+            (cache / "linked-file").symlink_to(outside)
+            (cache / "linked-dir").symlink_to(root, target_is_directory=True)
+            (cache / "normal").write_bytes(b"ok")
+            self.assertEqual(module.cache_stats(cache), {"bytes": 2, "files": 1})
+            alias = root / "cache-alias"
+            alias.symlink_to(cache, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                module.cache_stats(alias)
+
     def test_stats_only_read_selected_sandbox(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
