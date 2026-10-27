@@ -837,6 +837,11 @@ def test_namespace_isolated_candidate_sharing_same_state_still_serializes(tmp_pa
              sys.executable, "-c", candidate], env=env,
             capture_output=True, timeout=5)
         assert contender.returncode == 0, contender.stderr
+        if contender.stdout.strip() == b"UNSAFE_STATE":
+            # UID remapping can make a root-owned host ancestor appear
+            # untrusted. This is a safe refusal, NOT executed evidence of
+            # filesystem-lock contention across namespaces.
+            pytest.skip("Remapped namespace refused shared state before locking")
         assert contender.stdout.strip() == b"BUSY"
     finally:
         if first.stdin is not None:
@@ -884,3 +889,58 @@ def test_unsigned_verifier_timeout_terminates_its_descendants(monkeypatch, tmp_p
     finally:
         if _running_pid(child_pid):
             os.kill(child_pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize(
+    "script, timeout, expected_error",
+    [
+        ("import sys;sys.stdout.write('ok')", 3.0, None),
+        ("import sys;sys.exit(9)", 3.0, "OPERATION_FAILED"),
+        ("import time;time.sleep(10)", 0.15, "TOOL_UNAVAILABLE"),
+    ],
+)
+def test_command_never_signals_reaped_or_reused_process_group(
+        monkeypatch, script, timeout, expected_error):
+    """The original group leader is still our child at every killpg call."""
+    _local_command_fixture(monkeypatch, script)
+    real_killpg = os.killpg
+    signals = []
+
+    def check_group_identity(pid, sig):
+        # WNOWAIT observes the original child without allowing PID reuse.
+        # ChildProcessError would prove process.wait()/poll() already reaped it.
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        signals.append((pid, sig))
+        return real_killpg(pid, sig)
+
+    monkeypatch.setattr(release.os, "killpg", check_group_identity)
+    if expected_error:
+        with pytest.raises(release.OperatorError) as caught:
+            release.command(_COMMAND_FIXTURE, timeout=timeout)
+        assert caught.value.code == expected_error
+    else:
+        assert release.command(_COMMAND_FIXTURE, timeout=timeout) == b"ok"
+    assert len(signals) == 1
+    assert signals[0][1] == signal.SIGKILL
+
+
+def test_verifier_never_signals_reaped_or_reused_group(monkeypatch, tmp_path):
+    version, assets = _unsigned_verifier_fixture(tmp_path)
+    real_popen = release.subprocess.Popen
+    real_killpg = os.killpg
+    observed = []
+
+    def launch(argv, **kwargs):
+        assert kwargs["start_new_session"] is True
+        return real_popen([sys.executable, "-c", "import sys;sys.exit(0)"],
+                          **kwargs)
+
+    def checked_killpg(pid, sig):
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        observed.append(sig)
+        return real_killpg(pid, sig)
+
+    monkeypatch.setattr(release.subprocess, "Popen", launch)
+    monkeypatch.setattr(release.os, "killpg", checked_killpg)
+    release.verify_unsigned(tmp_path, assets, version)
+    assert observed == [signal.SIGKILL]
