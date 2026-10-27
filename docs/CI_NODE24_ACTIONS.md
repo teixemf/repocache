@@ -136,6 +136,99 @@ and the owner separately authorizes the nonpublishing rehearsal:
    controls. Close #74 only once none is FAIL/NOT VERIFIED and the
    maintainer approves the acceptance report.
 
+## Independent upstream security and integration checkpoint (2026-10-27)
+
+This checkpoint extends the historical 2026-10-25 inventory above. It is
+read-only source/release-note review plus documentation; it does **not** supply
+the still-missing real `release.yml` execution or authorize release actions.
+
+### Reviewed immutable upstream sources and security-relevant changes
+
+The four pinned SHA refs were compared with official `actions/*` Git tag
+refs and the `runs.using: node24` manifests fetched at those *exact SHAs*.
+The two subsequently upgraded pins resolve as follows:
+
+- [checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1)
+  tag = `3d3c42e5aac5ba805825da76410c181273ba90b1`; GitHub reports a
+  verified commit signature. Reviewed the upstream
+  [v6.0.0](https://github.com/actions/checkout/releases/tag/v6.0.0),
+  [v7.0.0](https://github.com/actions/checkout/releases/tag/v7.0.0)
+  and v7.0.1 release notes and compare history: v6 moves persisted Git
+  credentials out of `.git/config` into `$RUNNER_TEMP`; v7 changes the
+  distributed action to ESM and refuses unsafe fork checkout on
+  `pull_request_target`/`workflow_run` by default; v7.0.1 hardens
+  `git config --unset` escaping, normalizes branch whitespace handling,
+  and refines the default fork safety check. Upstream direct/transitive
+  dependencies changed, including security-related dependency upgrades.
+  REPOCACHE still sets `persist-credentials: false` at every checkout,
+  never opts into `allow-unsafe-pr-checkout`, and the privileged
+  `pr-milestone.yml` explicitly checks out the protected default branch,
+  **not the untrusted PR head**, while limiting writes to PR metadata.
+- [download-artifact v8.0.2](https://github.com/actions/download-artifact/releases/tag/v8.0.2)
+  tag = `9000827ccba6bdab643e8b6fd33ac0654aef8333`; GitHub reports a
+  verified commit signature. Reviewed official
+  [v7.0.0](https://github.com/actions/download-artifact/releases/tag/v7.0.0),
+  [v8.0.0](https://github.com/actions/download-artifact/releases/tag/v8.0.0),
+  [v8.0.1](https://github.com/actions/download-artifact/releases/tag/v8.0.1)
+  and v8.0.2 notes, plus the v7-to-v8.0.2 compare history. v8 migrates to
+  ESM, supports direct non-ZIP artifacts, and makes artifact digest mismatch
+  a **failing error by default**; v8.0.1 improves name/content-type
+  regression coverage; v8.0.2 updates `@actions/artifact` to 6.3.1,
+  including HTTP 429/Retry-After handling. REPOCACHE's signed-candidate
+  workflow downloads explicitly named, same-run `authenticated-draft-candidate`
+  artifacts uploaded by ZIP-producing `upload-artifact@v6`; the upstream
+  v8 default preserves ZIP extraction and strengthens digest fail-closed
+  behavior. Actual genuine candidate acceptance remains subject to #76.
+- [setup-python v6.0.0](https://github.com/actions/setup-python/releases/tag/v6.0.0)
+  tag = `e797f83bcb11b83ae66e0230d6156d7c80228e7c`: official notes
+  document native Node 24, runner >=2.327.1, Python version handling and
+  security-sensitive `form-data`/`setuptools` dependency fixes.
+- [upload-artifact v6.0.0](https://github.com/actions/upload-artifact/releases/tag/v6.0.0)
+  tag = `b7c566a772e6b6bfb58ed0dc250532a479d7789f`: official notes
+  document native Node 24 and an `@actions/artifact` update addressing
+  Node 24 compatibility. The `release.yml` step uploads **unsigned only**,
+  with `if-no-files-found: error`, 7-day retention, and read-only token.
+
+**Review boundary:** this is an upstream source/tag, manifest, changelog and
+security-relevant transitive release-note assessment; it is not an independent
+byte-for-byte audit of the upstream bundled JavaScript dependency graphs or
+a vulnerability-free guarantee. Any subsequent action pin requires a fresh
+review. The minimum hosted runner requirement remains v2.327.1;
+checkout's documented v2.329.0 minimum for *authenticated Git inside Docker
+container actions* is not exercised by these credential-nonpersisting jobs.
+
+### Current repository and acceptance boundary
+
+- On protected `main=6bb02c824c8d0c7c1ddb860a4b9fd13f7a861000`,
+  direct GitHub check-run readback returns **9/9 SUCCESS**. On protected
+  `integration/v0.5.0=806d93975aff641b27e87ece5a69e1ec0d97d35f`,
+  **9/9 SUCCESS** after the separately authorized #190 merge.
+  These are exact-revision CI checks, not a real official release dispatch.
+- Read the 18 current `.github/workflows/*.yml` files: first-party JS
+  actions use pinned SHA refs; untrusted `pull_request` test jobs remain
+  `contents: read`. The separately scoped `label-colors.yml` sync has
+  `issues: write` only on `push` or `workflow_dispatch`; the privileged
+  `pull_request_target` milestone job retains only its existing
+  `pull-requests: write` metadata authority and checks out default-branch
+  code with `persist-credentials: false`. No signing key is present.
+- The query for repository `workflow_dispatch` runs still found just one
+  `Release bundle` run, [#39559317114](https://github.com/teixemf/repocache/actions/runs/39559317114),
+  on 2026-10-21 **before** #116 migrated to Node 24. Neither that run nor
+  the successful short-lived `tests.yml` Node 24 uploader rehearsal proves
+  the original criterion requiring the real `release.yml` `assemble` job,
+  `unsigned-release-candidate` artifact readback and source-SHA verification.
+- The open documentation PR #179 was still based on an older main commit
+  when this checkpoint was written. Its **new HEAD CI/review is NOT VERIFIED**
+  after editing this file. Keep it draft; do not merge without exact-HEAD
+  review, owner acceptance and separate merge authorization.
+- `pyproject.toml` on the protected v0.5.0 integration branch still says
+  `0.4.0`. Do **not** manufacture a `v0.5.0` tag or loosen
+  `release.yml`'s owner/tag/ancestry requirements to close #74.
+  The approved version-matched candidate/tag and explicitly authorized
+  nonpublishing `release.yml` dispatch are independent prerequisites.
+  Until upload/readback and maintainer sign-off, parent **#74 remains OPEN /
+  NOT VERIFIED**, regardless of the other passing evidence.
+
 ## Remaining evidence and rollback
 
 The protected-branch integration CI is verified above. The owner-triggered
