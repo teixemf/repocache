@@ -420,3 +420,108 @@ def test_review_invalid_predecoded_json_values_rejected():
 def test_review_false_for_apply_argument_rejected():
     with pytest.raises(InstallInputError):
         validate_install_document(fixture(), for_apply="false")
+
+
+# RC-192-04 follow-up: inverse ancestry and prefix-boundary regression tests.
+
+
+def _reject_both_document_apis(document: dict) -> None:
+    with pytest.raises(InstallInputError):
+        parse_install_bytes(as_bytes(document))
+    with pytest.raises(InstallInputError):
+        validate_install_document(document)
+
+
+@pytest.mark.parametrize("file_path", [
+    "/var/cache/nginx",
+    "/var/log/nginx",
+])
+def test_review_inverse_file_ancestor_of_managed_directory(file_path):
+    document = fixture()
+    document["deployment"]["paths"]["generated_include"] = file_path
+    _reject_both_document_apis(document)
+
+
+@pytest.mark.parametrize("reference", [
+    "file:/var/cache/nginx",
+    "file:/var/log/nginx",
+    "file:/var/lib/repocache",
+])
+def test_review_inverse_trust_ref_ancestor_of_managed_directory(reference):
+    document = fixture()
+    document["repositories"][0]["layout"]["release_key_refs"] = [reference]
+    _reject_both_document_apis(document)
+
+
+def test_review_tls_certificate_file_ancestor_of_private_key():
+    document = fixture()
+    document["deployment"]["tls"]["certificate_file"] = "/etc/repocache/tls"
+    _reject_both_document_apis(document)
+
+
+def test_review_public_trust_ref_file_ancestor_of_tls_private_key():
+    document = fixture()
+    document["repositories"][0]["layout"]["release_key_refs"] = [
+        "file:/etc/repocache/tls"]
+    _reject_both_document_apis(document)
+
+
+def test_review_public_trust_ref_cannot_overlap_tls_certificate():
+    document = fixture()
+    document["repositories"][0]["layout"]["release_key_refs"] = [
+        "file:" + document["deployment"]["tls"]["certificate_file"]]
+    _reject_both_document_apis(document)
+
+
+def test_review_valid_similar_prefix_paths_remain_distinct():
+    document = fixture()
+    # These names look similar but end at different path segment boundaries.
+    document["deployment"]["paths"]["generated_include"] = (
+        "/var/cache/nginx-cache.conf")
+    document["deployment"]["tls"]["certificate_file"] = (
+        "/etc/repocache/tls-archive/cert.pem")
+    document["repositories"][0]["layout"]["release_key_refs"] = [
+        "file:/var/cache/nginx-archive/pub.gpg"]
+    assert parse_install_bytes(as_bytes(document)) == document
+    assert validate_install_document(document) == document
+
+
+def test_review_separate_file_paths_inside_same_parent_are_allowed():
+    document = fixture()
+    document["deployment"]["tls"]["certificate_file"] = (
+        "/etc/repocache/tls/cert.pem")
+    document["deployment"]["tls"]["private_key_file"] = (
+        "/etc/repocache/tls/key.pem")
+    assert parse_install_bytes(as_bytes(document)) == document
+
+
+# RC-192-09: mutation-resistant proof that json.loads uses our bounded
+# pre-conversion integer callback, not a later post-conversion range check.
+
+
+def test_review_integer_token_guard_rejects_before_conversion():
+    token = b"9" * 1000  # Small bounded fixture, well below the 1 MiB input cap.
+    payload = b'{"schema_version":' + token + b"}"
+    # If parse_int=_parse_int is replaced by parse_int=int, _depth() still
+    # rejects the huge integer but with a different, post-conversion error.
+    with pytest.raises(InstallInputError,
+                       match="integer token exceeds signed 64-bit range"):
+        parse_install_bytes(payload)
+
+
+def test_review_parser_calls_preconversion_integer_callback(monkeypatch):
+    from repocache import server_install_v1 as validator
+
+    tokens = []
+    callback = validator._parse_int
+
+    def observe_before_conversion(token: str) -> int:
+        tokens.append(len(token))
+        return callback(token)
+
+    monkeypatch.setattr(validator, "_parse_int", observe_before_conversion)
+    payload = b'{"schema_version":' + b"8" * 1000 + b"}"
+    with pytest.raises(InstallInputError,
+                       match="integer token exceeds signed 64-bit range"):
+        validator.parse_install_bytes(payload)
+    assert tokens == [1000]  # Must fail if json.loads silently switches to int.
