@@ -5,11 +5,8 @@ acceptance, and do not grant authorization to install anything.
 """
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import os
-from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -244,7 +241,7 @@ def test_manager_presence_only_checks_fixed_native_binary(monkeypatch):
         paths.append(path)
         return SimpleNamespace(st_mode=0o100755)
 
-    monkeypatch.setattr(native.os, "stat", stat_stub)
+    monkeypatch.setattr(native, "os", SimpleNamespace(stat=stat_stub))
     assert native._manager_exists("debian") is True
     assert native._manager_exists("almalinux") is True
     assert native._manager_exists("unknown") is None
