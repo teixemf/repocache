@@ -197,9 +197,10 @@ def test_capture_is_local_only_without_mutation_or_subprocess(monkeypatch, tmp_p
     release = tmp_path / "os-release"
     release.write_text(DEBIAN, encoding="utf-8")
     observed_paths = []
+    original_reader = native._read_os_release
     def read_release(path):
         observed_paths.append(path)
-        return native._read_os_release(str(release))
+        return original_reader(str(release))
     monkeypatch.setattr(native, "_read_os_release", read_release)
     monkeypatch.setattr(native, "sys", SimpleNamespace(
         version_info=SimpleNamespace(major=3, minor=13),
