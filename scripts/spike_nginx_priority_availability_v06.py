@@ -174,6 +174,8 @@ def observe(nginx: str, wait_seconds: int, workers: int) -> dict:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 states = list(pool.map(lambda _: fetch(port, "/hot/concurrent"),
                                        range(workers)))
+            if Counter(states) != Counter({"MISS": 1, "HIT": workers - 1}):
+                raise AssertionError("unexpected cache state distribution")
             # Restore a generous quota before verifying origin failure, so the
             # dedicated cached object is unlikely to be under pressure.
             apply("32m", True)
