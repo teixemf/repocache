@@ -101,3 +101,53 @@ The isolated GitHub Actions workflow added to this branch runs the tests in a di
 - **NOT VERIFIED:** final GO / LIMITED GO / NO-GO recommendation and full issue #94 acceptance. The working hypothesis favors native cache-manager limits with explicitly retained zone declarations over custom opaque-cache file deletion, subject to further integration review with #95/#97.
 
 No runtime, release, v0.5.0 integration, production deployment or protected operation is approved by these experiments.
+
+
+## Final research decision proposal (not a maintainer approval)
+
+**Engineering recommendation: NO-GO for a custom multi-level eviction engine in v0.6.0.** Continue ordinary stock-NGINX cache manager configuration through baseline #97, with data-ownership and lifecycle design in #29/#95. Do **not** introduce a privileged sweeper, delete live opaque cache files, fork NGINX, rely on NGINX Plus purging, or infer per-package demand from incomplete metrics. This is a recommendation, not an accepted product change or authority to close #94.
+
+Evidence supporting this engineering decision:
+1. A shared native zone applies its eviction policy across all objects without a repository-class priority guarantee. Separate zones enforce independent `max_size`/`inactive` controls; they do not create a global ordering between retired, low-demand, cold, hot and metadata objects. Per-object native LRU is *recency*, not a proven measure of request frequency, repository demand or metadata value.
+2. With the route removed but the zone still declared, reducing that zone's `max_size` caused native reclamation in disposable Debian 13 experiments. This was **pressure applied explicitly to that zone**, not automatic priority by global free-space level. A finite `inactive` can also expire retained cache data without pressure, so the default-preserve semantics of #95 cannot be claimed from this alone.
+3. With the zone declaration dropped entirely, bytes remained on disk in the observed 40s window, and a controlled private restart/zone reattachment recovered a cached object after the loader ran. While the zone was undeclared, **no automatic pressure-driven reclamation was observed**. Neither this observation nor the upstream docs proves safe unattended reclaim of unmanaged orphan paths.
+4. Both techniques require a correct, explicitly approved ownership model to avoid deleting or exhausting another repository's or a pre-existing NGINX installation's data. #95 safe force-cleanup is a separate, explicitly authorized operation; #94 must not circumvent it.
+
+### Bounded follow-up: object recency, concurrent clients and origin outage
+
+The new self-contained script `scripts/spike_nginx_priority_availability_v06.py` extends the **shared-zone** control only, without introducing any REPOCACHE production logic. It warms eight 48-KiB synthetic package objects in a large native zone, reinforces one hot object's recency, then changes its private zone `max_size` to 128 KiB and records file count/bytes every five seconds. Subsequent HTTP hot/cold status probes are labelled as **intrusive** because a MISS can repopulate objects and change LRU. It performs eight concurrent requests for an identical synthetic object with `proxy_cache_lock on`, checking byte integrity, and then warms a dedicated cached object, turns off only its disposable origin server, and checks whether that object remains readable from NGINX while an uncached request gets HTTP 502. Tests use the initial NGINX package available in the **Debian 13 GitHub Actions userspace container**, run as UID 65534 and never modify system or production config.
+
+~~~bash
+# Rootless disposable environment, NGINX already packaged:
+python3 -m unittest discover -s tests -p 'test_nginx_priority_availability_v06.py' -v
+python3 scripts/spike_nginx_priority_availability_v06.py --wait-seconds 15 --workers 8
+~~~
+
+This is **not** true ENOSPC, a full package-manager failover, a concurrency stress test of NGINX's cache-file lifecycle, or a test of APT/DNF signed metadata. All those original criteria remain **NOT VERIFIED**. GitHub Actions job results, object observations and request statuses must be inspected **at the new exact PR HEAD**, not inferred from test creation. AlmaLinux 10 SELinux enforcing was unavailable in GitHub Actions; the optional job must continue to preflight and skip with `NOT VERIFIED` rather than attempt an unsupported test.
+
+### Operational cost and design comparison
+
+| Property | Native shared-zone control | Native per-repo paths/zones | Custom ranking engine |
+| --- | --- | --- | --- |
+| Additional per-zone shared-memory allocation | One zone; lab requests 1 MiB of shared keys memory | N zones; lab requests 1 MiB **per** zone (100 zones => 100 MiB nominal reserved zone declarations, not measured RSS) | Additional service/runtime state; not implemented |
+| Max-size / inactive | One shared LRU/expiry policy | Separate LRU/expiry; no global cross-zone ranking | Would need object ownership, trustworthy per-object demand and locking |
+| Retired data without exposure | Still competes with active entries | Keep unexposed zone managed, or drop it leaving unmanaged files | Requires protected ownership-aware cleanup |
+| Configuration/maintenance | Low; limited per-repo controls | N paths/zones and related validation/reload/recovery complexity | High; privilege, concurrency and upgrade hazards |
+| Native crash/recovery & SELinux validation | Only scoped synthetic observations available | Only scoped synthetic observations available | None |
+| Per-repo/metadata priority promise | **Not supported by demonstrated control** | Best effort per-zone budgets only | **NOT VERIFIED; unsafe design not justified** |
+
+The memo does **not** endorse a particular lifecycle representation (parked NGINX zone vs removed zone). That design belongs to #18/#28/#29/#95/#97; whichever is chosen must preserve accepted normal-removal/cache-retention semantics and native baseline eviction without pretending undocumented automatic orphan cleanup exists. The final disposition still requires the maintainer's explicit product decision and independent exact-HEAD PR review.
+
+### Acceptance summary for #94 (after preparing decision)
+
+| Original criterion | Status | Basis / blocker |
+| --- | --- | --- |
+| Native study and at least two configuration alternatives | **PASS (bounded design study)** | Documented NGINX behavior plus exact-configuration disposable shared/isolated runs; this does not certify platforms |
+| Multi-level eviction ordering under pressure | **NOT VERIFIED** | Native zone-wide LRU observed; no demonstrated global hierarchy across repos/packages/metadata; new hot/cold probes are intentionally nondeterministic |
+| Normal removed-repo preservation and automatic pressure reclaim | **FAIL for dropped-zone configuration tested** | 40s observation retained 12 unmanaged objects despite other zone activity; cannot demonstrate safe automatic reclaim. Kept-zone can reclaim after independent explicit quota shrink, but may violate unlimited no-removal-deadline behavior |
+| Safety/availability/negative paths, metadata | **NOT VERIFIED** | New concurrency/outage synthetic test is a limited subset; ENOSPC, signed metadata, client failover, hostile dirs and interruption remain untested |
+| Debian 13 and AlmaLinux 10 with SELinux enforcing | **NOT VERIFIED** | Debian container passes targeted studies; Alma enforcing not available in allowed container and no native booted-host test |
+| Cost/performance/operational burden | **NOT VERIFIED (qualitative cost assessed)** | Nominal zone sizes/config complexity explained; measured CPU/RAM/I/O and native scale not executed |
+| Written GO / LIMITED GO / NO-GO outcome | **PASS as documented recommendation only** | Engineering NO-GO recommended, pending explicit maintainer adoption; cannot treat it as accepted policy or close issue |
+
+**Status:** recommendation proposed, review and complete mandatory evidence **NOT VERIFIED**, #94 remains OPEN and PR #188 remains DRAFT. No change to v0.5.0. Changes to acceptance requirements, milestone, merging, production and release all require separate owner permission.
