@@ -227,21 +227,31 @@ def _predecoded_size(document: Any) -> None:
         _reject("install document: decoded object exceeds 1 MiB")
 
 
+def _paths_overlap(first: str, second: str) -> bool:
+    """Detect exact or ancestor collisions at complete path-segment boundaries.
+
+    Both inputs have already passed canonical absolute-path syntax validation.
+    This is lexical only; actual inode, mount and symlink checks belong to the
+    separately authorized host preflight.
+    """
+    return (first == second or first.startswith(second + "/")
+            or second.startswith(first + "/"))
+
+
 def _checked_reference_paths(tls: dict[str, Any],
                              paths: dict[str, Any]) -> set[str]:
-    """Reject statically provable overlaps; real ownership is a later gate."""
+    """Reject static file/file, dir/dir and file/dir namespace collisions."""
     managed_dirs = [paths[name] for name in ("state_root", "cache_root", "log_root")]
     managed_files = [paths["generated_include"], tls["certificate_file"],
                      tls["private_key_file"]]
-    if len(set(managed_files)) != len(managed_files):
-        _reject("deployment: generated and TLS file references collide")
+    for index, path in enumerate(managed_files):
+        if any(_paths_overlap(path, other) for other in managed_files[index + 1:]):
+            _reject("deployment: generated and TLS file references collide")
     for index, directory in enumerate(managed_dirs):
-        if any(other == directory or other.startswith(directory + "/") or
-               directory.startswith(other + "/")
+        if any(_paths_overlap(directory, other)
                for other in managed_dirs[index + 1:]):
             _reject("deployment.paths: overlapping managed directories")
-        if any(path == directory or path.startswith(directory + "/")
-               for path in managed_files):
+        if any(_paths_overlap(path, directory) for path in managed_files):
             _reject("deployment: file reference overlaps managed directory")
     return set(managed_files)
 
@@ -359,10 +369,9 @@ def validate_install_document(document: Any, *, for_apply: bool = False) -> dict
         key_name = "release_key_refs" if repo["kind"] == "apt" else "gpg_key_refs"
         for reference in repo["layout"][key_name]:
             path = reference[5:]  # syntax and scheme checked by _layout()
-            if path == tls["private_key_file"] or path in protected_files - {
-                    tls["certificate_file"]}:
-                _reject("repositories: public trust ref overlaps private or managed file")
-            if any(path == root_path or path.startswith(root_path + "/")
+            if any(_paths_overlap(path, managed) for managed in protected_files):
+                _reject("repositories: public trust ref overlaps managed file")
+            if any(_paths_overlap(path, root_path)
                    for root_path in (paths["state_root"], paths["cache_root"],
                                      paths["log_root"])):
                 _reject("repositories: public trust ref overlaps managed directory")
