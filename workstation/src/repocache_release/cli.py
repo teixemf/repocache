@@ -62,12 +62,34 @@ class SafeParser(argparse.ArgumentParser):
 
 
 
+
+def _wait_unreaped(process: subprocess.Popen, *, deadline: float,
+                   timeout: float) -> None:
+    """Wait for a Linux child to exit without releasing its PID/PGID.
+
+    wait()/poll() reap the process-group leader and permit its numeric ID to
+    be reused before killpg(). WNOWAIT retains the original child identity
+    until group cancellation and the final process.wait() in cleanup.
+    """
+    while True:
+        if os.waitid(os.P_PID, process.pid,
+                     os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        time.sleep(min(0.02, remaining))
+
+
+
 def _terminate_process_group(process: subprocess.Popen) -> None:
     """Cancel only the external tool's private POSIX process group.
 
     No SIGKILL is ever sent to the caller's process group. Descendants which
     deliberately create a new session remain outside this limited guarantee.
     """
+    # Caller must not reap/poll the leader before this signal. Its unreaped
+    # PID pins the process-group identity, preventing unrelated-group reuse.
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -114,7 +136,8 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
                 raise OperatorError("OVERSIZED_RESPONSE",
                                     "Tool output exceeded supported size")
             chunks.append(chunk)
-        process.wait(timeout=max(0, deadline - time.monotonic()))
+        _wait_unreaped(process, deadline=deadline, timeout=timeout)
+        _terminate_process_group(process)
         if process.returncode:
             raise OperatorError("OPERATION_FAILED",
                                 "Git, GitHub or OpenSSL validation failed")
@@ -124,7 +147,8 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
                             "Required local tool unavailable") from exc
     finally:
         if process is not None:
-            _terminate_process_group(process)
+            if process.returncode is None:
+                _terminate_process_group(process)
             if process.stdout is not None:
                 process.stdout.close()
 
@@ -735,12 +759,16 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, close_fds=True,
             start_new_session=True)
-        result = process.wait(timeout=VERIFIER_TIMEOUT)
+        _wait_unreaped(process,
+                       deadline=time.monotonic() + VERIFIER_TIMEOUT,
+                       timeout=VERIFIER_TIMEOUT)
+        _terminate_process_group(process)
+        result = process.returncode
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OperatorError("BUILD_NOT_VERIFIED",
                             "Source rebuild or signed dependency-lock verification failed") from exc
     finally:
-        if process is not None:
+        if process is not None and process.returncode is None:
             _terminate_process_group(process)
     if result:
         raise OperatorError("BUILD_NOT_VERIFIED",
