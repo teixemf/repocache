@@ -5,9 +5,11 @@ installer, privileged helper, repository authorization engine or NGINX renderer.
 """
 from __future__ import annotations
 
+import copy
 import ipaddress
 import json
 import re
+import unicodedata
 from urllib.parse import urlsplit
 from typing import Any
 
@@ -69,7 +71,7 @@ def _string(value: Any, name: str, *, allow_empty: bool = False,
         _reject(f"{name}: invalid Unicode")
     if len(raw) > limit or (not allow_empty and not raw) or value != value.strip():
         _reject(f"{name}: invalid length or whitespace")
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+    if any(unicodedata.category(ch) in ('Cc', 'Cf') for ch in value):
         _reject(f"{name}: control character")
     return value
 
@@ -142,7 +144,7 @@ def _array(value: Any, name: str, validate, low: int = 1,
     return validated
 
 
-def _upstream(value: Any) -> str:
+def _upstream(value: Any) -> tuple[str, int, str]:
     value = _string(value, "upstream.base_url")
     if "\\" in value or "%" in value:
         # No encoded or ambiguous path syntax before an origin policy exists.
@@ -163,10 +165,14 @@ def _upstream(value: Any) -> str:
     path = parsed.path
     if any(ord(ch) < 33 or ord(ch) > 126 for ch in path):
         _reject("upstream.base_url: invalid or unescaped path characters")
-    if (not path.startswith("/") or not path.endswith("/") or "//" in path
-            or any(part in (".", "..") for part in path.split("/")[1:-1])):
+    # Until #28 provides context-specific NGINX escaping, accept only
+    # RFC 3986 unreserved characters and '/' path separators. In particular
+    # reject '$' (NGINX variable expansion), brackets and URI sub-delimiters.
+    if not re.fullmatch(r"/[A-Za-z0-9._~/-]*/", path, re.ASCII):
+        _reject("upstream.base_url: unsupported unescaped path syntax")
+    if ("//" in path or any(part in (".", "..") for part in path.split("/")[1:-1])):
         _reject("upstream.base_url: noncanonical slash-terminated path")
-    return host
+    return host, port if port is not None else 443, path
 
 
 def _layout(kind: str, value: Any) -> None:
@@ -189,13 +195,66 @@ def _layout(kind: str, value: Any) -> None:
         _array(obj["gpg_key_refs"], "layout.gpg_key_refs", _trust_ref)
 
 
+
+def _layout_identity(kind: str, layout: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize only semantically unordered lists, never URL paths/tokens."""
+    result = dict(layout)
+    if kind == "apt":
+        for field in ("suites", "components", "architectures", "release_key_refs"):
+            result[field] = sorted(layout[field])
+    else:
+        result["gpg_key_refs"] = sorted(layout["gpg_key_refs"])
+    return result
+
+
+def _predecoded_size(document: Any) -> None:
+    """The compact UTF-8 representation of an object must fit the 1 MiB cap.
+
+    Whitespace from the original wire input cannot be recovered; byte-input
+    entry points independently enforce the original payload's exact size.
+    """
+    try:
+        size = len(json.dumps(document, ensure_ascii=False, allow_nan=False,
+                              separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
+        _reject("install document: invalid JSON-compatible object")
+    if size > MAX_DOCUMENT_BYTES:
+        _reject("install document: decoded object exceeds 1 MiB")
+
+
+def _checked_reference_paths(tls: dict[str, Any],
+                             paths: dict[str, Any]) -> set[str]:
+    """Reject statically provable overlaps; real ownership is a later gate."""
+    managed_dirs = [paths[name] for name in ("state_root", "cache_root", "log_root")]
+    managed_files = [paths["generated_include"], tls["certificate_file"],
+                     tls["private_key_file"]]
+    if len(set(managed_files)) != len(managed_files):
+        _reject("deployment: generated and TLS file references collide")
+    for index, directory in enumerate(managed_dirs):
+        if any(other == directory or other.startswith(directory + "/") or
+               directory.startswith(other + "/")
+               for other in managed_dirs[index + 1:]):
+            _reject("deployment.paths: overlapping managed directories")
+        if any(path == directory or path.startswith(directory + "/")
+               for path in managed_files):
+            _reject("deployment: file reference overlaps managed directory")
+    return set(managed_files)
+
+
 def validate_install_document(document: Any, *, for_apply: bool = False) -> dict:
     """Validate a decoded document without accessing the filesystem or network.
 
     for_apply enforces the mandatory optimistic-concurrency precondition, but
-    never authorizes or executes an apply.
+    never authorizes or executes an apply. The return value is an independent
+    snapshot, not a privilege-capable or immutable authorization token.
     """
-    _depth(document)
+    if type(for_apply) is not bool:
+        _reject("for_apply: expected Boolean")
+    try:
+        _depth(document)
+    except RecursionError:
+        _reject("install document: nesting exceeds 16 levels")
+    _predecoded_size(document)
     root = _object(document, "root", {"kind", "schema_version", "deployment",
                                       "repositories"}, {"expected_state_generation"})
     if root["kind"] != "repocache.server.install":
@@ -245,6 +304,7 @@ def validate_install_document(document: Any, *, for_apply: bool = False) -> dict
                                  "cache_root", "log_root")]
     if len(set(checked_paths)) != len(checked_paths):
         _reject("deployment.paths: conflicting paths")
+    protected_files = _checked_reference_paths(tls, paths)
     logging = _object(dep["logging"], "deployment.logging",
                       {"retention_days"}, {"metrics_opt_in"})
     _integer(logging["retention_days"], "deployment.logging.retention_days",
@@ -286,11 +346,21 @@ def validate_install_document(document: Any, *, for_apply: bool = False) -> dict
             _reject("repositories[].desired_state: invalid value")
         upstream = _object(repo["upstream"], "repositories[].upstream", {
             "base_url", "allowed_hosts"})
-        hostname = _upstream(upstream["base_url"])
+        hostname, effective_port, url_path = _upstream(upstream["base_url"])
         hosts = _array(upstream["allowed_hosts"], "upstream.allowed_hosts", _host)
         if hostname not in hosts:
             _reject("upstream.allowed_hosts: missing base_url host")
         _layout(repo["kind"], repo["layout"])
+        key_name = "release_key_refs" if repo["kind"] == "apt" else "gpg_key_refs"
+        for reference in repo["layout"][key_name]:
+            path = reference[5:]  # syntax and scheme checked by _layout()
+            if path == tls["private_key_file"] or path in protected_files - {
+                    tls["certificate_file"]}:
+                _reject("repositories: public trust ref overlaps private or managed file")
+            if any(path == root_path or path.startswith(root_path + "/")
+                   for root_path in (paths["state_root"], paths["cache_root"],
+                                     paths["log_root"])):
+                _reject("repositories: public trust ref overlaps managed directory")
         overrides = _object(repo.get("cache_overrides", {}),
                             "repositories[].cache_overrides", set(),
                             {"inactive_seconds", "max_size_bytes"})
@@ -299,13 +369,26 @@ def validate_install_document(document: Any, *, for_apply: bool = False) -> dict
                      1, 2147483647)
         if "max_size_bytes" in overrides:
             _integer(overrides["max_size_bytes"], "cache_overrides.max_size_bytes", 1)
-        # A duplicate canonical upstream+layout is never a distinct repository.
-        identity = json.dumps([repo["kind"], upstream["base_url"].lower(),
-                               repo["layout"]], sort_keys=True, separators=(",", ":"))
+        # HTTPS origin normalizes DNS case and default port. URI path and
+        # repository tokens remain case-sensitive; unordered arrays are sets.
+        identity = json.dumps([repo["kind"], hostname, effective_port, url_path,
+                               _layout_identity(repo["kind"], repo["layout"])],
+                              sort_keys=True, separators=(",", ":"))
         if identity in identities:
             _reject("repositories: duplicate canonical repository identity")
         identities.add(identity)
-    return root
+    return copy.deepcopy(root)
+
+
+def _parse_int(token: str) -> int:
+    """Reject huge JSON integer tokens before invoking arbitrary-size int()."""
+    digits = token.lstrip("-")
+    if len(digits) > 19:
+        _reject("install document: integer token exceeds signed 64-bit range")
+    value = int(token)
+    if not -MAX_INT <= value <= MAX_INT:
+        _reject("install document: integer token exceeds signed 64-bit range")
+    return value
 
 
 def parse_install_bytes(payload: bytes, *, for_apply: bool = False) -> dict:
@@ -316,9 +399,11 @@ def parse_install_bytes(payload: bytes, *, for_apply: bool = False) -> dict:
         _reject("install document: UTF-8 BOM forbidden")
     try:
         data = payload.decode("utf-8", "strict")
-        document = json.loads(data, object_pairs_hook=_pairs,
-                              parse_constant=lambda _v: _reject(
-                                  "install document: nonfinite number"))
+        document = json.loads(
+            data, object_pairs_hook=_pairs, parse_int=_parse_int,
+            parse_float=lambda _v: _reject("install document: float forbidden"),
+            parse_constant=lambda _v: _reject("install document: nonfinite number"),
+        )
     except InstallInputError:
         raise
     except (UnicodeError, json.JSONDecodeError, RecursionError,
@@ -357,6 +442,7 @@ def validate_os_identity(os_release: str, python_version: tuple[int, int]) -> st
             or version.split(".")[0] != target[0]):
         _reject("os-release: supported targets are Debian 13 and AlmaLinux 10")
     if (type(python_version) is not tuple or len(python_version) != 2
+            or any(type(part) is not int for part in python_version)
             or python_version != target[1]):
         _reject("os-release: unsupported distribution system Python")
     return distro
