@@ -49,6 +49,30 @@ class CacheSpikeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.cache_stats(alias)
 
+    def test_stats_reject_symlinked_ancestor(self):
+        """C-01: a non-symlink leaf below a symlink must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external"
+            (external / "removed").mkdir(parents=True)
+            (external / "removed" / "foreign").write_bytes(b"foreign-data")
+            private = root / "private"
+            private.mkdir()
+            (private / "cache").symlink_to(external, target_is_directory=True)
+            selected = private / "cache" / "removed"
+            self.assertFalse(selected.is_symlink())
+            with self.assertRaisesRegex(ValueError, "symlinked cache path"):
+                module.cache_stats(selected)
+            self.assertEqual(
+                module.cache_stats(external / "removed"),
+                {"files": 1, "bytes": len(b"foreign-data")},
+            )
+
+    def test_stats_reject_parent_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "parent traversal"):
+                module.cache_stats(Path(tmp) / "cache" / ".." / "removed")
+
     def test_stats_only_read_selected_sandbox(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
