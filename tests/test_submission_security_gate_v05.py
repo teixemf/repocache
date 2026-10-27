@@ -14,6 +14,7 @@ import subprocess
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,18 @@ def test_ephemeral_https_client_to_local_pending_server(tmp_path, monkeypatch):
     monkeypatch.setattr(client.ssl, "create_default_context",
                         lambda *args, **kwargs: verify_context)
 
+    # Control only the client's nonce generator, not the intake's secrets.
+    # The first two requests use the same nonce for an actual HTTPS replay.
+    nonce_number = 0
+
+    def next_nonce(size):
+        nonlocal nonce_number
+        nonce_number += 1
+        value = 1 if nonce_number <= 2 else nonce_number - 1
+        return value.to_bytes(size, "big")
+
+    monkeypatch.setattr(client, "secrets", SimpleNamespace(token_bytes=next_nonce))
+
     body = {"schema": 1, "os": {"id": "debian", "version": "13"},
             "repositories": [{"type": "apt-list",
                               "url": "https://mirror.example.org/debian/"}]}
@@ -111,11 +124,57 @@ def test_ephemeral_https_client_to_local_pending_server(tmp_path, monkeypatch):
             assert row[0] == "PENDING"
             assert json.loads(row[1])[0]["url"] == "https://mirror.example.org/debian/"
         assert queue.path.stat().st_mode & 0o077 == 0
+
+        # The same signed body and nonce must return the same pending proposal.
+        replayed = client._send_submission(
+            f"https://127.0.0.1:{server.server_address[1]}", body, credential)
+        assert replayed["proposal_id"] == ident
+
+        # The real TLS endpoint must refuse an otherwise well-formed request
+        # signed with the wrong secret, without persisting it.
+        wrong_credential = secret_dir / "wrong.json"
+        wrong_credential.write_text(json.dumps({"key_id": "test", "secret":
+            base64.urlsafe_b64encode(b"d" * 32).decode().rstrip("=")}))
+        wrong_credential.chmod(0o600)
+        with pytest.raises(client.RemoteSubmissionError) as unauthorized:
+            client._send_submission(
+                f"https://127.0.0.1:{server.server_address[1]}",
+                body, wrong_credential)
+        assert unauthorized.value.error_code == "AUTHENTICATION_REQUIRED"
+        assert unauthorized.value.exit_code == 2
+
+        with queue._connect() as db:
+            assert db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 1
+
+        # Nine additional unique valid nonces reach the per-key ten-request
+        # quota. The eleventh must be rejected over TLS, not just by a mock.
+        for _ in range(9):
+            accepted = client._send_submission(
+                f"https://127.0.0.1:{server.server_address[1]}", body, credential)
+            assert accepted["status"] == "pending"
+        with pytest.raises(client.RemoteSubmissionError) as limited:
+            client._send_submission(
+                f"https://127.0.0.1:{server.server_address[1]}", body, credential)
+        assert limited.value.error_code == "RATE_LIMITED"
+        assert limited.value.exit_code == 2
+        with queue._connect() as db:
+            assert db.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 10
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+    # The same real client against the now-closed HTTPS port must fail
+    # predictably, without exposing endpoint details or credential material.
+    with pytest.raises(client.RemoteSubmissionError) as unavailable:
+        client._send_submission(
+            f"https://127.0.0.1:{server.server_address[1]}", body, credential)
+    assert unavailable.value.error_code == "OFFLINE"
+    assert unavailable.value.exit_code == 2
+    for value in (str(credential), "127.0.0.1", "c" * 32,
+                  base64.urlsafe_b64encode(b"c" * 32).decode().rstrip("=")):
+        assert value not in str(unavailable.value)
 
 
 def test_http_duplicate_content_length_is_refused(tmp_path):
