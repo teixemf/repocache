@@ -196,9 +196,10 @@ def test_bounded_read_rejects_invalid_utf8_or_missing(tmp_path):
 def test_capture_is_local_only_without_mutation_or_subprocess(monkeypatch, tmp_path):
     release = tmp_path / "os-release"
     release.write_text(DEBIAN, encoding="utf-8")
-    monkeypatch.setattr(native.sys, "version_info", SimpleNamespace(major=3, minor=13))
-    monkeypatch.setattr(native.sys, "prefix", "/usr")
-    monkeypatch.setattr(native.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(native, "sys", SimpleNamespace(
+        version_info=SimpleNamespace(major=3, minor=13),
+        prefix="/usr", base_prefix="/usr",
+    ))
     monkeypatch.setattr(native.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(native.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(native, "_manager_exists", lambda system: system == "debian")
