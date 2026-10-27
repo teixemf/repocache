@@ -63,13 +63,23 @@ class SafeParser(argparse.ArgumentParser):
 
 
 
+def _require_waitable_children() -> None:
+    """Refuse tools when another SIGCHLD policy can auto-reap their leaders.
+
+    Python subprocess assumes its own child wait semantics; an inherited
+    SIG_IGN or a custom SIGCHLD handler can invalidate the PID/PGID lifetime
+    guarantee required for safe group signaling.
+    """
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise OSError("unsupported SIGCHLD disposition for process cleanup")
+
+
 def _wait_unreaped(process: subprocess.Popen, *, deadline: float,
                    timeout: float) -> None:
-    """Wait for a Linux child to exit without releasing its PID/PGID.
+    """Observe child exit without freeing the private process-group ID.
 
-    wait()/poll() reap the process-group leader and permit its numeric ID to
-    be reused before killpg(). WNOWAIT retains the original child identity
-    until group cancellation and the final process.wait() in cleanup.
+    With the default SIGCHLD disposition and no external child reaper,
+    WNOWAIT pins the original leader until cleanup signals the group.
     """
     while True:
         if os.waitid(os.P_PID, process.pid,
@@ -81,25 +91,36 @@ def _wait_unreaped(process: subprocess.Popen, *, deadline: float,
         time.sleep(min(0.02, remaining))
 
 
+def _terminate_process_group(process: subprocess.Popen) -> bool:
+    """Cancel a verified child group before reaping its leader.
 
-def _terminate_process_group(process: subprocess.Popen) -> None:
-    """Cancel only the external tool's private POSIX process group.
-
-    No SIGKILL is ever sent to the caller's process group. Descendants which
-    deliberately create a new session remain outside this limited guarantee.
+    Never signal a numeric PGID after losing the original waitable child.
+    False means group identity could not be established, so callers must
+    refuse success rather than treating a possibly auto-reaped child as OK.
+    Deliberately detached descendants are outside this limited guarantee.
     """
-    # Caller must not reap/poll the leader before this signal. Its unreaped
-    # PID pins the process-group identity, preventing unrelated-group reuse.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    safe_group = signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL
+    if safe_group:
+        try:
+            os.waitid(os.P_PID, process.pid,
+                      os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            # The leader was reaped elsewhere (or automatically). A reused
+            # numeric PGID must not receive an unrelated SIGKILL.
+            safe_group = False
+        except OSError:
+            safe_group = False
+    if safe_group:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     try:
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        # The group has already been signalled; do not hang the operator.
+        # Do not hang after cancellation or an untrusted child-reap state.
         pass
-
+    return safe_group
 
 
 def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> bytes:
@@ -110,6 +131,7 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
                GH_PROMPT_DISABLED="1", GCM_INTERACTIVE="Never")
     process = None
     try:
+        _require_waitable_children()
         # subprocess.run(capture_output=True) buffers arbitrarily large output
         # before the old MAX_METADATA check. A malformed API/tool response
         # must not exhaust the owner workstation while preparing a release.
@@ -137,7 +159,9 @@ def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> b
                                     "Tool output exceeded supported size")
             chunks.append(chunk)
         _wait_unreaped(process, deadline=deadline, timeout=timeout)
-        _terminate_process_group(process)
+        if not _terminate_process_group(process):
+            raise OperatorError("TOOL_UNAVAILABLE",
+                                "Required local tool unavailable")
         if process.returncode:
             raise OperatorError("OPERATION_FAILED",
                                 "Git, GitHub or OpenSSL validation failed")
@@ -754,6 +778,7 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
     # timed-out verification while remaining in that group.
     process = None
     try:
+        _require_waitable_children()
         process = subprocess.Popen(
             [sys.executable, str(script), str(assets)], cwd=worktree,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -762,7 +787,9 @@ def verify_unsigned(worktree: Path, assets: Path, version: str) -> None:
         _wait_unreaped(process,
                        deadline=time.monotonic() + VERIFIER_TIMEOUT,
                        timeout=VERIFIER_TIMEOUT)
-        _terminate_process_group(process)
+        if not _terminate_process_group(process):
+            raise OperatorError("BUILD_NOT_VERIFIED",
+                                "Source rebuild or signed dependency-lock verification failed")
         result = process.returncode
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OperatorError("BUILD_NOT_VERIFIED",
