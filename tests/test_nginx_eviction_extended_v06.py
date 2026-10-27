@@ -1,5 +1,7 @@
 """Stdlib-only guardrails for the #94 long-observation sandbox."""
 import sys
+import subprocess
+from unittest import mock
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,6 +46,25 @@ class ExtendedEvictionConfigTests(unittest.TestCase):
             snapshot = lab.cache_snapshot(root, "isolated-drop", 10)
             self.assertEqual(snapshot["zones"]["removed"], {"files": 0, "bytes": 0})
             self.assertFalse((root / "cache").exists())
+
+    def test_failed_private_start_reaps_child(self):
+        """Regression S-04: an NGINX listener timeout must not leak a child."""
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            with (mock.patch.object(lab.subprocess, "Popen", return_value=child),
+                  mock.patch.object(lab.base, "wait_for_listener",
+                                    side_effect=TimeoutError("synthetic bind failure"))):
+                with self.assertRaisesRegex(TimeoutError, "synthetic bind failure"):
+                    lab.start_private_master("unused", Path("/tmp/private-test"),
+                                             Path("/tmp/private-test/nginx.conf"),
+                                             object(), 12345)
+            self.assertIsNotNone(child.poll(), "listener failure left child running")
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
 
     def test_unknown_mode_and_stage_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
