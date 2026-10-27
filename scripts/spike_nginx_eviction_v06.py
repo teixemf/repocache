@@ -63,7 +63,11 @@ def cache_stats(directory: Path) -> dict[str, int]:
     for current, dirs, filenames in os.walk(directory, followlinks=False):
         dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
         for name in filenames:
-            info = (Path(current) / name).lstat()
+            try:
+                info = (Path(current) / name).lstat()
+            except FileNotFoundError:
+                # The private NGINX manager can evict between listing and stat.
+                continue
             if stat.S_ISREG(info.st_mode):
                 count += 1
                 size += info.st_size
