@@ -103,6 +103,10 @@ def test_reject_noncanonical_ips_hosts_paths(path, value):
     "http://mirror.example.invalid/debian/",
     "https://user:secret@mirror.example.invalid/debian/",
     "https://127.0.0.1/debian/",
+    "https://127.000.0.1/debian/",
+    "https://0x7f.1/debian/",
+    "https://mirror.example.invalid:/debian/",
+    "https://mirror.example.invalid/deb ian/",
     "https://mirror.example.invalid/debian",
     "https://mirror.example.invalid/a/../b/",
     "https://mirror.example.invalid/a//b/",
@@ -179,6 +183,7 @@ def test_reject_duplicate_keys_in_nested_json_objects():
     b" " * (1024 * 1024 + 1),
     b"\xff",
     b"[" * 30 + b"0" + b"]" * 30,
+    b'{"schema_version":' + b"9" * 6000 + b"}",
 ])
 def test_reject_malformed_oversized_or_deep_documents(payload):
     with pytest.raises(InstallInputError):
