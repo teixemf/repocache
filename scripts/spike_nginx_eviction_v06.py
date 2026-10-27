@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -55,8 +56,18 @@ def available_port() -> int:
 
 
 def cache_stats(directory: Path) -> dict[str, int]:
-    files = [p for p in directory.rglob("*") if p.is_file()] if directory.exists() else []
-    return {"files": len(files), "bytes": sum(p.stat().st_size for p in files)}
+    """Read regular-file size without following links outside a test cache."""
+    if directory.is_symlink():
+        raise ValueError("refusing symlinked cache root")
+    count, size = 0, 0
+    for current, dirs, filenames in os.walk(directory, followlinks=False):
+        dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
+        for name in filenames:
+            info = (Path(current) / name).lstat()
+            if stat.S_ISREG(info.st_mode):
+                count += 1
+                size += info.st_size
+    return {"files": count, "bytes": size}
 
 
 def config(prefix: Path, origin_port: int, proxy_port: int, mode: str, *, removed: bool) -> str:
