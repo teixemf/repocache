@@ -698,7 +698,7 @@ finally:
 def test_abstract_socket_name_cannot_deny_private_state_lock(monkeypatch, tmp_path):
     """External occupation of the previously predictable name is irrelevant."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    name = f"\\0repocache-release:{os.getuid()}:v0.5.0"
+    name = f"\0repocache-release:{os.getuid()}:v0.5.0"
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as occupied:
         occupied.bind(name)
         with release.candidate_lock("v0.5.0"):
@@ -722,7 +722,7 @@ def test_passphrase_pipe_fragmented_valid_input_requires_eof():
         try:
             os.write(writer, b"valid-")
             time.sleep(0.03)
-            os.write(writer, b"secret\\n")
+            os.write(writer, b"secret\n")
         finally:
             os.close(writer)
 
@@ -735,7 +735,7 @@ def test_passphrase_pipe_fragmented_valid_input_requires_eof():
         worker.join(timeout=1)
 
 
-@pytest.mark.parametrize("payload", [b"", b"x\\x00y", b"x\\ry", b"x\\ny", b"x" * 4096 + b"z"])
+@pytest.mark.parametrize("payload", [b"", b"x\x00y", b"x\ry", b"x\ny", b"x" * 4096 + b"z"])
 def test_passphrase_pipe_rejects_invalid_or_oversized_complete_input(payload):
     reader, writer = os.pipe()
     try:
@@ -809,12 +809,6 @@ def test_namespace_isolated_candidate_sharing_same_state_still_serializes(tmp_pa
     if executable is None:
         pytest.skip("util-linux unshare unavailable")
     env = _release_subprocess_env(tmp_path)
-    owner = (
-        "from repocache_release.cli import candidate_lock;"
-        "import sys;"
-        "with candidate_lock('v0.5.0'):\\n"
-        " print('ENTERED',flush=True);sys.stdin.read(1)"
-    )
     # Probe the target namespace feature independently of the lock.
     probe = subprocess.run(
         [executable, "--user", "--map-root-user", "--net", sys.executable,
@@ -823,20 +817,20 @@ def test_namespace_isolated_candidate_sharing_same_state_still_serializes(tmp_pa
         pytest.skip("Unprivileged user/net namespaces not permitted by host")
     first = subprocess.Popen(
         [sys.executable, "-c",
-         "from repocache_release.cli import candidate_lock\\n"
-         "import sys\\n"
-         "with candidate_lock('v0.5.0'):\\n"
+         "from repocache_release.cli import candidate_lock\n"
+         "import sys\n"
+         "with candidate_lock('v0.5.0'):\n"
          " print('ENTERED',flush=True);sys.stdin.read(1)"],
         env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE)
     try:
         assert select.select([first.stdout], [], [], 5)[0]
-        assert first.stdout.readline() == b"ENTERED\\n"
+        assert first.stdout.readline() == b"ENTERED\n"
         candidate = (
-            "from repocache_release.cli import candidate_lock,OperatorError\\n"
-            "try:\\n"
-            " with candidate_lock('v0.5.0'):print('UNSAFE_DOUBLE_ENTRY')\\n"
-            "except OperatorError as exc: print(exc.code)\\n"
+            "from repocache_release.cli import candidate_lock,OperatorError\n"
+            "try:\n"
+            " with candidate_lock('v0.5.0'):print('UNSAFE_DOUBLE_ENTRY')\n"
+            "except OperatorError as exc: print(exc.code)\n"
         )
         contender = subprocess.run(
             [executable, "--user", "--map-root-user", "--net",
