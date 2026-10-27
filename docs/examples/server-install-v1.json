@@ -1,6 +1,7 @@
 {
   "kind": "repocache.server.install",
   "schema_version": 1,
+  "expected_state_generation": 0,
   "deployment": {
     "listen": {
       "bind_address": "127.0.0.1",
