@@ -45,9 +45,9 @@ Local measurements are provisional and still require evidence at the exact publi
 | Separate native paths/zones per repository | Clearer ownership isolation and per-repository limits/inactivity | More shared-memory/configuration overhead; potential unmanaged retained files if zone is removed; no global priority |
 | Custom priority-aware eviction agent | Could potentially rank objects across repositories | Opaque active NGINX file handling, concurrency/recovery, privilege and maintenance risks; not authorized |
 
-**Preliminary recommendation only:** retain native eviction/pressure handling in issue #97 and avoid a custom deleting agent unless separately reviewed evidence demonstrates safe ownership, concurrency and recovery. The final GO / LIMITED GO / NO-GO disposition remains **NOT VERIFIED**. A NO-GO must not waive #95 normal-removal retention or safe explicitly authorized force cleanup.
+**Historical preliminary recommendation (superseded by later decision proposal):** retain native eviction/pressure handling in issue #97 and avoid a custom deleting agent unless separately reviewed evidence demonstrates safe ownership, concurrency and recovery. The final GO / LIMITED GO / NO-GO disposition remains **NOT VERIFIED**. A NO-GO must not waive #95 normal-removal retention or safe explicitly authorized force cleanup.
 
-## Original #94 acceptance matrix
+## Original #94 acceptance matrix — initial snapshot (superseded below)
 
 | Criterion | Status | Missing evidence |
 | --- | --- | --- |
@@ -151,3 +151,28 @@ The memo does **not** endorse a particular lifecycle representation (parked NGIN
 | Written GO / LIMITED GO / NO-GO outcome | **PASS as documented recommendation only** | Engineering NO-GO recommended, pending explicit maintainer adoption; cannot treat it as accepted policy or close issue |
 
 **Status:** recommendation proposed, review and complete mandatory evidence **NOT VERIFIED**, #94 remains OPEN and PR #188 remains DRAFT. No change to v0.5.0. Changes to acceptance requirements, milestone, merging, production and release all require separate owner permission.
+
+## Review-response addendum — 2026-10-27
+
+A separate read-only independent AI-assisted technical assessment reviewed PR #188 at its former HEAD 73fd2e0d112b562ea98098099b6f92ed5fba4794. It recommended NO-GO for a custom multi-level priority engine while classifying the PR as BLOCKED. It is not a formal human GitHub approval, nor an accepted review-criterion substitution or merge authorization. The amended head requires its own independent assessment.
+
+Findings and corrections:
+- S-04 (private subprocess startup): The extended harness now terminates and reaps its newly spawned private NGINX child when listener readiness raises before the caller receives the process. A negative test starts a disposable child, forces a listener timeout, and checks the child exited.
+- F-04 (concurrency): The shared-cache fixture counts origin requests by key and checks the expected eight-client observation (one MISS, seven HITs, one origin request). This is bounded NGINX proxy_cache_lock behavior, not a proof of generalized concurrent eviction or storage safety.
+- S-03 (metrics and symlinks): Synthetic cache statistics now avoid following symlinks, reject a linked cache root and have negative unit coverage. Statistics are read-only; this is not production deletion/cleanup logic.
+- F-03 (timing): The extended harness records the monotonic time from sending the private SIGHUP to the first cache snapshot. The first sample follows retired-route and active-route HTTP checks. Neither file counts nor apparent bytes establish allocated blocks, global free-space recovery or instantaneous eviction latency.
+- F-01 (ordering): Synthetic hot HIT/cold MISS probes modify the recency/access history, and do not prove the requested repository-class or metadata priority hierarchy.
+- F-02 (orphan pressure): The dropped-zone study never applied true global filesystem pressure, ENOSPC or min_free. The unmanaged retained bytes during 40 seconds do not demonstrate an impossible universal reclaim algorithm. However the tested dropped-zone setup provides no identified running NGINX cache manager controlling that orphaned path and is FAIL for the original safe automatic pressure-reclaim requirement *in that tested design*.
+- S-01 (reproducibility): The GitHub Actions image tags and package repositories are mutable. The executed Debian job recorded nginx/1.26.3; immutable container image digests/package snapshots and corresponding provenance are NOT VERIFIED. The package installation phase runs in the disposable container, whereas experiment NGINX refuses UID 0.
+- S-02 (reload/rollback): nginx -t and later route tests are partial private-reload checks, not an atomic NGINX activation/rollback algorithm. Nothing in these scripts is authorized for the server provisioner.
+
+Original #94 acceptance following independent review:
+1. Stock shared/per-zone behavior study: PASS as a bounded research comparison, not full platform validation.
+2. Full priority ordering: NOT VERIFIED.
+3. Default-preserve plus safe automatic reclaim: FAIL for the tested *undeclared-zone* design; no actual global disk-pressure test was performed.
+4. Full negative/concurrency/ENOSPC/recovery/metadata/fallback safety: NOT VERIFIED (small synthetic subsets PASS only).
+5. Debian 13 plus AlmaLinux 10 including native SELinux enforcing: NOT VERIFIED; Alma enforcing was unavailable in the allowed GitHub Actions container and was not exercised or waived.
+6. CPU/RAM/I/O and operational overhead measurement: NOT VERIFIED; qualitative complexity comparison exists.
+7. Written GO/LIMITED GO/NO-GO: PASS only as a documented NO-GO proposal. Adoption and issue closure require separate maintainer decisions.
+
+The NO-GO recommendation leaves #29 storage ownership, #95 normal-removal preservation and safe force-cleanup, and #97 native cache management fully mandatory. Do not infer full issue acceptance, merge readiness or deployment permission from experimental evidence. The earlier 34/34 SUCCESS CI checks and original independent assessment refer to the old HEAD 73fd2e0; amended-head tests must be inspected anew.
