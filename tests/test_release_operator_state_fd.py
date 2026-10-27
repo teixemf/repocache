@@ -5,6 +5,8 @@ These tests never use signing keys, network, GitHub releases or publish APIs.
 from __future__ import annotations
 
 import os
+import select
+import subprocess
 import sys
 from pathlib import Path
 
@@ -605,3 +607,84 @@ def test_candidate_lock_refuses_named_inode_swapped_after_open(monkeypatch, tmp_
             pytest.fail("Detached lock must never protect a candidate")
     assert swapped and caught.value.code == "UNSAFE_STATE"
     assert path.read_bytes() == b"new untrusted lock"
+
+
+def _release_subprocess_env(tmp_path):
+    return dict(os.environ, XDG_STATE_HOME=str(tmp_path),
+                PYTHONPATH=str(ROOT / "workstation/src"))
+
+
+def test_candidate_lock_remains_exclusive_if_name_detached_mid_operation(tmp_path):
+    """Two independent OS processes cannot acquire different same-version locks."""
+    owner_script = """
+import sys
+from repocache_release.cli import candidate_lock, OperatorError
+try:
+    with candidate_lock("v0.5.0"):
+        print("ENTERED", flush=True)
+        sys.stdin.buffer.read(1)
+except OperatorError as exc:
+    print(exc.code, flush=True)
+"""
+    contender_script = """
+from repocache_release.cli import candidate_lock, OperatorError
+try:
+    with candidate_lock("v0.5.0"):
+        print("UNSAFE_DOUBLE_ENTRY", flush=True)
+except OperatorError as exc:
+    print(exc.code, flush=True)
+"""
+    env = _release_subprocess_env(tmp_path)
+    first = subprocess.Popen(
+        [sys.executable, "-c", owner_script], env=env, stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        assert first.stdout is not None and first.stdin is not None
+        assert select.select([first.stdout], [], [], 5)[0], "First lock timed out"
+        assert first.stdout.readline() == b"ENTERED\n", (
+            first.stderr.read() if first.poll() is not None else "No lock acquired")
+        lock = tmp_path / "repocache-release" / "v0.5.0.lock"
+        lock.rename(lock.with_name("detached.lock"))
+        # A replacement pathname has a distinct inode, but B must not enter.
+        lock.write_bytes(b"replacement")
+        second = subprocess.run(
+            [sys.executable, "-c", contender_script], env=env,
+            capture_output=True, timeout=5, check=True)
+        assert second.stdout.strip() == b"BUSY", second.stderr
+        first.stdin.write(b"x")
+        first.stdin.flush()
+        assert first.wait(timeout=5) == 0
+        assert first.stdout.read().strip() == b"UNSAFE_STATE"
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.wait(timeout=5)
+        if first.stdin is not None:
+            first.stdin.close()
+        if first.stdout is not None:
+            first.stdout.close()
+        if first.stderr is not None:
+            first.stderr.close()
+
+
+def test_oversized_passphrase_pipe_refuses_without_waiting_for_writer_close(tmp_path):
+    """4097 bytes are already an error; a second pipe read would deadlock."""
+    script = """
+import os
+from repocache_release.cli import read_passphrase, OperatorError
+reader, writer = os.pipe()
+os.write(writer, b"x" * 4097)
+try:
+    read_passphrase(reader)
+except OperatorError as exc:
+    assert exc.code == "INVALID_SECRET_FD"
+else:
+    raise AssertionError("Oversized secret was accepted")
+finally:
+    os.close(reader)
+    os.close(writer)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=_release_subprocess_env(tmp_path),
+        capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
