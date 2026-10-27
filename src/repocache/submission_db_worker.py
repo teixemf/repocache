@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import pwd
 import select
@@ -27,8 +28,34 @@ SETPRIV = Path("/usr/bin/setpriv")
 SERVICE_USER = "repocache-intake"
 MAX_MESSAGE = 16 * 1024 * 1024
 MAX_BACKUP = 128 * 1024 * 1024
+BACKUP_CHUNK_SIZE = 65536
+MAX_BACKUP_FRAMES = (MAX_BACKUP + BACKUP_CHUNK_SIZE - 1) // BACKUP_CHUNK_SIZE
+BACKUP_TIMEOUT = 120  # Overall deadline; per-message TIMEOUT alone is insufficient.
 MAX_SQL = 8192
 TIMEOUT = 10
+
+
+def _unique_worker_object_pairs(pairs: list[tuple[str, object]]) -> dict:
+    """Reject ambiguous JSON keys at the privileged worker IPC boundary."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_worker_key")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_worker_number(value: str) -> float:
+    """Python's JSON parser otherwise accepts NaN and Infinity tokens."""
+    raise ValueError("nonfinite_worker_number")
+
+
+def _parse_finite_worker_float(value: str) -> float:
+    """Reject JSON exponents that overflow to infinity (e.g. 1e400)."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("nonfinite_worker_number")
+    return parsed
 
 
 class WorkerError(sqlite3.OperationalError):
@@ -75,6 +102,14 @@ def _check_queue(path: Path, uid: int) -> None:
         raise WorkerError("unsafe_worker_queue")
 
 
+def _valid_worker_row(row: object) -> bool:
+    """SQLite result rows contain only JSON-serializable scalar SQL values."""
+    return (isinstance(row, list) and
+            all(type(value) in (str, int, float, type(None)) and
+                (type(value) is not float or math.isfinite(value))
+                for value in row))
+
+
 class WorkerCursor:
     def __init__(self, owner: "WorkerConnection", cursor: int, rowcount: int):
         self.owner = owner
@@ -83,13 +118,24 @@ class WorkerCursor:
 
     def fetchone(self):
         result = self.owner._request({"op": "fetchone", "cursor": self.cursor})
-        row = result.get("row")
-        return tuple(row) if isinstance(row, list) else None
+        # Missing/malformed rows must not masquerade as "not found" in a
+        # privileged approval/reconciliation path.
+        if set(result) != {"ok", "row"}:
+            raise WorkerError("invalid_worker_row")
+        row = result["row"]
+        if row is None:
+            return None
+        if not _valid_worker_row(row):
+            raise WorkerError("invalid_worker_row")
+        return tuple(row)
 
     def fetchall(self):
         result = self.owner._request({"op": "fetchall", "cursor": self.cursor})
-        rows = result.get("rows")
-        if not isinstance(rows, list):
+        if set(result) != {"ok", "rows"}:
+            raise WorkerError("invalid_worker_rows")
+        rows = result["rows"]
+        if not isinstance(rows, list) or any(
+                not _valid_worker_row(row) for row in rows):
             raise WorkerError("invalid_worker_rows")
         return [tuple(row) for row in rows]
 
@@ -147,23 +193,29 @@ class WorkerConnection:
         self._buffer = bytearray()
         self._closed = False
         try:
-            self._request({"op": "ping"})
+            reply = self._request({"op": "ping"})
+            if reply.get("ok") is not True or set(reply) != {"ok"}:
+                raise WorkerError("invalid_worker_ack")
         except BaseException:
             self.close(commit=False, suppress=True)
             raise
 
-    def _recv(self) -> dict:
+    def _recv(self, *, deadline: float | None = None) -> dict:
         if self.process.stdout is None:
             raise WorkerError("worker_pipe_missing")
         fd = self.process.stdout.fileno()
-        deadline = time.monotonic() + TIMEOUT
+        message_deadline = time.monotonic() + TIMEOUT
+        if deadline is not None:
+            message_deadline = min(message_deadline, deadline)
         while b"\n" not in self._buffer:
             if len(self._buffer) > MAX_MESSAGE:
                 raise WorkerError("oversized_worker_response")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise WorkerError("worker_timeout")
-            if not select.select([fd], [], [], remaining)[0]:
+            remaining = message_deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                # A stalled child cannot extend the backup's overall deadline
+                # by entering a fresh TIMEOUT-length pipe read near its end.
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
                 raise WorkerError("worker_timeout")
             chunk = os.read(fd, 65536)
             if not chunk:
@@ -174,14 +226,19 @@ class WorkerConnection:
         if len(line) > MAX_MESSAGE:
             raise WorkerError("oversized_worker_response")
         try:
-            response = json.loads(line.decode("ascii"))
+            response = json.loads(
+                line.decode("ascii"),
+                object_pairs_hook=_unique_worker_object_pairs,
+                parse_constant=_reject_nonfinite_worker_number,
+                parse_float=_parse_finite_worker_float,
+            )
         except (ValueError, UnicodeError, RecursionError) as exc:
             raise WorkerError("invalid_worker_response") from exc
         if not isinstance(response, dict) or response.get("ok") is not True:
             raise WorkerError("worker_operation_failed")
         return response
 
-    def _send(self, request: dict) -> None:
+    def _send(self, request: dict, *, deadline: float | None = None) -> None:
         """Write a bounded request without blocking on an unresponsive child."""
         try:
             raw = json.dumps(request, sort_keys=True, separators=(",", ":"),
@@ -192,13 +249,19 @@ class WorkerConnection:
             raise WorkerError("oversized_worker_request")
         fd = self.process.stdin.fileno()
         view = memoryview(raw)
-        deadline = time.monotonic() + TIMEOUT
+        message_deadline = time.monotonic() + TIMEOUT
+        if deadline is not None:
+            message_deadline = min(message_deadline, deadline)
         while view:
-            remaining = deadline - time.monotonic()
+            remaining = message_deadline - time.monotonic()
             if remaining <= 0:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
                 raise WorkerError("worker_send_timeout")
             try:
                 if not select.select([], [fd], [], remaining)[1]:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise WorkerError("worker_backup_timeout")
                     raise WorkerError("worker_send_timeout")
                 count = os.write(fd, view)
                 if count <= 0:
@@ -220,29 +283,59 @@ class WorkerConnection:
             raise WorkerError("invalid_worker_sql")
         reply = self._request({"op": "execute", "sql": sql,
                                "params": list(parameters)})
-        if type(reply.get("cursor")) is not int or type(reply.get("rowcount")) is not int:
+        if (reply.get("ok") is not True or
+                set(reply) != {"ok", "cursor", "rowcount"} or
+                type(reply["cursor"]) is not int or reply["cursor"] <= 0 or
+                type(reply["rowcount"]) is not int or reply["rowcount"] < -1):
             raise WorkerError("invalid_worker_cursor")
         return WorkerCursor(self, reply["cursor"], reply["rowcount"])
 
     def executescript(self, script: str) -> None:
         if not isinstance(script, str) or len(script) > MAX_SQL:
             raise WorkerError("invalid_worker_sql")
-        self._request({"op": "script", "sql": script})
+        reply = self._request({"op": "script", "sql": script})
+        if reply.get("ok") is not True or set(reply) != {"ok"}:
+            raise WorkerError("invalid_worker_ack")
 
     def backup_file(self, destination: Path) -> None:
         """Stream a consistent SQLite snapshot to a ROOT-PRIVATE staging inode."""
         path = Path(destination)
-        fd = os.open(path, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
+        # A path can be substituted between the caller's mkstemp and this
+        # reopen. Refuse FIFOs without blocking before the inode is checked.
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK |
+                         getattr(os, "O_NOFOLLOW", 0) |
+                         getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            raise WorkerError("unsafe_backup_staging") from exc
         try:
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or
+                    st.st_mode & 0o077 or st.st_nlink != 1 or st.st_size != 0):
                 raise WorkerError("unsafe_backup_staging")
-            self._send({"op": "backup"})
+            # Include request sending in the absolute backup time budget.
+            # A stalled child cannot gain a fresh deadline after _send().
+            deadline = time.monotonic() + BACKUP_TIMEOUT
+            self._send({"op": "backup"}, deadline=deadline)
             total = 0
+            frames = 0
             while True:
-                reply = self._recv()
+                # A compromised or stalled service-UID worker must not keep a
+                # privileged backup open forever by sending tiny/empty frames
+                # just before each per-message timeout expires.
+                if time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
+                reply = self._recv(deadline=deadline)
+                if time.monotonic() >= deadline:
+                    raise WorkerError("worker_backup_timeout")
                 if reply.get("done") is True:
+                    # The unprivileged worker must not smuggle an ignored
+                    # payload or status into an apparently final frame.
+                    if set(reply) != {"ok", "done"}:
+                        raise WorkerError("invalid_backup_terminal")
                     break
+                if set(reply) != {"ok", "chunk"}:
+                    raise WorkerError("invalid_backup_frame")
                 encoded = reply.get("chunk")
                 if not isinstance(encoded, str) or len(encoded) > 131072:
                     raise WorkerError("invalid_backup_chunk")
@@ -250,6 +343,14 @@ class WorkerConnection:
                     data = base64.b64decode(encoded, validate=True)
                 except ValueError as exc:
                     raise WorkerError("invalid_backup_chunk") from exc
+                # The child sends 64 KiB chunks (last chunk may be shorter).
+                # Bound frame count as well as byte count to reject a stream
+                # of arbitrarily many one-byte progress messages.
+                frames += 1
+                if not data or len(data) > BACKUP_CHUNK_SIZE:
+                    raise WorkerError("invalid_backup_chunk")
+                if frames > MAX_BACKUP_FRAMES:
+                    raise WorkerError("too_many_worker_backup_chunks")
                 total += len(data)
                 if total > MAX_BACKUP:
                     raise WorkerError("oversized_worker_backup")
@@ -271,7 +372,9 @@ class WorkerConnection:
         self._closed = True
         error = None
         try:
-            self._request({"op": "commit" if commit else "rollback"})
+            reply = self._request({"op": "commit" if commit else "rollback"})
+            if reply.get("ok") is not True or set(reply) != {"ok"}:
+                raise WorkerError("invalid_worker_ack")
         except (WorkerError, OSError) as exc:
             error = exc
         try:
