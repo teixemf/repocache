@@ -1032,3 +1032,49 @@ def test_verifier_refuses_custom_sigchld_reaper_before_spawn(
         release.verify_unsigned(tmp_path, assets, version)
     assert caught.value.code == "BUILD_NOT_VERIFIED"
     assert not launched
+
+
+def test_group_cleanup_refuses_wait_timeout_as_success(monkeypatch):
+    """A sent SIGKILL never proves child collection actually completed."""
+    signaled = []
+
+    class StuckChild:
+        pid = 12345
+        args = ["synthetic"]
+        returncode = None
+
+        def wait(self, *, timeout):
+            assert timeout == 3
+            raise subprocess.TimeoutExpired(self.args, timeout)
+
+    original_getsignal = release.signal.getsignal
+    monkeypatch.setattr(
+        release.signal, "getsignal",
+        lambda which: (
+            signal.SIG_DFL if which == signal.SIGCHLD
+            else original_getsignal(which)))
+    monkeypatch.setattr(release.os, "waitid",
+                        lambda *args: None)
+    monkeypatch.setattr(release.os, "killpg",
+                        lambda *args: signaled.append(args))
+    assert release._terminate_process_group(StuckChild()) is False
+    assert signaled == [(12345, signal.SIGKILL)]
+
+
+def test_command_refuses_success_if_cleanup_cannot_reap_child(monkeypatch):
+    """A false cleanup result must invalidate otherwise valid tool output."""
+    launched = _local_command_fixture(
+        monkeypatch, 'import sys;sys.stdout.write("ok")')
+    called = []
+
+    def failed_cleanup(process):
+        called.append(process.pid)
+        process.wait(timeout=3)  # Prevent a zombie in this disposable fixture.
+        return False
+
+    monkeypatch.setattr(release, "_terminate_process_group", failed_cleanup)
+    with pytest.raises(release.OperatorError) as caught:
+        release.command(_COMMAND_FIXTURE, timeout=3)
+    assert caught.value.code == "TOOL_UNAVAILABLE"
+    assert len(launched) == 1
+    assert called == [launched[0].pid]
