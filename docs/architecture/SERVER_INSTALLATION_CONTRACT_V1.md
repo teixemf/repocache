@@ -58,56 +58,7 @@ This is the **closed, proposed v1 JSON shape**, including the sample. Every tabl
 - Every string must be UTF-8 valid, nonempty, trimmed and free from control characters; ≤2048 UTF-8 bytes unless narrowed below. A list contains unique, normalized nonempty items (no duplicates after case/semantic canonicalization); lists have at most **32** items unless stated otherwise. Identifiers, filenames and hostnames have the narrower rules below. Reject unknown or missing required fields **recursively**, including conditional per-type `layout`.
 - A **host** is an ASCII DNS name of 1–253 characters, with 1–63-character LDH labels (letters/digits/hyphens), no wildcard, trailing dot, username, port or IPv4/IPv6 literal; normalize case to lowercase for comparison. IP addresses are used only where the separate bind field explicitly permits them. Runtime DNS and destination safety checks remain mandatory. A **path** is an absolute canonical Unix path without NUL, `.`/`..` segments, empty repeated separators, `~` expansion or control characters, and within the verified path namespace. A **key reference** is `file:` followed by such an absolute path to **public** trust material; no embedded PEM, key bytes or arbitrary URI scheme.
 - An **upstream URL** is an HTTPS URL with an ASCII DNS host, no userinfo, query, fragment or backslash, and a slash-terminated canonical path. Reject encoded/unescaped traversal, ambiguity or unsafe IP/redirect resolution; its normalized host **must** appear in `allowed_hosts`. A safe input string/host alone does not prove the eventual NGINX data plane blocks SSRF; #28/#95 must fail closed when supported stock NGINX cannot enforce actual resolved destinations and redirects.
-- A **repository token** (suite, component, architecture, releasever, basearch) is an ASCII 1–64-character string matching `^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}# Server installation and managed repository contract v1 (proposed)
-
-**Primary issue:** [#18](https://github.com/teixemf/repocache/issues/18) · **Target:** v0.6.0 design track  
-**Status:** PROPOSED / DESIGN REVIEW REQUIRED. No installer, schema parser, NGINX generator, privilege helper, migration or production activation is implemented by this document.  
-**Applies to:** Debian 13 (OS Python 3.13) and AlmaLinux 10 (OS Python 3.12), with distribution-provided NGINX.  
-**Example:** [server-install-v1.json](../examples/server-install-v1.json) is deliberately inert and uses invalid example hosts, absent certificate/key references and disabled repositories. It is not a deployable configuration.
-
-## 1. Boundaries and non-goals
-
-The server provisioner has **two independently authorized operations**: installation/update of the authenticated REPOCACHE application, and provisioning of host-owned native infrastructure (NGINX, cache directories, TLS references, service units, logs and optional firewall policy). They must not be conflated with client installation, approval of client requests, or release publication.
-
-- Preserve the existing v0.4.0 **frontend-only, existing-NGINX non-adoption contract** documented in [PRODUCTION_EXISTING_NGINX.md](../PRODUCTION_EXISTING_NGINX.md). Its current `install.sh` is a non-root application installer, not an implicit native infrastructure installer. Never change its behavior as a side effect of accepting this design.
-- The first v0.5.0 signed transition uses the existing owner-authenticated **schema-1 offline-wheelhouse** release profile. This document does **not** switch v0.5.0 to an online, source-only or wheelhouse-free profile. Future online dependencies belong to [#79](https://github.com/teixemf/repocache/issues/79), [#80](https://github.com/teixemf/repocache/issues/80), [#82](https://github.com/teixemf/repocache/issues/82), [#83](https://github.com/teixemf/repocache/issues/83) and [#84](https://github.com/teixemf/repocache/issues/84), with separate release and migration gates.
-- Provision only on **Debian 13 and AlmaLinux 10**. Reject Debian 12, AlmaLinux 9, derivatives, mismatched versions, unknown IDs and unsupported architectures **before package installation or any persistent write**. Running inside a container is not proof of booted systemd/SELinux compatibility.
-- Repository management is the sole operator-facing lifecycle object. NGINX routes, zones, location identifiers and the published catalog are *derived* outputs, never a second user-managed source of truth. Follow the agreed [CLI architecture](CLI_ARCHITECTURE.md); planned `deployment preflight/install/status/verify/rollback`, `config validate/apply` and `repos add/update/...` commands are not claimed to exist.
-- #94 is an **optional, disposable** priority-eviction feasibility experiment. A NO-GO in #94 must not prevent #18/#25/#29/#95/#97 from implementing normal retention, safe default removal and native-NGINX disk-pressure behavior.
-
-### Explicit installer delegation and supported-host matrix
-
-A future **operator-invoked** deployment command/wrapper may orchestrate two separate, audited phases: (1) verify the publisher-authenticated release and prepare an unprivileged REPOCACHE application generation, then (2) **only on a separate explicit infrastructure-install request** dispatch a fixed-purpose privileged native provisioning helper after read-only preflight and reviewed plan. The privileged helper must take validated structured inputs, not shell fragments or commands from the unprivileged runtime. It must not execute downloaded application scripts as root. The existing `install.sh` stays an unprivileged application-only installer and must not call `sudo`, create privileged files, enable NGINX, modify the firewall or launch the native phase automatically. Separate journalling and compensating/recovery procedures are required for the non-atomic native package transaction and the versioned unprivileged application generation.
-
-| Host OS | Native packages | OS Python | Native acceptance boundary |
-| --- | --- | --- | --- |
-| Debian **13** | APT, distribution NGINX | 3.13 | systemd service, NGINX config, TLS/filesystem and APT package/metadata checks on actual target |
-| AlmaLinux **10** | DNF, distribution NGINX | 3.12 | systemd service, NGINX config, RPM metadata/packages **and SELinux enforcing** on actual target |
-| Debian <=12, AlmaLinux <=9, other/derivative/unknown systems | None allowed | Unsupported | Reject before any persistent mutation; no best-effort fallback or automatic OS migration |
-
-## 2. Versioned declarative input and state
-
-The proposed operator configuration is strict UTF-8 JSON with top-level `kind: "repocache.server.install"`, integer `schema_version: 1`, one `deployment` object and a `repositories` array. A mutating apply additionally requires `expected_state_generation`, an optimistic concurrency precondition from protected server state; its value is `0` when no managed state exists. It is not an authorization credential, and must never be derived from the untrusted catalog or request queue. This schema is **separate** from public client discovery catalog schema 1 and publisher-signed release schema 1/2. No current code is asserted to parse this format.
-
-All fields below are proposed **v1 keys**, to be locked only after #18 design review and implementation negotiation with #95/#28/#29/#31. Implementations MUST reject unknown/duplicate JSON keys, unexpected types, trailing data, excessive depth/size, non-normalized identifiers and missing required fields before mutation. Canonical serialization for comparisons/hashes must be specified and tested; do not use an arbitrary user JSON file as an authorization token.
-
-| Input | Meaning / validation |
-| --- | --- |
-| `deployment.listen` | Exact bind IP, DNS hostname and HTTPS port; no public bind or firewall opening without explicit operator selection. |
-| `deployment.tls` | `operator-provided` certificate/private-key **file references**, not PEM content or secrets. Reject missing/unreadable/insecure paths before activation. Never copy key bytes into config/catalog/logs. |
-| `deployment.native_packages.policy` | `explicit-review`: preview required distribution packages and package-manager effects. Actual package changes require the authorized privileged install operation; no silent global Python/pip update. |
-| `deployment.nginx.ownership` | `new-managed-only`; refuse automatic adoption, replacement or service takeover of an unrelated NGINX configuration. An explicit audited migration plan is distinct. |
-| `deployment.paths` | Canonical preflight-checked candidate roots for managed NGINX include, persistent state, cache and logs. Path names are not proof of ownership. |
-| `deployment.firewall.modify` | Default false; true requires a separate privileged plan covering exact service/ports, state and reversibility. |
-| `deployment.logging` | Opt-in metrics and bounded ordinary operational-log retention. Request logs must omit tokens, URL credentials and sensitive query strings. #14/#29 own actual formats/rotation. |
-| `deployment.cache_policy` | Global native NGINX policy with storage-pressure thresholds. Per-repository `cache_overrides` inherit unset global values; unsupported directives/isolation fail closed. |
-| `repositories[].id` | Optional administrator-supplied, strictly validated stable ID; absent means one-time generated ID allocated and persisted by the privileged lifecycle engine. |
-| `repositories[].kind` | Exactly `apt` or `dnf` with a complete, compatible layout descriptor and independently configured metadata-signature trust. |
-| `repositories[].upstream` | Explicit HTTPS base URL and finite exact allowed host list; no credentials, query or fragment. Canonicalization, redirects, DNS/IP safety and TLS validation are mandatory. |
-| `repositories[].desired_state` | `active` or `disabled`. A requested state is not sufficient authorization; activation requires trusted operator authorization or an independently auditable approved request decision. |
-| `repositories[].cache_overrides` | Optional per-repository native inactivity/capacity settings; overrides cannot assume per-repository cache zones exist until #28/#29/#97 validate supported stock-NGINX isolation. |
-
-; reject `.`, `..` or token-to-path interpretation. A **metadata path** is a relative slash-delimited sequence of such tokens (no absolute path, empty segment, query, fragment or traversal). These are input syntax constraints, **not** substitutes for APT/DNF metadata compatibility and signatures.
+- A **repository token** (suite, component, architecture, releasever, basearch) is an ASCII 1–64-character string matching `^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`; reject `.`, `..` or token-to-path interpretation. A **metadata path** is a relative slash-delimited sequence of such tokens (no absolute path, empty segment, query, fragment or traversal). These are input syntax constraints, **not** substitutes for APT/DNF metadata compatibility and signatures.
 
 | Field (path relative to document root) | Required/type | Exact value/validation; omission/default |
 | --- | --- | --- |
@@ -140,56 +91,7 @@ All fields below are proposed **v1 keys**, to be locked only after #18 design re
 | `deployment.cache_policy.disk_pressure` | Required object | Exactly `warning_free_bytes`, `critical_free_bytes`; both required. |
 | `deployment.cache_policy.disk_pressure.warning_free_bytes`, `deployment.cache_policy.disk_pressure.critical_free_bytes` | Required integers | Each positive 1–9223372036854775807; **warning ≥ critical**; effective policy/alert hysteresis implementation belongs to #97. |
 | `repositories` | Required array | 0–500 repository objects. Empty means no **listed** repositories, **not** deletion of existing managed repositories. |
-| `repositories[].id` | Optional string | ASCII `^[a-z][a-z0-9-]{0,47}# Server installation and managed repository contract v1 (proposed)
-
-**Primary issue:** [#18](https://github.com/teixemf/repocache/issues/18) · **Target:** v0.6.0 design track  
-**Status:** PROPOSED / DESIGN REVIEW REQUIRED. No installer, schema parser, NGINX generator, privilege helper, migration or production activation is implemented by this document.  
-**Applies to:** Debian 13 (OS Python 3.13) and AlmaLinux 10 (OS Python 3.12), with distribution-provided NGINX.  
-**Example:** [server-install-v1.json](../examples/server-install-v1.json) is deliberately inert and uses invalid example hosts, absent certificate/key references and disabled repositories. It is not a deployable configuration.
-
-## 1. Boundaries and non-goals
-
-The server provisioner has **two independently authorized operations**: installation/update of the authenticated REPOCACHE application, and provisioning of host-owned native infrastructure (NGINX, cache directories, TLS references, service units, logs and optional firewall policy). They must not be conflated with client installation, approval of client requests, or release publication.
-
-- Preserve the existing v0.4.0 **frontend-only, existing-NGINX non-adoption contract** documented in [PRODUCTION_EXISTING_NGINX.md](../PRODUCTION_EXISTING_NGINX.md). Its current `install.sh` is a non-root application installer, not an implicit native infrastructure installer. Never change its behavior as a side effect of accepting this design.
-- The first v0.5.0 signed transition uses the existing owner-authenticated **schema-1 offline-wheelhouse** release profile. This document does **not** switch v0.5.0 to an online, source-only or wheelhouse-free profile. Future online dependencies belong to [#79](https://github.com/teixemf/repocache/issues/79), [#80](https://github.com/teixemf/repocache/issues/80), [#82](https://github.com/teixemf/repocache/issues/82), [#83](https://github.com/teixemf/repocache/issues/83) and [#84](https://github.com/teixemf/repocache/issues/84), with separate release and migration gates.
-- Provision only on **Debian 13 and AlmaLinux 10**. Reject Debian 12, AlmaLinux 9, derivatives, mismatched versions, unknown IDs and unsupported architectures **before package installation or any persistent write**. Running inside a container is not proof of booted systemd/SELinux compatibility.
-- Repository management is the sole operator-facing lifecycle object. NGINX routes, zones, location identifiers and the published catalog are *derived* outputs, never a second user-managed source of truth. Follow the agreed [CLI architecture](CLI_ARCHITECTURE.md); planned `deployment preflight/install/status/verify/rollback`, `config validate/apply` and `repos add/update/...` commands are not claimed to exist.
-- #94 is an **optional, disposable** priority-eviction feasibility experiment. A NO-GO in #94 must not prevent #18/#25/#29/#95/#97 from implementing normal retention, safe default removal and native-NGINX disk-pressure behavior.
-
-### Explicit installer delegation and supported-host matrix
-
-A future **operator-invoked** deployment command/wrapper may orchestrate two separate, audited phases: (1) verify the publisher-authenticated release and prepare an unprivileged REPOCACHE application generation, then (2) **only on a separate explicit infrastructure-install request** dispatch a fixed-purpose privileged native provisioning helper after read-only preflight and reviewed plan. The privileged helper must take validated structured inputs, not shell fragments or commands from the unprivileged runtime. It must not execute downloaded application scripts as root. The existing `install.sh` stays an unprivileged application-only installer and must not call `sudo`, create privileged files, enable NGINX, modify the firewall or launch the native phase automatically. Separate journalling and compensating/recovery procedures are required for the non-atomic native package transaction and the versioned unprivileged application generation.
-
-| Host OS | Native packages | OS Python | Native acceptance boundary |
-| --- | --- | --- | --- |
-| Debian **13** | APT, distribution NGINX | 3.13 | systemd service, NGINX config, TLS/filesystem and APT package/metadata checks on actual target |
-| AlmaLinux **10** | DNF, distribution NGINX | 3.12 | systemd service, NGINX config, RPM metadata/packages **and SELinux enforcing** on actual target |
-| Debian <=12, AlmaLinux <=9, other/derivative/unknown systems | None allowed | Unsupported | Reject before any persistent mutation; no best-effort fallback or automatic OS migration |
-
-## 2. Versioned declarative input and state
-
-The proposed operator configuration is strict UTF-8 JSON with top-level `kind: "repocache.server.install"`, integer `schema_version: 1`, one `deployment` object and a `repositories` array. A mutating apply additionally requires `expected_state_generation`, an optimistic concurrency precondition from protected server state; its value is `0` when no managed state exists. It is not an authorization credential, and must never be derived from the untrusted catalog or request queue. This schema is **separate** from public client discovery catalog schema 1 and publisher-signed release schema 1/2. No current code is asserted to parse this format.
-
-All fields below are proposed **v1 keys**, to be locked only after #18 design review and implementation negotiation with #95/#28/#29/#31. Implementations MUST reject unknown/duplicate JSON keys, unexpected types, trailing data, excessive depth/size, non-normalized identifiers and missing required fields before mutation. Canonical serialization for comparisons/hashes must be specified and tested; do not use an arbitrary user JSON file as an authorization token.
-
-| Input | Meaning / validation |
-| --- | --- |
-| `deployment.listen` | Exact bind IP, DNS hostname and HTTPS port; no public bind or firewall opening without explicit operator selection. |
-| `deployment.tls` | `operator-provided` certificate/private-key **file references**, not PEM content or secrets. Reject missing/unreadable/insecure paths before activation. Never copy key bytes into config/catalog/logs. |
-| `deployment.native_packages.policy` | `explicit-review`: preview required distribution packages and package-manager effects. Actual package changes require the authorized privileged install operation; no silent global Python/pip update. |
-| `deployment.nginx.ownership` | `new-managed-only`; refuse automatic adoption, replacement or service takeover of an unrelated NGINX configuration. An explicit audited migration plan is distinct. |
-| `deployment.paths` | Canonical preflight-checked candidate roots for managed NGINX include, persistent state, cache and logs. Path names are not proof of ownership. |
-| `deployment.firewall.modify` | Default false; true requires a separate privileged plan covering exact service/ports, state and reversibility. |
-| `deployment.logging` | Opt-in metrics and bounded ordinary operational-log retention. Request logs must omit tokens, URL credentials and sensitive query strings. #14/#29 own actual formats/rotation. |
-| `deployment.cache_policy` | Global native NGINX policy with storage-pressure thresholds. Per-repository `cache_overrides` inherit unset global values; unsupported directives/isolation fail closed. |
-| `repositories[].id` | Optional administrator-supplied, strictly validated stable ID; absent means one-time generated ID allocated and persisted by the privileged lifecycle engine. |
-| `repositories[].kind` | Exactly `apt` or `dnf` with a complete, compatible layout descriptor and independently configured metadata-signature trust. |
-| `repositories[].upstream` | Explicit HTTPS base URL and finite exact allowed host list; no credentials, query or fragment. Canonicalization, redirects, DNS/IP safety and TLS validation are mandatory. |
-| `repositories[].desired_state` | `active` or `disabled`. A requested state is not sufficient authorization; activation requires trusted operator authorization or an independently auditable approved request decision. |
-| `repositories[].cache_overrides` | Optional per-repository native inactivity/capacity settings; overrides cannot assume per-repository cache zones exist until #28/#29/#97 validate supported stock-NGINX isolation. |
-
-; a missing ID permits one-time CSPRNG allocation or an exact trusted canonical-identity match. |
+| `repositories[].id` | Optional string | ASCII `^[a-z][a-z0-9-]{0,47}$`; a missing ID permits one-time CSPRNG allocation or an exact trusted canonical-identity match. |
 | `repositories[].kind` | Required string | Exactly `apt` or `dnf`; selects one disjoint, strict `layout` shape. |
 | `repositories[].desired_state` | Required string | Exactly `active` or `disabled`; **desired**, not observed or proof of authorization. |
 | `repositories[].upstream` | Required object | Exactly `base_url`, `allowed_hosts`; both required. |
