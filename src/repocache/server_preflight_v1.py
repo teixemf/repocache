@@ -196,15 +196,15 @@ def _manager_exists(system: str | None) -> bool | None:
     return stat.S_ISREG(info.st_mode) and bool(info.st_mode & 0o111)
 
 
-def capture_native_host_facts(*, os_release_path: str = "/etc/os-release") -> NativeHostFacts:
-    """Collect minimal read-only facts from the current process and host.
+def capture_native_host_facts() -> NativeHostFacts:
+    """Read only the fixed host OS identity, never a caller-provided path.
 
-    The path override exists only for isolated fixtures. Do not pass it from
-    unauthenticated deployment JSON or treat observations as permission.
+    This API deliberately accepts no path override from deployment data.
+    Unit tests inject observations through the pure assess_native_host API.
     """
     try:
-        release_text = _read_os_release(os_release_path)
-    except (OSError, UnicodeError) as exc:
+        release_text = _read_os_release("/etc/os-release")
+    except (OSError, UnicodeError):
         raise InstallInputError("native preflight: OS identity unreadable") from None
 
     py_ver = (sys.version_info.major, sys.version_info.minor)
