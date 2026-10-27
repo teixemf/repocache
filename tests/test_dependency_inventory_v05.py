@@ -73,9 +73,9 @@ def _parse_legacy_lock(path: Path) -> dict[str, tuple[str, str]]:
 # pyproject: numeric releases and comparison operators only. Unsupported syntax
 # (markers, extras, direct refs, pre-releases, ~=, wildcards) requires review.
 REQUIREMENT = re.compile(
-    r"([A-Za-z][A-Za-z0-9_-]*)((?:(?:<=|>=|==|!=|<|>)\d+(?:\.\d+){0,2})(?:,(?:<=|>=|==|!=|<|>)\d+(?:\.\d+){0,2})*)\\Z"
+    r"([A-Za-z][A-Za-z0-9_-]*)((?:(?:<=|>=|==|!=|<|>)\d+(?:\.\d+){0,2})(?:,(?:<=|>=|==|!=|<|>)\d+(?:\.\d+){0,2})*)\Z"
 )
-SPECIFIER = re.compile(r"(<=|>=|==|!=|<|>)(\d+(?:\.\d+){0,2})\\Z")
+SPECIFIER = re.compile(r"(<=|>=|==|!=|<|>)(\d+(?:\.\d+){0,2})\Z")
 
 
 def _parse_direct_requirement(value: str) -> tuple[str, tuple[tuple[str, tuple[int, ...]], ...]]:
