@@ -56,9 +56,16 @@ def available_port() -> int:
 
 
 def cache_stats(directory: Path) -> dict[str, int]:
-    """Read regular-file size without following links outside a test cache."""
-    if directory.is_symlink():
-        raise ValueError("refusing symlinked cache root")
+    """Measure the private cache without traversing symlinked path components.
+
+    The ancestor check is a bounded, read-only sandbox guard, not a
+    race-proof filesystem ownership validator for production cleanup.
+    """
+    if ".." in directory.parts:
+        raise ValueError("refusing parent traversal in cache path")
+    absolute = directory.absolute()  # Deliberately does NOT resolve symlinks.
+    if any(part.is_symlink() for part in (absolute, *absolute.parents)):
+        raise ValueError("refusing symlinked cache path component")
     count, size = 0, 0
     for current, dirs, filenames in os.walk(directory, followlinks=False):
         dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
