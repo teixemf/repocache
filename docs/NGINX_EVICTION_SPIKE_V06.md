@@ -176,3 +176,13 @@ Original #94 acceptance following independent review:
 7. Written GO/LIMITED GO/NO-GO: PASS only as a documented NO-GO proposal. Adoption and issue closure require separate maintainer decisions.
 
 The NO-GO recommendation leaves #29 storage ownership, #95 normal-removal preservation and safe force-cleanup, and #97 native cache management fully mandatory. Do not infer full issue acceptance, merge readiness or deployment permission from experimental evidence. The earlier 34/34 SUCCESS CI checks and original independent assessment refer to the old HEAD 73fd2e0; amended-head tests must be inspected anew.
+
+### Follow-up assessment C-01 — 2026-10-27
+
+A second, independently commissioned read-only assessment of former HEAD `cab49fcc89211a98832968824d423a89d3cf8cde` found that the read-only `cache_stats()` guard rejected a symlink in the final cache path only, but could traverse a symlinked **parent**. The reviewed fix walks every lexical component of the absolute selected path without resolving links, fails closed if any existing component is a symlink, and rejects explicit `..` path traversal. The negative test constructs a symlinked intermediate `cache` directory leading to an external directory containing a synthetic file, and checks that the measurement refuses to traverse it. The original final-component and internal-symlink tests are retained.
+
+This is a **bounded research-only check**. Checking ancestry before `os.walk()` is subject to time-of-check/time-of-use races if another actor can mutate directory entries. A real production cleanup or security-enforced ownership boundary requires descriptor-relative no-follow traversal and independent review; neither is implemented or authorized here. No file deletion is performed.
+
+The separate review also identified C-02: ephemeral loopback-port allocation and HTTP 404 readiness probes cannot cryptographically bind the listener to the spawned process. This is a **LOW, outstanding measurement-confidence limitation** in a disposable, unprivileged sandbox; the experiment checks for premature NGINX exit, but does not claim socket ownership attestation. No changes to system or production NGINX are authorized.
+
+All original issue #94 criteria remain at the same level: **2 PASS / 1 FAIL (tested dropped-zone reclamation) / 4 NOT VERIFIED**. Any CI result recorded before these changes applies only to its historical HEAD, not the newly amended source. No review waiver, merge, issue closure or architecture decision has been made.
