@@ -196,6 +196,7 @@ def observe(nginx: str, wait_seconds: int, workers: int) -> dict:
                     "post_pressure_probe_states": probes,
                     "concurrent_requests": workers,
                     "concurrent_cache_states": dict(Counter(states)),
+                    "concurrent_origin_requests": origin.request_counts["/hot/concurrent"],
                     "origin_outage": {"cached": offline_hit, "uncached_http": uncached_code},
                     "notes": "All content synthetic; probe mutates LRU; no hard ordering guarantee"}
         finally:
