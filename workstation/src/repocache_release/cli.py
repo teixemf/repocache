@@ -118,9 +118,9 @@ def _terminate_process_group(process: subprocess.Popen) -> bool:
     try:
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        # Do not hang after cancellation or an untrusted child-reap state.
-        pass
-    return safe_group
+        # A bounded but incomplete reap is not successful process cleanup.
+        return False
+    return safe_group and process.returncode is not None
 
 
 def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> bytes:
