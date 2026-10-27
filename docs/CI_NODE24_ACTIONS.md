@@ -22,16 +22,21 @@ at each currently pinned commit:
 The current checked-in refs are 40-hex commit SHAs, not mutable version tags.
 Each pinned action manifest was fetched from the corresponding official
 `actions/*` repository by commit SHA and declares `node24`. Earlier upstream
-review evidence for the original pins is in PR #116; subsequently updated
-pins require renewed release-note and transitive-change review before parent
-#74 can be marked fully accepted. Sources:
+review evidence for the original pins is in PR #116. The 2026-10-27
+checkpoint below verifies the subsequently upgraded checkout/download pins,
+including security-sensitive upstream source and transitive release notes.
+This scoped upstream review is **PASS**; an exhaustive byte-for-byte audit of
+bundled JavaScript dependencies was not performed and is not claimed.
+Parent #74 still requires an actual `release.yml` rehearsal and final
+maintainer acceptance. Sources:
 `https://github.com/actions/<action>/releases` and
 `https://raw.githubusercontent.com/actions/<action>/<sha>/action.yml`.
 Dependabot proposal/review remains owned by #81; no automatic merge is permitted.
 
 The official Node.js 24 actions require **Actions Runner v2.327.1 or newer**.
-GitHub-hosted `ubuntu-latest` is used for all current workflows. Self-hosted
-runners are not automatically supported; their versions must be checked first.
+All current workflows use GitHub-hosted Ubuntu runners, with the
+`ubuntu-latest` and `ubuntu-24.04` labels. Self-hosted runners are not
+automatically supported; their versions must be checked first.
 Do not use floating `@v*` refs. Review new SHA pins and transitive action
 changes before any update.
 
@@ -73,7 +78,10 @@ changes before any update.
 
 ## Protected-main integration verification (2026-10-25)
 
-This is an evidence checkpoint for parent #74, **not** a close-out decision.
+This is a **historical 2026-10-25** evidence checkpoint for parent #74,
+**not** a close-out decision. Its dated SHA and acceptance results are
+retained for provenance; current results are reconciled in the 2026-10-27
+checkpoint below.
 
 - PR [#116](https://github.com/teixemf/repocache/pull/116) was merged
   on 2026-10-23 at exact protected-main integration SHA
@@ -108,8 +116,8 @@ This is an evidence checkpoint for parent #74, **not** a close-out decision.
 | Acceptance area | State | Evidence or outstanding proof |
 | --- | --- | --- |
 | Current official actions use full-SHA Node24 pins | **PASS** (manifest inspection) | Current exact `checkout`, `setup-python`, `upload-artifact`, `download-artifact` manifests declare `node24`; SHA contract is source-controlled in `tests/test_actions_node24_contract.py`. |
-| Vet every upstream action transition and security-sensitive transitive release change | **NOT VERIFIED** | Refresh review for newer checkout v7.0.1 and download-artifact v8.0.2; check their release notes and relevant behavior against #116 review. |
-| Preserve permissions, credentials, offline signing and publication separation | **PASS** (current `release.yml` inspection) / **NOT VERIFIED** (whole-repo final review) | The release workflow still has `contents: read`, `persist-credentials: false`, actor/tag/ancestry gates, and unsigned artifact upload only; final complete diff and reviews remain required. |
+| Vet every upstream action transition and security-sensitive transitive release change | **PASS — reviewed 2026-10-27** | The original 2026-10-25 state was NOT VERIFIED; see the later upstream source/release-note review for checkout v7.0.1 and download-artifact v8.0.2. No byte-for-byte upstream JS bundle audit claimed. |
+| Preserve permissions, credentials, offline signing and publication separation | **PASS — scoped source review 2026-10-27** | The initial 2026-10-25 whole-repo review was NOT VERIFIED. The later checkpoint inventories all 19 workflows and confirms the privileged metadata-only PR policy, credential handling and unsigned release boundary; PR-specific review/merge still separate. |
 | Nine original required contexts on the protected integration commit | **PASS** | Exact merged SHA `f2d480828279bd7a2220bf6048227f2b0f573a01`, 9/9 success; current `main` SHA `9e213d7beb6534181e3ff418a890c5fdf2db2017`, 9/9 success (11/11 total checks). |
 | Real `release.yml` Node24 artifact upload and independent readback on a safe approved candidate | **NOT VERIFIED — BLOCKER** | No post-2026-10-23 owner `Release bundle` dispatch found; require an approved version-matched tag, successful upload step, downloadable archive, checksum and source-SHA reconciliation. |
 | Document runner 2.327.1+ and offline signing/rollback boundaries | **PASS** (documented) | Runner and manual-release limits below; no native self-hosted runner claim. |
@@ -204,7 +212,7 @@ container actions* is not exercised by these credential-nonpersisting jobs.
   `integration/v0.5.0=806d93975aff641b27e87ece5a69e1ec0d97d35f`,
   **9/9 SUCCESS** after the separately authorized #190 merge.
   These are exact-revision CI checks, not a real official release dispatch.
-- Read the 18 current `.github/workflows/*.yml` files: first-party JS
+- Read the 19 current `.github/workflows/*.yml` files on protected `main=6bb02c824c8d0c7c1ddb860a4b9fd13f7a861000`: first-party JS
   actions use pinned SHA refs; untrusted `pull_request` test jobs remain
   `contents: read`. The separately scoped `label-colors.yml` sync has
   `issues: write` only on `push` or `workflow_dispatch`; the privileged
@@ -217,10 +225,16 @@ container actions* is not exercised by these credential-nonpersisting jobs.
   the successful short-lived `tests.yml` Node 24 uploader rehearsal proves
   the original criterion requiring the real `release.yml` `assemble` job,
   `unsigned-release-candidate` artifact readback and source-SHA verification.
-- The open documentation PR #179 was still based on an older main commit
-  when this checkpoint was written. Its **new HEAD CI/review is NOT VERIFIED**
-  after editing this file. Keep it draft; do not merge without exact-HEAD
-  review, owner acceptance and separate merge authorization.
+- Before the corrections prompted by independent review, PR #179 HEAD
+  `00e02fc8c19e3e5c19167efa4478ce73dd225d5d` completed **30/30 SUCCESS**
+  on [checks for that exact SHA](https://github.com/teixemf/repocache/commit/00e02fc8c19e3e5c19167efa4478ce73dd225d5d/checks), including the
+  nine required contexts and milestone check. Actual [Tests run #40480822625](https://github.com/teixemf/repocache/actions/runs/40480822625)
+  logs showed 1,365 main pytest PASS, 69 CLI PASS, 27 pre-signing PASS and
+  106 release-security PASS per Python interpreter, runner 2.338.0. These
+  are **historical HEAD-specific checks**, not reusable for a subsequent
+  documentation correction or branch reconciliation. The revised PR HEAD
+  must complete its own required CI, then undergo new exact-HEAD review,
+  maintainer acceptance and separate merge authorization.
 - `pyproject.toml` on the protected v0.5.0 integration branch still says
   `0.4.0`. Do **not** manufacture a `v0.5.0` tag or loosen
   `release.yml`'s owner/tag/ancestry requirements to close #74.
@@ -231,10 +245,11 @@ container actions* is not exercised by these credential-nonpersisting jobs.
 
 ## Remaining evidence and rollback
 
-The protected-branch integration CI is verified above. The owner-triggered
-post-migration release-workflow artifact readback, latest upstream security
-review and final maintainer sign-off remain **NOT VERIFIED**. These cannot
-be waived by a static contract test or a successful older `v0.4.0` run.
+Protected-branch CI and the scoped upstream Node24 security/release-note
+review are **PASS**, as documented above. The post-migration official
+`release.yml` artifact upload/readback and final PR/maintainer acceptance
+remain **NOT VERIFIED**. These cannot be waived by a static contract test,
+the `tests.yml` rehearsal or the older `v0.4.0` workflow run.
 
 If an official action update fails before publication, revert the
 migration PR with a separately reviewed revert, rerun the nine required
