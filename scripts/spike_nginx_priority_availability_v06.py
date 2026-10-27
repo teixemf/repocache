@@ -176,6 +176,8 @@ def observe(nginx: str, wait_seconds: int, workers: int) -> dict:
                                        range(workers)))
             if Counter(states) != Counter({"MISS": 1, "HIT": workers - 1}):
                 raise AssertionError("unexpected cache state distribution")
+            if origin.request_counts["/hot/concurrent"] != 1:
+                raise AssertionError("expected one fixture upstream fetch")
             # Restore a generous quota before verifying origin failure, so the
             # dedicated cached object is unlikely to be under pressure.
             apply("32m", True)
