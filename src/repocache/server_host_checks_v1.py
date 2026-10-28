@@ -15,7 +15,7 @@ from typing import Literal
 from repocache.server_install_v1 import validate_install_document
 from repocache.server_preflight_v1 import (
     NativeHostFacts, NativePreflightReport, PreflightCheck, PreflightStatus,
-    assess_native_host, capture_native_host_facts,
+    assess_native_host, capture_native_host_facts, _PROBE_CODES,
 )
 
 # All paths below are fixed, local, diagnostic paths. Configuration-derived
@@ -113,7 +113,16 @@ def _safe_existing_ancestor(path: str) -> tuple[str | None, str]:
         return None, "UNSAFE_STORAGE_PATH"
     current = "/"
     last_directory = "/"
-    for index, part in enumerate(parts):
+    # Root is also an ancestor: do not assume its metadata is trustworthy.
+    try:
+        root_info = os.lstat(current)
+    except OSError:
+        return None, "STORAGE_PATH_ACCESS_UNVERIFIED"
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        return None, "UNSAFE_STORAGE_PATH"
+    if root_info.st_mode & (stat.S_IWOTH | stat.S_IWGRP):
+        return None, "UNSAFE_WRITABLE_PATH"
+    for part in parts:
         current = os.path.join(current, part)
         try:
             info = os.lstat(current)
@@ -388,76 +397,6 @@ def _capture_host_probes(system: str, spec: HostInspectionSpec) -> HostProbeResu
     )
     return HostProbeResults(checks)
 
-
-_PROBE_CODES: dict[str, dict[str, PreflightStatus]] = {
-    "tls_reference_files": {
-        "TLS_REFERENCE_PARENT_UNSAFE": PreflightStatus.FAIL,
-        "TLS_REFERENCE_NONREGULAR": PreflightStatus.FAIL,
-        "TLS_REFERENCE_WRITABLE_BY_OTHERS": PreflightStatus.FAIL,
-        "TLS_PRIVATE_KEY_WORLD_READABLE": PreflightStatus.FAIL,
-        "TLS_REFERENCE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "TLS_REFERENCE_FILE_MISSING": PreflightStatus.NOT_VERIFIED,
-        "TLS_REFERENCE_SYMLINK_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "TLS_PRIVATE_KEY_GROUP_TRUST_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "TLS_REFERENCE_MODES_OBSERVED_ONLY": PreflightStatus.NOT_VERIFIED,
-    },
-    "native_package_binaries": {
-        "REQUIRED_NATIVE_EXECUTABLE_MISSING": PreflightStatus.FAIL,
-        "NATIVE_EXECUTABLE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "REQUIRED_NATIVE_EXECUTABLES_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "storage_path_safety": {
-        "STORAGE_PATH_UNSAFE_OR_CONFLICTING": PreflightStatus.FAIL,
-        "STORAGE_PATH_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "STORAGE_OWNERSHIP_MANIFEST_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-    },
-    "storage_free_space": {
-        "STORAGE_CAPACITY_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "STORAGE_SPACE_BELOW_CRITICAL_THRESHOLD": PreflightStatus.FAIL,
-        "STATE_OR_LOG_SPACE_EXHAUSTED": PreflightStatus.FAIL,
-        "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "FILESYSTEM_INODES_LOW_HEADROOM_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "FILESYSTEM_INODES_EXHAUSTED": PreflightStatus.FAIL,
-        "CACHE_SPACE_BELOW_WARNING_THRESHOLD": PreflightStatus.NOT_VERIFIED,
-        "STORAGE_MOUNT_OR_POLICY_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "CURRENT_STORAGE_SPACE_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "listen_port_conflicts": {
-        "HTTPS_PORT_ALREADY_LISTENING": PreflightStatus.FAIL,
-        "LISTEN_PORT_INVENTORY_INCOMPLETE": PreflightStatus.NOT_VERIFIED,
-        "HTTPS_PORT_NOT_OBSERVED_IN_PROC_SNAPSHOT": PreflightStatus.PASS,
-    },
-    "nginx_native_binary": {
-        "NGINX_EXECUTABLE_MISSING": PreflightStatus.FAIL,
-        "NGINX_EXECUTABLE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "NGINX_EXECUTABLE_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "nginx_managed_include_collision": {
-        "NGINX_INCLUDE_PARENT_UNSAFE": PreflightStatus.FAIL,
-        "NGINX_INCLUDE_PARENT_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "EXISTING_INCLUDE_REQUIRES_OWNERSHIP_PROOF": PreflightStatus.FAIL,
-        "MANAGED_INCLUDE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "NEW_MANAGED_INCLUDE_NOT_PRESENT": PreflightStatus.PASS,
-    },
-    "systemd_binary": {
-        "SYSTEMD_CLIENT_MISSING": PreflightStatus.FAIL,
-        "SYSTEMD_CLIENT_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "SYSTEMD_CLIENT_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "systemd_pid1_observation": {
-        "SYSTEMD_PID1_NOT_VERIFIED": PreflightStatus.NOT_VERIFIED,
-        "SYSTEMD_PID1_OBSERVED_ONLY": PreflightStatus.PASS,
-        "SYSTEMD_NATIVE_PID1_NOT_OBSERVED": PreflightStatus.FAIL,
-    },
-    "selinux_kernel_mode": {
-        "SELINUX_KERNEL_MODE_UNAVAILABLE": PreflightStatus.NOT_VERIFIED,
-        "DEBIAN_SELINUX_MODE_NOT_REQUIRED": PreflightStatus.NOT_VERIFIED,
-        "SELINUX_ENFORCING_KERNEL_OBSERVED_ONLY": PreflightStatus.PASS,
-        "ALMALINUX_SELINUX_NOT_ENFORCING": PreflightStatus.FAIL,
-        "DEBIAN_SELINUX_PERMISSIVE_OBSERVED": PreflightStatus.NOT_VERIFIED,
-        "SELINUX_KERNEL_MODE_UNRECOGNIZED": PreflightStatus.NOT_VERIFIED,
-    },
-}
 
 
 def assess_deployment_host(
