@@ -192,17 +192,21 @@ _TCP_HEADER = ("sl", "local_address", "rem_address", "st", "tx_queue",
                "timeout", "inode")
 # Linux include/net/tcp_states.h: 01..0C, including TCP_NEW_SYN_RECV.
 _TCP_STATES = frozenset(range(1, 0x0D))
+# Linux /proc/net/tcp6 spells this IPv6 column 'remote_address',
+# unlike the IPv4 'rem_address'. Treat the families independently.
+_TCP6_HEADER = _TCP_HEADER[:2] + ("remote_address",) + _TCP_HEADER[3:]
 
 
-def _parse_tcp_listeners(raw: bytes) -> set[int]:
-    """Extract kernel LISTEN ports only; fail closed on malformed records."""
+def _parse_tcp_listeners(raw: bytes, *, ipv6: bool = False) -> set[int]:
+    """Extract kernel LISTEN ports, validating the observed address family."""
     try:
         lines = raw.decode("ascii", "strict").splitlines()
     except UnicodeError as exc:
         raise ValueError("invalid proc net input") from exc
     # Require the complete, ordered common procfs header; optional trailing
     # kernel columns remain compatible with newer distributions.
-    if not lines or tuple(lines[0].split()[:len(_TCP_HEADER)]) != _TCP_HEADER:
+    expected = _TCP6_HEADER if ipv6 else _TCP_HEADER
+    if not lines or tuple(lines[0].split()[:len(expected)]) != expected:
         raise ValueError("invalid proc net header")
     ports: set[int] = set()
     for line in lines[1:]:
@@ -233,7 +237,9 @@ def _port_check(spec: HostInspectionSpec) -> PreflightCheck:
     incomplete = False
     for file in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
-            ports.update(_parse_tcp_listeners(_read_fixed(file, _MAX_PROC_BYTES)))
+            ports.update(_parse_tcp_listeners(
+                _read_fixed(file, _MAX_PROC_BYTES), ipv6=file.endswith("tcp6"),
+            ))
         except (OSError, ValueError):
             incomplete = True
     if spec.https_port in ports:

@@ -49,12 +49,27 @@ def proc(*ports):
     return ("\n".join(lines)+"\n").encode()
 
 
+def proc6(*ports):
+    """Independent realistic Linux tcp6 snapshot, with a 128-bit local address."""
+    lines = ["  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"]
+    for i, (port, state) in enumerate(ports):
+        lines.append(
+            f" {i}: 00000000000000000000000001000000:{port:04X} "
+            f"00000000000000000000000000000000:0000 {state} "
+            "00000000:00000000 00:00000000 00000000 0 0 10000 1"
+        )
+    return ("\n".join(lines) + "\n").encode()
+
+
 def test_kernel_port_snapshot_busy_free_and_other_states(monkeypatch):
-    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes: proc((4443,"0A")) if path.endswith("/tcp") else proc())
+    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes:
+                        proc((4443, "0A")) if path.endswith("/tcp") else proc6())
     assert host._port_check(spec()).status is PreflightStatus.FAIL
-    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes: proc((4443,"01")))
+    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes:
+                        proc((4443, "01")) if path.endswith("/tcp") else proc6())
     assert host._port_check(spec()).status is PreflightStatus.PASS
-    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes: proc((4444,"0A")))
+    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes:
+                        proc((4444, "0A")) if path.endswith("/tcp") else proc6())
     assert host._port_check(spec()).status is PreflightStatus.PASS
 
 
@@ -64,7 +79,8 @@ def test_ipv6_listener_and_partial_kernel_visibility_fail_closed(monkeypatch):
         return proc()
     monkeypatch.setattr(host, "_read_fixed", partial)
     assert host._port_check(spec()).status is PreflightStatus.NOT_VERIFIED
-    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes: proc((4443,"0A")) if path.endswith("tcp6") else proc())
+    monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes:
+                        proc6((4443, "0A")) if path.endswith("tcp6") else proc())
     assert host._port_check(spec()).status is PreflightStatus.FAIL
     monkeypatch.setattr(host, "_read_fixed", lambda path, maxbytes: b"garbage")
     assert host._port_check(spec()).status is PreflightStatus.NOT_VERIFIED
@@ -330,7 +346,8 @@ def test_full_readonly_probe_orchestration_with_isolated_os_paths(monkeypatch, t
                         lambda path: (path, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"))
     monkeypatch.setattr(host, "_executable_at", lambda path: True)
     monkeypatch.setattr(host, "_read_fixed",
-                        lambda path, limit: proc() if path.startswith("/proc/net/tcp")
+                        lambda path, limit: proc6() if path.endswith("/tcp6")
+                        else proc() if path == "/proc/net/tcp"
                         else b"systemd\n" if path == "/proc/1/comm" else b"1\n")
     monkeypatch.setattr(host.os, "statvfs", lambda path: SimpleNamespace(
         f_bavail=100000, f_frsize=4096, f_favail=100, f_fsid=1
@@ -397,3 +414,55 @@ def test_space_and_inode_policy_boundaries(
     monkeypatch.setattr(host.os, "statvfs", statvfs)
     result = byname(host._storage_checks(spec()), "storage_free_space")
     assert (result.status, result.code) == (expected, code)
+
+def test_actual_tcp6_header_and_ipv6_listener_are_supported(monkeypatch):
+    assert host._parse_tcp_listeners(proc6(), ipv6=True) == set()
+    assert host._parse_tcp_listeners(proc6((4443, "0A")), ipv6=True) == {4443}
+    assert host._parse_tcp_listeners(proc6((4443, "0a")), ipv6=True) == {4443}
+    assert host._parse_tcp_listeners(proc6((4443, "01")), ipv6=True) == set()
+
+    # Independent per-family fixtures: IPv6-only LISTEN must report a
+    # verified conflict rather than an incomplete snapshot.
+    monkeypatch.setattr(host, "_read_fixed", lambda path, limit:
+                        proc6((4443, "0A")) if path.endswith("/tcp6") else proc())
+    result = host._port_check(spec())
+    assert (result.status, result.code) == (
+        PreflightStatus.FAIL, "HTTPS_PORT_ALREADY_LISTENING",
+    )
+
+    monkeypatch.setattr(host, "_read_fixed", lambda path, limit:
+                        proc6() if path.endswith("/tcp6") else proc())
+    result = host._port_check(spec())
+    assert (result.status, result.code) == (
+        PreflightStatus.PASS, "HTTPS_PORT_NOT_OBSERVED_IN_PROC_SNAPSHOT",
+    )
+
+
+def test_proc_header_family_mismatch_and_malformed_ipv6_are_unverified(monkeypatch):
+    # The two kernel tables have different spellings; a schema mismatch
+    # must never be accepted by accidentally parsing the wrong family.
+    with pytest.raises(ValueError):
+        host._parse_tcp_listeners(proc6((4443, "0A")), ipv6=False)
+    with pytest.raises(ValueError):
+        host._parse_tcp_listeners(proc((4443, "0A")), ipv6=True)
+    with pytest.raises(ValueError):
+        host._parse_tcp_listeners(proc6((4443, "FF")), ipv6=True)
+    with pytest.raises(ValueError):
+        host._parse_tcp_listeners(proc6().replace(b"remote_address", b"remote_addr"), ipv6=True)
+    with pytest.raises(ValueError):
+        host._parse_tcp_listeners(proc6().replace(b"uid  timeout inode", b"inode timeout uid"), ipv6=True)
+
+    monkeypatch.setattr(host, "_read_fixed", lambda path, limit:
+                        proc6().replace(b"remote_address", b"remote_addr")
+                        if path.endswith("/tcp6") else proc())
+    result = host._port_check(spec())
+    assert (result.status, result.code) == (
+        PreflightStatus.NOT_VERIFIED, "LISTEN_PORT_INVENTORY_INCOMPLETE",
+    )
+
+    def denied(path, limit):
+        if path.endswith("/tcp6"):
+            raise PermissionError("tcp6 inaccessible")
+        return proc()
+    monkeypatch.setattr(host, "_read_fixed", denied)
+    assert host._port_check(spec()).status is PreflightStatus.NOT_VERIFIED
