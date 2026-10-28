@@ -1,0 +1,84 @@
+name: NGINX Eviction Research v0.6
+
+on:
+  pull_request:
+    paths:
+      - scripts/spike_nginx_eviction_v06.py
+      - scripts/spike_nginx_eviction_extended_v06.py
+      - scripts/spike_nginx_priority_availability_v06.py
+      - tests/test_nginx_eviction_spike_v06.py
+      - tests/test_nginx_eviction_extended_v06.py
+      - tests/test_nginx_priority_availability_v06.py
+      - docs/NGINX_EVICTION_SPIKE_V06.md
+      - .github/workflows/nginx-eviction-research-v06.yml
+
+permissions:
+  contents: read
+
+jobs:
+  debian-container:
+    name: Rootless stock NGINX research (debian:trixie-slim)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Execute bounded loopback-only NGINX experiments
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace debian:trixie-slim sh -euc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y --no-install-recommends nginx python3 util-linux >/dev/null
+              setpriv --reuid 65534 --regid 65534 --clear-groups \
+                python3 -m unittest discover -s tests -p "test_nginx_eviction_*v06.py" -v
+              setpriv --reuid 65534 --regid 65534 --clear-groups \
+                python3 -m unittest discover -s tests -p "test_nginx_priority_availability_v06.py" -v
+              for mode in shared isolated-keep isolated-drop; do
+                setpriv --reuid 65534 --regid 65534 --clear-groups \
+                  python3 scripts/spike_nginx_eviction_extended_v06.py \
+                    --mode "$mode" --objects-per-repo 12 \
+                    --observe-seconds 40 --poll-seconds 10 \
+                    --recovery-loader-seconds 70
+              done
+              setpriv --reuid 65534 --regid 65534 --clear-groups \
+                python3 scripts/spike_nginx_priority_availability_v06.py --wait-seconds 15 --workers 8
+            '
+
+  almalinux-selinux-conditional:
+    name: SELinux-enforcing availability (almalinux:10, optional)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Skip unless container itself is actually SELinux enforcing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --network bridge \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            --workdir /workspace almalinux:10 sh -euc '
+              if [ ! -r /sys/fs/selinux/enforce ] || [ "$(cat /sys/fs/selinux/enforce)" != 1 ]; then
+                echo "NOT VERIFIED: no SELinux enforcing in this GitHub Actions container; skipping AlmaLinux test as requested"
+                exit 0
+              fi
+              dnf install -y nginx python3 util-linux libselinux-utils >/dev/null
+              if [ "$(getenforce)" != Enforcing ]; then
+                echo "NOT VERIFIED: SELinux mode not enforcing inside container; no AlmaLinux test"
+                exit 0
+              fi
+              echo "SELinux enforcing observed in container; running scoped user-space lab only"
+              setpriv --reuid 65534 --regid 65534 --clear-groups \
+                python3 -m unittest discover -s tests -p "test_nginx_eviction_*v06.py" -v
+              setpriv --reuid 65534 --regid 65534 --clear-groups \
+                python3 scripts/spike_nginx_eviction_extended_v06.py \
+                  --mode isolated-drop --objects-per-repo 12 \
+                  --observe-seconds 40 --poll-seconds 10 \
+                  --recovery-loader-seconds 70
+            '

@@ -1,0 +1,86 @@
+"""Pure unit guards for the disposable #94 experiment (no NGINX needed)."""
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+import tempfile
+import unittest
+
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "spike_nginx_eviction_v06.py"
+SPEC = spec_from_file_location("nginx_eviction_spike", SCRIPT)
+module = module_from_spec(SPEC)
+SPEC.loader.exec_module(module)
+
+
+class CacheSpikeTests(unittest.TestCase):
+    def test_reproducible_fixture_is_distinct_by_path(self):
+        path = "/hot/package-0.rpm"
+        self.assertEqual(module.payload(path), module.payload(path))
+        self.assertEqual(len(module.payload(path)), module.OBJECT_BYTES)
+        self.assertNotEqual(module.payload(path), module.payload("/cold/package-0.rpm"))
+
+    def test_shared_cache_keeps_manager_zone_after_retiring_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = module.config(Path(tmp), 12345, 12346, "shared", removed=True)
+            self.assertIn("keys_zone=shared:1m", config)
+            self.assertNotIn("location /removed/", config)
+            self.assertIn("location /hot/", config)
+            self.assertIn("127.0.0.1:12346", config)
+
+    def test_isolated_cache_retains_path_without_active_zone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = module.config(Path(tmp), 12345, 12346, "isolated", removed=True)
+            self.assertNotIn("keys_zone=removed:1m", config)
+            self.assertNotIn("location /removed/", config)
+            self.assertIn("keys_zone=cold:1m", config)
+            self.assertIn("keys_zone=hot:1m", config)
+
+    def test_stats_do_not_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            cache.mkdir()
+            outside = root / "outside"
+            outside.write_bytes(b"external")
+            (cache / "linked-file").symlink_to(outside)
+            (cache / "linked-dir").symlink_to(root, target_is_directory=True)
+            (cache / "normal").write_bytes(b"ok")
+            self.assertEqual(module.cache_stats(cache), {"bytes": 2, "files": 1})
+            alias = root / "cache-alias"
+            alias.symlink_to(cache, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                module.cache_stats(alias)
+
+    def test_stats_reject_symlinked_ancestor(self):
+        """C-01: a non-symlink leaf below a symlink must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external"
+            (external / "removed").mkdir(parents=True)
+            (external / "removed" / "foreign").write_bytes(b"foreign-data")
+            private = root / "private"
+            private.mkdir()
+            (private / "cache").symlink_to(external, target_is_directory=True)
+            selected = private / "cache" / "removed"
+            self.assertFalse(selected.is_symlink())
+            with self.assertRaisesRegex(ValueError, "symlinked cache path"):
+                module.cache_stats(selected)
+            self.assertEqual(
+                module.cache_stats(external / "removed"),
+                {"files": 1, "bytes": len(b"foreign-data")},
+            )
+
+    def test_stats_reject_parent_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "parent traversal"):
+                module.cache_stats(Path(tmp) / "cache" / ".." / "removed")
+
+    def test_stats_only_read_selected_sandbox(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(module.cache_stats(root / "missing"), {"bytes": 0, "files": 0})
+            file = root / "sample"
+            file.write_bytes(b"payload")
+            self.assertEqual(module.cache_stats(root), {"bytes": 7, "files": 1})
+
+
+if __name__ == "__main__":
+    unittest.main()
