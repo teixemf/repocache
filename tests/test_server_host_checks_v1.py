@@ -563,3 +563,61 @@ def test_proc_header_family_mismatch_and_malformed_ipv6_are_unverified(monkeypat
         return proc()
     monkeypatch.setattr(host, "_read_fixed", denied)
     assert host._port_check(spec()).status is PreflightStatus.NOT_VERIFIED
+
+
+def test_tls_intermediate_symlink_and_denied_parent_are_distinct(monkeypatch):
+    """RC-196-02: safe virtual ancestors, without world-writable /tmp masking."""
+    import stat
+    from types import SimpleNamespace
+
+    settings = spec(tls_certificate_file="/srv/link/chain.pem",
+                    tls_private_key_file="/srv/keys/private.pem")
+    seen = []
+    def pretend_lstat(path):
+        seen.append(path)
+        if path == "/srv/link":
+            return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)
+        if path == "/srv/keys/private.pem":
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o600)
+        return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
+    monkeypatch.setattr(host, "os", SimpleNamespace(path=os.path, lstat=pretend_lstat))
+    result = host._tls_reference_check(settings)
+    assert (result.status, result.code) == (
+        PreflightStatus.FAIL, "TLS_REFERENCE_PARENT_UNSAFE"
+    )
+    assert seen[:3] == ["/", "/srv", "/srv/link"]
+
+    def denied_lstat(path):
+        if path == "/srv/link":
+            raise PermissionError("inaccessible parent")
+        return pretend_lstat(path)
+    monkeypatch.setattr(host.os, "lstat", denied_lstat)
+    result = host._tls_reference_check(settings)
+    assert (result.status, result.code) == (
+        PreflightStatus.NOT_VERIFIED, "TLS_REFERENCE_ACCESS_UNVERIFIED"
+    )
+
+
+def test_root_directory_metadata_is_checked_and_fail_closed(monkeypatch):
+    """RC-196-03: inspect / before descendants, including unsafe and denied /."""
+    import stat
+    from types import SimpleNamespace
+
+    visited = []
+    def unsafe_root(path):
+        visited.append(path)
+        return SimpleNamespace(st_mode=stat.S_IFDIR | (0o777 if path == "/" else 0o755))
+    monkeypatch.setattr(host, "os", SimpleNamespace(path=os.path, lstat=unsafe_root))
+    directory, code = host._safe_existing_ancestor("/srv/repocache")
+    assert directory is None and code == "UNSAFE_WRITABLE_PATH"
+    assert visited == ["/"]
+
+    def denied_root(path):
+        if path == "/":
+            raise PermissionError("root not accessible")
+        return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
+    monkeypatch.setattr(host.os, "lstat", denied_root)
+    directory, code = host._safe_existing_ancestor("/srv/repocache")
+    assert directory is None and code == "STORAGE_PATH_ACCESS_UNVERIFIED"
+
+
