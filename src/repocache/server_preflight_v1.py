@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
+from typing import Literal, Mapping
 import errno
 import os
 import platform
 import re
 import stat
 import sys
-from typing import Literal
-
 from repocache.server_install_v1 import InstallInputError, validate_os_identity
 
 MAX_OS_RELEASE_BYTES = 16 * 1024
@@ -45,7 +45,17 @@ class PreflightStatus(str, Enum):
     NOT_VERIFIED = "NOT VERIFIED"
 
 
-_BASE_CODES: dict[str, dict[str, PreflightStatus]] = {
+def _freeze_diagnostic_registry(
+    entries: Mapping[str, Mapping[str, PreflightStatus]],
+) -> Mapping[str, Mapping[str, PreflightStatus]]:
+    """Copy and freeze both levels, leaving no mutable backing-map aliases."""
+    return MappingProxyType({
+        name: MappingProxyType(dict(codes))
+        for name, codes in entries.items()
+    })
+
+
+_BASE_CODES: Mapping[str, Mapping[str, PreflightStatus]] = {
     "supported_os_and_python": {
         "SUPPORTED_OS_AND_PYTHON_VERSION": PreflightStatus.PASS,
         "UNSUPPORTED_OS_OR_PYTHON": PreflightStatus.FAIL,
@@ -74,11 +84,12 @@ _BASE_CODES: dict[str, dict[str, PreflightStatus]] = {
 }
 for _name, _code in _NOT_VERIFIED:
     _BASE_CODES.setdefault(_name, {})[_code] = PreflightStatus.NOT_VERIFIED
+_BASE_CODES = _freeze_diagnostic_registry(_BASE_CODES)
 
 
 # Keep the host-probe code/status registry here to avoid circular imports.
 # The host-probe assembly imports this very same mapping.
-_PROBE_CODES: dict[str, dict[str, PreflightStatus]] = {
+_PROBE_CODES: Mapping[str, Mapping[str, PreflightStatus]] = {
     "tls_reference_files": {
         "TLS_REFERENCE_PARENT_UNSAFE": PreflightStatus.FAIL,
         "TLS_REFERENCE_NONREGULAR": PreflightStatus.FAIL,
@@ -147,8 +158,9 @@ _PROBE_CODES: dict[str, dict[str, PreflightStatus]] = {
         "SELINUX_KERNEL_MODE_UNRECOGNIZED": PreflightStatus.NOT_VERIFIED,
     },
 }
+_PROBE_CODES = _freeze_diagnostic_registry(_PROBE_CODES)
 
-_REPORT_CHECK_CODES: dict[str, dict[str, PreflightStatus]] = {
+_REPORT_CHECK_CODES: Mapping[str, Mapping[str, PreflightStatus]] = {
     name: dict(codes) for name, codes in _BASE_CODES.items()
 }
 for _name, _codes in _PROBE_CODES.items():
@@ -157,6 +169,19 @@ for _name, _codes in _PROBE_CODES.items():
         if _code in _target and _target[_code] is not _status:
             raise RuntimeError("conflicting native preflight diagnostic mapping")
         _target[_code] = _status
+
+# Diagnostic codes are globally unambiguous; fail on future accidental reuse.
+_seen_code_names: dict[str, str] = {}
+for _check_name, _codes in _REPORT_CHECK_CODES.items():
+    for _code in _codes:
+        if _code in _seen_code_names and _seen_code_names[_code] != _check_name:
+            raise RuntimeError("native preflight diagnostic code reused across checks")
+        _seen_code_names[_code] = _check_name
+
+# Freeze only after assembling the complete registry, copying away mutable
+# construction-time dictionaries and all inner maps. The host module imports
+# the already-frozen probe mapping.
+_REPORT_CHECK_CODES = _freeze_diagnostic_registry(_REPORT_CHECK_CODES)
 
 # Backward-compatible inventory, generated from the authoritative triples.
 _REPORT_CODES = frozenset(
