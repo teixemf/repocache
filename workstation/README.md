@@ -41,6 +41,15 @@ default encrypted PEM path remains
 `~/repocache-signing/repocache-release-private.pem` (owner-only 0600).
 The key is not copied or backed up by the program.
 
+The `status: ready` output means only that the read-only prerequisite
+and signer-path metadata checks passed at that instant. It does **not**
+validate the encrypted private PEM bytes, unlock the key, establish a
+public/private key match, or authorize signing or publication. Missing
+signer files report `signer_missing`; unsafe objects, including dangling
+symlinks, must fail closed as `UNSAFE_SIGNER`. Cryptographic identity and
+actual release acceptance require separately authorized operations and
+owner-workstation evidence.
+
 `candidate prepare` requires exactly one finished, successful and
 owner-triggered release-workflow run for an existing version tag reachable
 from reviewed `main`. It obtains the unsigned GitHub Actions artifact

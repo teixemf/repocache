@@ -823,6 +823,16 @@ def test_environment_refuses_existing_signer_symlink(monkeypatch, tmp_path):
     assert target.read_bytes() == b"fixture-only"
 
 
+def test_environment_refuses_dangling_signer_symlink(monkeypatch, tmp_path):
+    signer, _ = _mock_environment_readonly(monkeypatch, tmp_path)
+    signer.parent.mkdir(mode=0o700)
+    signer.symlink_to(tmp_path / "nonexistent-private.pem")
+    assert signer.is_symlink() and not signer.exists()
+    with pytest.raises(release.OperatorError) as caught:
+        release.environment()
+    assert caught.value.code == "UNSAFE_SIGNER"
+
+
 def test_environment_rejects_wrong_trust_anchor_before_signer_inspection(
         monkeypatch, tmp_path):
     signer, calls = _mock_environment_readonly(monkeypatch, tmp_path)
