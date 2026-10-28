@@ -597,7 +597,7 @@ def environment() -> dict[str, Any]:
     else:
         if (not stat.S_ISREG(signer_info.st_mode)
                 or signer_info.st_uid != os.getuid()
-                or signer_info.st_mode & 0o077):
+                or stat.S_IMODE(signer_info.st_mode) != 0o600):
             raise OperatorError("UNSAFE_SIGNER", "Signing key must be owner-only mode 0600")
         signer_present = True
     return {"repository": REPO, "public_fingerprint": EXPECTED_FINGERPRINT,

@@ -800,11 +800,12 @@ def test_environment_reports_missing_or_private_signer_without_reading_key(
     assert all("sign" not in command for command in calls)
 
 
-def test_environment_refuses_world_readable_signer(monkeypatch, tmp_path):
+@pytest.mark.parametrize("mode", [0o644, 0o700, 0o400])
+def test_environment_refuses_non_0600_signer_mode(monkeypatch, tmp_path, mode):
     signer, _ = _mock_environment_readonly(monkeypatch, tmp_path)
     signer.parent.mkdir(mode=0o700)
     signer.write_bytes(b"fixture-only")
-    signer.chmod(0o644)
+    signer.chmod(mode)
     with pytest.raises(release.OperatorError) as caught:
         release.environment()
     assert caught.value.code == "UNSAFE_SIGNER"
