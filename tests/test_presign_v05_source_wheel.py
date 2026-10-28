@@ -282,3 +282,24 @@ def test_owner_signer_requires_exact_git_tracked_module_set_before_github(
         signer.validate_candidate_identity(
             root / "repocache-v0.5.0.tar.gz", "a" * 40, "1", "1"
         )
+
+
+@pytest.mark.parametrize("mutation", ["added", "removed", "duplicate"])
+def test_immutable_v04_inventory_drift_refused_before_candidate_read(
+        tmp_path, monkeypatch, mutation):
+    """Never unlock an owner key for an archive rejected by the old updater."""
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
+    checker = importlib.import_module("verify_release_candidate")
+    builder = importlib.import_module("build_release")
+    original = builder.FILES
+    if mutation == "added":
+        changed = original + ("src/repocache/submissions.py",)
+    elif mutation == "removed":
+        changed = original[:-1]
+    else:
+        changed = original + (original[0],)
+    monkeypatch.setattr(builder, "FILES", changed)
+    # No candidate files exist; the independent immutable-layout gate must
+    # reject the source contract *before* trying to read or rebuild assets.
+    with pytest.raises(ValueError, match="immutable v0.4.0 updater"):
+        checker.verify(tmp_path / "no-candidate")
