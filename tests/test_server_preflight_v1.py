@@ -360,3 +360,48 @@ def test_report_direct_construction_rejects_unsanitized_values():
         native.NativePreflightReport([
             native.PreflightCheck("effective_uid", PreflightStatus.PASS, "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),
         ])
+
+
+def test_public_report_rejects_contradictory_duplicate_or_cross_check_codes():
+    """RC-196-01: public construction must not accept a known FAIL as PASS."""
+    good = native.PreflightCheck(
+        "tls_reference_files", PreflightStatus.FAIL, "TLS_PRIVATE_KEY_WORLD_READABLE"
+    )
+    report = native.NativePreflightReport((good,))
+    assert report.has_failures and report.to_dict()["can_install"] is False
+
+    rejected = [
+        (native.PreflightCheck(
+            "tls_reference_files", PreflightStatus.PASS, "TLS_PRIVATE_KEY_WORLD_READABLE"),),
+        (good, good),
+        (good, native.PreflightCheck(
+            "tls_reference_files", PreflightStatus.NOT_VERIFIED,
+            "TLS_REFERENCE_MODES_OBSERVED_ONLY")),
+        (native.PreflightCheck(
+            "effective_uid", PreflightStatus.FAIL, "TLS_PRIVATE_KEY_WORLD_READABLE"),),
+        (native.PreflightCheck(
+            "tls_reference_files", PreflightStatus.FAIL,
+            "TLS_REFERENCE_MODES_OBSERVED_ONLY"),),
+        (native.PreflightCheck(
+            "unregistered_check", PreflightStatus.PASS,
+            "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),),
+    ]
+    for checks in rejected:
+        with pytest.raises(ValueError):
+            native.NativePreflightReport(checks)
+
+
+def test_public_registry_agrees_with_host_probe_codes():
+    """Every legitimate probe triple remains valid at the public boundary."""
+    from repocache import server_host_checks_v1 as host
+    for name, codes in host._PROBE_CODES.items():
+        for code, status in codes.items():
+            report = native.NativePreflightReport((
+                native.PreflightCheck(name, status, code),
+            ))
+            assert report.checks[0].status is status
+            assert not report.authorizes_installation
+    baseline = assess_native_host(facts())
+    assert len({item.name for item in baseline.checks}) == len(baseline.checks)
+
+
