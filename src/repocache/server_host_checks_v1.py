@@ -41,6 +41,8 @@ class HostInspectionSpec:
     cache_root: str
     log_root: str
     generated_include: str
+    tls_certificate_file: str
+    tls_private_key_file: str
     warning_free_bytes: int
     critical_free_bytes: int
 
@@ -334,17 +336,71 @@ def _selinux_check(system: str) -> PreflightCheck:
                   "SELINUX_KERNEL_MODE_UNRECOGNIZED")
 
 
+def _tls_reference_check(spec: HostInspectionSpec) -> PreflightCheck:
+    """Classify TLS reference path/mode observations without opening key bytes.
+
+    Paths came from the strict v1 install document. Even safe-looking modes
+    do not prove trusted ownership, CA chain, hostname, validity or SELinux.
+    """
+    failure: str | None = None
+    uncertain: str | None = None
+    for path, is_key in (
+        (spec.tls_certificate_file, False),
+        (spec.tls_private_key_file, True),
+    ):
+        directory, marker = _safe_existing_ancestor(os.path.dirname(path))
+        if marker.startswith("UNSAFE_"):
+            failure = failure or "TLS_REFERENCE_PARENT_UNSAFE"
+            continue
+        if directory is None or marker != "EXISTING_PATH_OWNERSHIP_UNVERIFIED":
+            uncertain = uncertain or "TLS_REFERENCE_ACCESS_UNVERIFIED"
+            continue
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            uncertain = uncertain or "TLS_REFERENCE_FILE_MISSING"
+            continue
+        except OSError:
+            uncertain = uncertain or "TLS_REFERENCE_ACCESS_UNVERIFIED"
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            uncertain = uncertain or "TLS_REFERENCE_SYMLINK_UNVERIFIED"
+        elif not stat.S_ISREG(info.st_mode):
+            failure = failure or "TLS_REFERENCE_NONREGULAR"
+        elif info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            failure = failure or "TLS_REFERENCE_WRITABLE_BY_OTHERS"
+        elif is_key and info.st_mode & stat.S_IROTH:
+            failure = failure or "TLS_PRIVATE_KEY_WORLD_READABLE"
+        elif is_key and info.st_mode & stat.S_IRGRP:
+            uncertain = uncertain or "TLS_PRIVATE_KEY_GROUP_TRUST_UNVERIFIED"
+    if failure is not None:
+        return _check("tls_reference_files", PreflightStatus.FAIL, failure)
+    return _check("tls_reference_files", PreflightStatus.NOT_VERIFIED,
+                  uncertain or "TLS_REFERENCE_MODES_OBSERVED_ONLY")
+
+
 def _capture_host_probes(system: str, spec: HostInspectionSpec) -> HostProbeResults:
     storage = _storage_checks(spec)
     checks = (
         _package_binary_check(system), *storage,
-        _port_check(spec), *_nginx_checks(spec),
+        _port_check(spec), *_nginx_checks(spec), _tls_reference_check(spec),
         *_systemd_checks(), _selinux_check(system),
     )
     return HostProbeResults(checks)
 
 
 _PROBE_CODES: dict[str, dict[str, PreflightStatus]] = {
+    "tls_reference_files": {
+        "TLS_REFERENCE_PARENT_UNSAFE": PreflightStatus.FAIL,
+        "TLS_REFERENCE_NONREGULAR": PreflightStatus.FAIL,
+        "TLS_REFERENCE_WRITABLE_BY_OTHERS": PreflightStatus.FAIL,
+        "TLS_PRIVATE_KEY_WORLD_READABLE": PreflightStatus.FAIL,
+        "TLS_REFERENCE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
+        "TLS_REFERENCE_FILE_MISSING": PreflightStatus.NOT_VERIFIED,
+        "TLS_REFERENCE_SYMLINK_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
+        "TLS_PRIVATE_KEY_GROUP_TRUST_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
+        "TLS_REFERENCE_MODES_OBSERVED_ONLY": PreflightStatus.NOT_VERIFIED,
+    },
     "native_package_binaries": {
         "REQUIRED_NATIVE_EXECUTABLE_MISSING": PreflightStatus.FAIL,
         "NATIVE_EXECUTABLE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
@@ -460,6 +516,8 @@ def inspect_deployment_host(
         cache_root=settings["paths"]["cache_root"],
         log_root=settings["paths"]["log_root"],
         generated_include=settings["paths"]["generated_include"],
+        tls_certificate_file=settings["tls"]["certificate_file"],
+        tls_private_key_file=settings["tls"]["private_key_file"],
         warning_free_bytes=settings["cache_policy"]["disk_pressure"]["warning_free_bytes"],
         critical_free_bytes=settings["cache_policy"]["disk_pressure"]["critical_free_bytes"],
     )
