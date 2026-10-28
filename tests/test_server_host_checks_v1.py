@@ -20,6 +20,8 @@ def spec(**override):
     base = dict(bind_address="127.0.0.1", https_port=4443, state_root="/var/lib/repocache/server",
                 cache_root="/var/cache/nginx/repocache-managed", log_root="/var/log/nginx/repocache-managed",
                 generated_include="/etc/nginx/conf.d/repocache-managed.conf",
+                tls_certificate_file="/etc/repocache/tls/example-chain.pem",
+                tls_private_key_file="/etc/repocache/tls/example-key.pem",
                 warning_free_bytes=2000, critical_free_bytes=1000)
     base.update(override)
     return host.HostInspectionSpec(**base)
@@ -240,13 +242,18 @@ def test_inspect_uses_strict_validated_document_and_report(monkeypatch):
     monkeypatch.setattr(host,"capture_native_host_facts",lambda:fact())
     seen=[]
     def observe(system,settings):
-        seen.append((system,settings.https_port,settings.generated_include))
+        seen.append((system, settings.https_port, settings.generated_include,
+                     settings.tls_certificate_file, settings.tls_private_key_file))
         return complete_probes(
             listen_port_conflicts=(PreflightStatus.FAIL, "HTTPS_PORT_ALREADY_LISTENING"),
         )
     monkeypatch.setattr(host,"_capture_host_probes",observe)
     result=host.inspect_deployment_host(doc)
-    assert seen == [("debian",443,"/etc/nginx/conf.d/repocache-managed.conf")]
+    assert seen == [(
+        "debian", 443, "/etc/nginx/conf.d/repocache-managed.conf",
+        "/etc/repocache/tls/example-chain.pem",
+        "/etc/repocache/tls/example-key.pem",
+    )]
     assert byname(result.checks,"listen_port_conflicts").status is PreflightStatus.FAIL
     assert not result.authorizes_installation
     assert "example" not in json.dumps(result.to_dict())
@@ -414,6 +421,96 @@ def test_space_and_inode_policy_boundaries(
     monkeypatch.setattr(host.os, "statvfs", statvfs)
     result = byname(host._storage_checks(spec()), "storage_free_space")
     assert (result.status, result.code) == (expected, code)
+
+
+def test_tls_reference_modes_are_observations_never_authorization(tmp_path, monkeypatch):
+    import dataclasses
+    import stat
+    certificate = tmp_path / "chain.pem"
+    private_key = tmp_path / "private.key"
+    certificate.write_bytes(b"fake certificate fixture")
+    private_key.write_bytes(b"test-only private-key fixture")
+    certificate.chmod(0o644)
+    private_key.chmod(0o600)
+    settings = dataclasses.replace(spec(), tls_certificate_file=str(certificate),
+                                   tls_private_key_file=str(private_key))
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (directory, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"),
+    )
+    assert host._tls_reference_check(settings) == host._check(
+        "tls_reference_files", PreflightStatus.NOT_VERIFIED,
+        "TLS_REFERENCE_MODES_OBSERVED_ONLY",
+    )
+    # Even apparently safe modes do not attest owner, key/cert match or trust.
+    observed = complete_probes()
+    report = host.assess_deployment_host(fact(), observed)
+    assert not report.authorizes_installation and not report.all_verified
+    assert "fake certificate" not in json.dumps(report.to_dict())
+    assert str(private_key) not in json.dumps(report.to_dict())
+
+
+def test_tls_reference_unsafe_modes_and_nonregular_files_fail_closed(tmp_path, monkeypatch):
+    import dataclasses
+    certificate = tmp_path / "chain.pem"
+    private_key = tmp_path / "private.key"
+    certificate.write_bytes(b"non-secret example")
+    private_key.write_bytes(b"non-secret example")
+    certificate.chmod(0o644)
+    private_key.chmod(0o600)
+    settings = dataclasses.replace(spec(), tls_certificate_file=str(certificate),
+                                   tls_private_key_file=str(private_key))
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (directory, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"),
+    )
+    private_key.chmod(0o604)
+    result = host._tls_reference_check(settings)
+    assert (result.status, result.code) == (
+        PreflightStatus.FAIL, "TLS_PRIVATE_KEY_WORLD_READABLE",
+    )
+    private_key.chmod(0o600)
+    certificate.chmod(0o664)
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_WRITABLE_BY_OTHERS"
+    certificate.chmod(0o644)
+    private_key.unlink()
+    private_key.mkdir()
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_NONREGULAR"
+
+
+def test_tls_reference_unknown_risks_never_become_pass(tmp_path, monkeypatch):
+    import dataclasses
+    certificate = tmp_path / "chain.pem"
+    private_key = tmp_path / "private.key"
+    certificate.write_bytes(b"fixture")
+    private_key.write_bytes(b"fixture")
+    certificate.chmod(0o644)
+    private_key.chmod(0o640)
+    settings = dataclasses.replace(spec(), tls_certificate_file=str(certificate),
+                                   tls_private_key_file=str(private_key))
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (directory, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"),
+    )
+    check = host._tls_reference_check(settings)
+    assert (check.status, check.code) == (
+        PreflightStatus.NOT_VERIFIED, "TLS_PRIVATE_KEY_GROUP_TRUST_UNVERIFIED",
+    )
+    private_key.unlink()
+    private_key.symlink_to(certificate)
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_SYMLINK_UNVERIFIED"
+    private_key.unlink()
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_FILE_MISSING"
+    private_key.write_bytes(b"fixture")
+    private_key.chmod(0o604)
+    certificate.unlink()
+    assert host._tls_reference_check(settings).code == "TLS_PRIVATE_KEY_WORLD_READABLE"
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (None, "UNSAFE_WRITABLE_PATH"),
+    )
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_PARENT_UNSAFE"
+
 
 def test_actual_tcp6_header_and_ipv6_listener_are_supported(monkeypatch):
     assert host._parse_tcp_listeners(proc6(), ipv6=True) == set()
