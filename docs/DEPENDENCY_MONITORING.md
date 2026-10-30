@@ -5,7 +5,7 @@
 ## Scope and authority
 
 - REPOCACHE retains its Typer/Rich command-line interface and Textual TUI. The v0.4.0 signed release installs its own audited, immutable offline dependency wheelhouse. **Do not** change its files, signatures or acceptance record.
-- `.github/dependabot.yml` checks Python packaging manifests under `/` and SHA-pinned GitHub Actions in `.github/workflows` weekly, on default branch `main`.
+- `.github/dependabot.yml` monitors Python packaging under `/`, reviewed monitoring-only pip manifests under `/deps`, and SHA-pinned GitHub Actions in `.github/workflows` weekly on default branch `main`. The `/deps` manifests do not change installer or release lock inputs.
 - Dependabot version-update PRs are **proposals**, not authorization to upgrade released installations. Reviewers must not enable auto-merge. Do not install unreviewed latest upstream releases in production.
 - Existing `pyproject.toml` declares version **ranges** for Typer/Rich/Textual. The custom `deps/runtime-wheels.lock` and `deps/build-wheels.lock` pin actual v0.4.0 wheels/hashes but are **not guaranteed to be ingested** by GitHub's dependency graph or Dependabot. Neither Dependabot's recognition of the PEP 621 `pyproject.toml` nor the presence of this config proves detection of the exact runtime and transitive packages. A recognized, complete lock for both supported Python targets is designed under [#80](https://github.com/teixemf/repocache/issues/80) and implemented/reconciled before claiming #81 complete.
 - For initial Python version updates, `increase-if-necessary` avoids casually rewriting existing broad version bounds. It may produce **no** update PR when a new stable version already satisfies the current constraints. This is not a substitute for monitoring an exact signed release dependency lock.
@@ -62,6 +62,18 @@ current default-branch result. [PR #87](https://github.com/teixemf/repocache/pul
 has since merged, and [issue #81](https://github.com/teixemf/repocache/issues/81)
 records successful **real** GitHub Dependabot pip and Actions update jobs.
 These are update-job observations, **not** proof of vulnerability-alert coverage.
+
+As of merged [PR #200](https://github.com/teixemf/repocache/pull/200),
+Dependabot also monitors three exact-hash, **monitoring-only** manifests:
+`deps/requirements-debian13-py313.txt`,
+`deps/requirements-almalinux10-py312.txt`, and
+`deps/requirements-build-v05.txt`. These mirror the reviewed legacy
+runtime/build lock tuples, with source-parity regression coverage in
+`tests/test_dependency_graph_manifests_v05.py`. They are **not** release
+installer inputs, a resolved dependency graph, or evidence that GitHub
+actually ingested all direct and transitive packages. Confirm effective
+GitHub ingestion, alert configuration, and the safe advisory test separately
+before accepting parent issue #81.
 
 The read-only regression in `tests/test_dependency_inventory_v05.py`
 checks the current **legacy** source-controlled inventory without changing
