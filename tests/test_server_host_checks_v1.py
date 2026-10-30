@@ -20,6 +20,8 @@ def spec(**override):
     base = dict(bind_address="127.0.0.1", https_port=4443, state_root="/var/lib/repocache/server",
                 cache_root="/var/cache/nginx/repocache-managed", log_root="/var/log/nginx/repocache-managed",
                 generated_include="/etc/nginx/conf.d/repocache-managed.conf",
+                tls_certificate_file="/etc/repocache/tls/example-chain.pem",
+                tls_private_key_file="/etc/repocache/tls/example-key.pem",
                 warning_free_bytes=2000, critical_free_bytes=1000)
     base.update(override)
     return host.HostInspectionSpec(**base)
@@ -240,13 +242,18 @@ def test_inspect_uses_strict_validated_document_and_report(monkeypatch):
     monkeypatch.setattr(host,"capture_native_host_facts",lambda:fact())
     seen=[]
     def observe(system,settings):
-        seen.append((system,settings.https_port,settings.generated_include))
+        seen.append((system, settings.https_port, settings.generated_include,
+                     settings.tls_certificate_file, settings.tls_private_key_file))
         return complete_probes(
             listen_port_conflicts=(PreflightStatus.FAIL, "HTTPS_PORT_ALREADY_LISTENING"),
         )
     monkeypatch.setattr(host,"_capture_host_probes",observe)
     result=host.inspect_deployment_host(doc)
-    assert seen == [("debian",443,"/etc/nginx/conf.d/repocache-managed.conf")]
+    assert seen == [(
+        "debian", 443, "/etc/nginx/conf.d/repocache-managed.conf",
+        "/etc/repocache/tls/example-chain.pem",
+        "/etc/repocache/tls/example-key.pem",
+    )]
     assert byname(result.checks,"listen_port_conflicts").status is PreflightStatus.FAIL
     assert not result.authorizes_installation
     assert "example" not in json.dumps(result.to_dict())
@@ -415,6 +422,96 @@ def test_space_and_inode_policy_boundaries(
     result = byname(host._storage_checks(spec()), "storage_free_space")
     assert (result.status, result.code) == (expected, code)
 
+
+def test_tls_reference_modes_are_observations_never_authorization(tmp_path, monkeypatch):
+    import dataclasses
+    import stat
+    certificate = tmp_path / "chain.pem"
+    private_key = tmp_path / "private.key"
+    certificate.write_bytes(b"fake certificate fixture")
+    private_key.write_bytes(b"test-only private-key fixture")
+    certificate.chmod(0o644)
+    private_key.chmod(0o600)
+    settings = dataclasses.replace(spec(), tls_certificate_file=str(certificate),
+                                   tls_private_key_file=str(private_key))
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (directory, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"),
+    )
+    assert host._tls_reference_check(settings) == host._check(
+        "tls_reference_files", PreflightStatus.NOT_VERIFIED,
+        "TLS_REFERENCE_MODES_OBSERVED_ONLY",
+    )
+    # Even apparently safe modes do not attest owner, key/cert match or trust.
+    observed = complete_probes()
+    report = host.assess_deployment_host(fact(), observed)
+    assert not report.authorizes_installation and not report.all_verified
+    assert "fake certificate" not in json.dumps(report.to_dict())
+    assert str(private_key) not in json.dumps(report.to_dict())
+
+
+def test_tls_reference_unsafe_modes_and_nonregular_files_fail_closed(tmp_path, monkeypatch):
+    import dataclasses
+    certificate = tmp_path / "chain.pem"
+    private_key = tmp_path / "private.key"
+    certificate.write_bytes(b"non-secret example")
+    private_key.write_bytes(b"non-secret example")
+    certificate.chmod(0o644)
+    private_key.chmod(0o600)
+    settings = dataclasses.replace(spec(), tls_certificate_file=str(certificate),
+                                   tls_private_key_file=str(private_key))
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (directory, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"),
+    )
+    private_key.chmod(0o604)
+    result = host._tls_reference_check(settings)
+    assert (result.status, result.code) == (
+        PreflightStatus.FAIL, "TLS_PRIVATE_KEY_WORLD_READABLE",
+    )
+    private_key.chmod(0o600)
+    certificate.chmod(0o664)
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_WRITABLE_BY_OTHERS"
+    certificate.chmod(0o644)
+    private_key.unlink()
+    private_key.mkdir()
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_NONREGULAR"
+
+
+def test_tls_reference_unknown_risks_never_become_pass(tmp_path, monkeypatch):
+    import dataclasses
+    certificate = tmp_path / "chain.pem"
+    private_key = tmp_path / "private.key"
+    certificate.write_bytes(b"fixture")
+    private_key.write_bytes(b"fixture")
+    certificate.chmod(0o644)
+    private_key.chmod(0o640)
+    settings = dataclasses.replace(spec(), tls_certificate_file=str(certificate),
+                                   tls_private_key_file=str(private_key))
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (directory, "EXISTING_PATH_OWNERSHIP_UNVERIFIED"),
+    )
+    check = host._tls_reference_check(settings)
+    assert (check.status, check.code) == (
+        PreflightStatus.NOT_VERIFIED, "TLS_PRIVATE_KEY_GROUP_TRUST_UNVERIFIED",
+    )
+    private_key.unlink()
+    private_key.symlink_to(certificate)
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_SYMLINK_UNVERIFIED"
+    private_key.unlink()
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_FILE_MISSING"
+    private_key.write_bytes(b"fixture")
+    private_key.chmod(0o604)
+    certificate.unlink()
+    assert host._tls_reference_check(settings).code == "TLS_PRIVATE_KEY_WORLD_READABLE"
+    monkeypatch.setattr(
+        host, "_safe_existing_ancestor",
+        lambda directory: (None, "UNSAFE_WRITABLE_PATH"),
+    )
+    assert host._tls_reference_check(settings).code == "TLS_REFERENCE_PARENT_UNSAFE"
+
+
 def test_actual_tcp6_header_and_ipv6_listener_are_supported(monkeypatch):
     assert host._parse_tcp_listeners(proc6(), ipv6=True) == set()
     assert host._parse_tcp_listeners(proc6((4443, "0A")), ipv6=True) == {4443}
@@ -466,3 +563,61 @@ def test_proc_header_family_mismatch_and_malformed_ipv6_are_unverified(monkeypat
         return proc()
     monkeypatch.setattr(host, "_read_fixed", denied)
     assert host._port_check(spec()).status is PreflightStatus.NOT_VERIFIED
+
+
+def test_tls_intermediate_symlink_and_denied_parent_are_distinct(monkeypatch):
+    """RC-196-02: safe virtual ancestors, without world-writable /tmp masking."""
+    import stat
+    from types import SimpleNamespace
+
+    settings = spec(tls_certificate_file="/srv/link/chain.pem",
+                    tls_private_key_file="/srv/keys/private.pem")
+    seen = []
+    def pretend_lstat(path):
+        seen.append(path)
+        if path == "/srv/link":
+            return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)
+        if path == "/srv/keys/private.pem":
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o600)
+        return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
+    monkeypatch.setattr(host, "os", SimpleNamespace(path=os.path, lstat=pretend_lstat))
+    result = host._tls_reference_check(settings)
+    assert (result.status, result.code) == (
+        PreflightStatus.FAIL, "TLS_REFERENCE_PARENT_UNSAFE"
+    )
+    assert seen[:3] == ["/", "/srv", "/srv/link"]
+
+    def denied_lstat(path):
+        if path == "/srv/link":
+            raise PermissionError("inaccessible parent")
+        return pretend_lstat(path)
+    monkeypatch.setattr(host.os, "lstat", denied_lstat)
+    result = host._tls_reference_check(settings)
+    assert (result.status, result.code) == (
+        PreflightStatus.NOT_VERIFIED, "TLS_REFERENCE_ACCESS_UNVERIFIED"
+    )
+
+
+def test_root_directory_metadata_is_checked_and_fail_closed(monkeypatch):
+    """RC-196-03: inspect / before descendants, including unsafe and denied /."""
+    import stat
+    from types import SimpleNamespace
+
+    visited = []
+    def unsafe_root(path):
+        visited.append(path)
+        return SimpleNamespace(st_mode=stat.S_IFDIR | (0o777 if path == "/" else 0o755))
+    monkeypatch.setattr(host, "os", SimpleNamespace(path=os.path, lstat=unsafe_root))
+    directory, code = host._safe_existing_ancestor("/srv/repocache")
+    assert directory is None and code == "UNSAFE_WRITABLE_PATH"
+    assert visited == ["/"]
+
+    def denied_root(path):
+        if path == "/":
+            raise PermissionError("root not accessible")
+        return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755)
+    monkeypatch.setattr(host.os, "lstat", denied_root)
+    directory, code = host._safe_existing_ancestor("/srv/repocache")
+    assert directory is None and code == "STORAGE_PATH_ACCESS_UNVERIFIED"
+
+

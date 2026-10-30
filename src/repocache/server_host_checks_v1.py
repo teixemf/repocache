@@ -15,7 +15,7 @@ from typing import Literal
 from repocache.server_install_v1 import validate_install_document
 from repocache.server_preflight_v1 import (
     NativeHostFacts, NativePreflightReport, PreflightCheck, PreflightStatus,
-    assess_native_host, capture_native_host_facts,
+    assess_native_host, capture_native_host_facts, _PROBE_CODES,
 )
 
 # All paths below are fixed, local, diagnostic paths. Configuration-derived
@@ -41,6 +41,8 @@ class HostInspectionSpec:
     cache_root: str
     log_root: str
     generated_include: str
+    tls_certificate_file: str
+    tls_private_key_file: str
     warning_free_bytes: int
     critical_free_bytes: int
 
@@ -111,7 +113,16 @@ def _safe_existing_ancestor(path: str) -> tuple[str | None, str]:
         return None, "UNSAFE_STORAGE_PATH"
     current = "/"
     last_directory = "/"
-    for index, part in enumerate(parts):
+    # Root is also an ancestor: do not assume its metadata is trustworthy.
+    try:
+        root_info = os.lstat(current)
+    except OSError:
+        return None, "STORAGE_PATH_ACCESS_UNVERIFIED"
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        return None, "UNSAFE_STORAGE_PATH"
+    if root_info.st_mode & (stat.S_IWOTH | stat.S_IWGRP):
+        return None, "UNSAFE_WRITABLE_PATH"
+    for part in parts:
         current = os.path.join(current, part)
         try:
             info = os.lstat(current)
@@ -334,74 +345,58 @@ def _selinux_check(system: str) -> PreflightCheck:
                   "SELINUX_KERNEL_MODE_UNRECOGNIZED")
 
 
+def _tls_reference_check(spec: HostInspectionSpec) -> PreflightCheck:
+    """Classify TLS reference path/mode observations without opening key bytes.
+
+    Paths came from the strict v1 install document. Even safe-looking modes
+    do not prove trusted ownership, CA chain, hostname, validity or SELinux.
+    """
+    failure: str | None = None
+    uncertain: str | None = None
+    for path, is_key in (
+        (spec.tls_certificate_file, False),
+        (spec.tls_private_key_file, True),
+    ):
+        directory, marker = _safe_existing_ancestor(os.path.dirname(path))
+        if marker.startswith("UNSAFE_"):
+            failure = failure or "TLS_REFERENCE_PARENT_UNSAFE"
+            continue
+        if directory is None or marker != "EXISTING_PATH_OWNERSHIP_UNVERIFIED":
+            uncertain = uncertain or "TLS_REFERENCE_ACCESS_UNVERIFIED"
+            continue
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            uncertain = uncertain or "TLS_REFERENCE_FILE_MISSING"
+            continue
+        except OSError:
+            uncertain = uncertain or "TLS_REFERENCE_ACCESS_UNVERIFIED"
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            uncertain = uncertain or "TLS_REFERENCE_SYMLINK_UNVERIFIED"
+        elif not stat.S_ISREG(info.st_mode):
+            failure = failure or "TLS_REFERENCE_NONREGULAR"
+        elif info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            failure = failure or "TLS_REFERENCE_WRITABLE_BY_OTHERS"
+        elif is_key and info.st_mode & stat.S_IROTH:
+            failure = failure or "TLS_PRIVATE_KEY_WORLD_READABLE"
+        elif is_key and info.st_mode & stat.S_IRGRP:
+            uncertain = uncertain or "TLS_PRIVATE_KEY_GROUP_TRUST_UNVERIFIED"
+    if failure is not None:
+        return _check("tls_reference_files", PreflightStatus.FAIL, failure)
+    return _check("tls_reference_files", PreflightStatus.NOT_VERIFIED,
+                  uncertain or "TLS_REFERENCE_MODES_OBSERVED_ONLY")
+
+
 def _capture_host_probes(system: str, spec: HostInspectionSpec) -> HostProbeResults:
     storage = _storage_checks(spec)
     checks = (
         _package_binary_check(system), *storage,
-        _port_check(spec), *_nginx_checks(spec),
+        _port_check(spec), *_nginx_checks(spec), _tls_reference_check(spec),
         *_systemd_checks(), _selinux_check(system),
     )
     return HostProbeResults(checks)
 
-
-_PROBE_CODES: dict[str, dict[str, PreflightStatus]] = {
-    "native_package_binaries": {
-        "REQUIRED_NATIVE_EXECUTABLE_MISSING": PreflightStatus.FAIL,
-        "NATIVE_EXECUTABLE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "REQUIRED_NATIVE_EXECUTABLES_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "storage_path_safety": {
-        "STORAGE_PATH_UNSAFE_OR_CONFLICTING": PreflightStatus.FAIL,
-        "STORAGE_PATH_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "STORAGE_OWNERSHIP_MANIFEST_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-    },
-    "storage_free_space": {
-        "STORAGE_CAPACITY_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "STORAGE_SPACE_BELOW_CRITICAL_THRESHOLD": PreflightStatus.FAIL,
-        "STATE_OR_LOG_SPACE_EXHAUSTED": PreflightStatus.FAIL,
-        "STATE_OR_LOG_LOW_HEADROOM_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "FILESYSTEM_INODES_LOW_HEADROOM_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "FILESYSTEM_INODES_EXHAUSTED": PreflightStatus.FAIL,
-        "CACHE_SPACE_BELOW_WARNING_THRESHOLD": PreflightStatus.NOT_VERIFIED,
-        "STORAGE_MOUNT_OR_POLICY_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "CURRENT_STORAGE_SPACE_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "listen_port_conflicts": {
-        "HTTPS_PORT_ALREADY_LISTENING": PreflightStatus.FAIL,
-        "LISTEN_PORT_INVENTORY_INCOMPLETE": PreflightStatus.NOT_VERIFIED,
-        "HTTPS_PORT_NOT_OBSERVED_IN_PROC_SNAPSHOT": PreflightStatus.PASS,
-    },
-    "nginx_native_binary": {
-        "NGINX_EXECUTABLE_MISSING": PreflightStatus.FAIL,
-        "NGINX_EXECUTABLE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "NGINX_EXECUTABLE_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "nginx_managed_include_collision": {
-        "NGINX_INCLUDE_PARENT_UNSAFE": PreflightStatus.FAIL,
-        "NGINX_INCLUDE_PARENT_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "EXISTING_INCLUDE_REQUIRES_OWNERSHIP_PROOF": PreflightStatus.FAIL,
-        "MANAGED_INCLUDE_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "NEW_MANAGED_INCLUDE_NOT_PRESENT": PreflightStatus.PASS,
-    },
-    "systemd_binary": {
-        "SYSTEMD_CLIENT_MISSING": PreflightStatus.FAIL,
-        "SYSTEMD_CLIENT_ACCESS_UNVERIFIED": PreflightStatus.NOT_VERIFIED,
-        "SYSTEMD_CLIENT_OBSERVED_ONLY": PreflightStatus.PASS,
-    },
-    "systemd_pid1_observation": {
-        "SYSTEMD_PID1_NOT_VERIFIED": PreflightStatus.NOT_VERIFIED,
-        "SYSTEMD_PID1_OBSERVED_ONLY": PreflightStatus.PASS,
-        "SYSTEMD_NATIVE_PID1_NOT_OBSERVED": PreflightStatus.FAIL,
-    },
-    "selinux_kernel_mode": {
-        "SELINUX_KERNEL_MODE_UNAVAILABLE": PreflightStatus.NOT_VERIFIED,
-        "DEBIAN_SELINUX_MODE_NOT_REQUIRED": PreflightStatus.NOT_VERIFIED,
-        "SELINUX_ENFORCING_KERNEL_OBSERVED_ONLY": PreflightStatus.PASS,
-        "ALMALINUX_SELINUX_NOT_ENFORCING": PreflightStatus.FAIL,
-        "DEBIAN_SELINUX_PERMISSIVE_OBSERVED": PreflightStatus.NOT_VERIFIED,
-        "SELINUX_KERNEL_MODE_UNRECOGNIZED": PreflightStatus.NOT_VERIFIED,
-    },
-}
 
 
 def assess_deployment_host(
@@ -460,6 +455,8 @@ def inspect_deployment_host(
         cache_root=settings["paths"]["cache_root"],
         log_root=settings["paths"]["log_root"],
         generated_include=settings["paths"]["generated_include"],
+        tls_certificate_file=settings["tls"]["certificate_file"],
+        tls_private_key_file=settings["tls"]["private_key_file"],
         warning_free_bytes=settings["cache_policy"]["disk_pressure"]["warning_free_bytes"],
         critical_free_bytes=settings["cache_policy"]["disk_pressure"]["critical_free_bytes"],
     )
