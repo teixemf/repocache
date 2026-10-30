@@ -15,6 +15,17 @@ updates:
     # and complete transitive graph are designed under #80.
     versioning-strategy: "increase-if-necessary"
 
+  # Monitor reviewed legacy pins without changing release assets.
+  # Proposals remain subject to exact-hash review; never auto-merge.
+  - package-ecosystem: "pip"
+    directory: "/deps"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    labels:
+      - "area:security"
+      - "type:maintenance"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
