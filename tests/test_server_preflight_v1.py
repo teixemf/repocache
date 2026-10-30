@@ -360,3 +360,102 @@ def test_report_direct_construction_rejects_unsanitized_values():
         native.NativePreflightReport([
             native.PreflightCheck("effective_uid", PreflightStatus.PASS, "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),
         ])
+
+
+def test_public_report_rejects_contradictory_duplicate_or_cross_check_codes():
+    """RC-196-01: public construction must not accept a known FAIL as PASS."""
+    good = native.PreflightCheck(
+        "tls_reference_files", PreflightStatus.FAIL, "TLS_PRIVATE_KEY_WORLD_READABLE"
+    )
+    report = native.NativePreflightReport((good,))
+    assert report.has_failures and report.to_dict()["can_install"] is False
+
+    rejected = [
+        (native.PreflightCheck(
+            "tls_reference_files", PreflightStatus.PASS, "TLS_PRIVATE_KEY_WORLD_READABLE"),),
+        (good, good),
+        (good, native.PreflightCheck(
+            "tls_reference_files", PreflightStatus.NOT_VERIFIED,
+            "TLS_REFERENCE_MODES_OBSERVED_ONLY")),
+        (native.PreflightCheck(
+            "effective_uid", PreflightStatus.FAIL, "TLS_PRIVATE_KEY_WORLD_READABLE"),),
+        (native.PreflightCheck(
+            "tls_reference_files", PreflightStatus.FAIL,
+            "TLS_REFERENCE_MODES_OBSERVED_ONLY"),),
+        (native.PreflightCheck(
+            "unregistered_check", PreflightStatus.PASS,
+            "ROOT_EFFECTIVE_UID_OBSERVED_ONLY"),),
+    ]
+    for checks in rejected:
+        with pytest.raises(ValueError):
+            native.NativePreflightReport(checks)
+
+
+def test_public_registry_agrees_with_host_probe_codes():
+    """Every legitimate probe triple remains valid at the public boundary."""
+    from repocache import server_host_checks_v1 as host
+    for name, codes in host._PROBE_CODES.items():
+        for code, status in codes.items():
+            report = native.NativePreflightReport((
+                native.PreflightCheck(name, status, code),
+            ))
+            assert report.checks[0].status is status
+            assert not report.authorizes_installation
+    baseline = assess_native_host(facts())
+    assert len({item.name for item in baseline.checks}) == len(baseline.checks)
+
+
+def test_diagnostic_registries_are_recursively_immutable():
+    """RC-196-04: same-process mutations cannot relabel a FAIL diagnostic."""
+    from types import MappingProxyType
+    from repocache import server_host_checks_v1 as host
+
+    for registry in (
+        native._BASE_CODES, native._PROBE_CODES, native._REPORT_CHECK_CODES,
+    ):
+        assert isinstance(registry, MappingProxyType)
+        for name, codes in registry.items():
+            assert isinstance(codes, MappingProxyType)
+            code = next(iter(codes))
+            previous = codes[code]
+            with pytest.raises(TypeError):
+                codes[code] = PreflightStatus.PASS
+            with pytest.raises(TypeError):
+                registry[name] = {}
+            assert codes[code] is previous
+
+    assert host._PROBE_CODES is native._PROBE_CODES
+    assert native._PROBE_CODES["tls_reference_files"][
+        "TLS_PRIVATE_KEY_WORLD_READABLE"
+    ] is PreflightStatus.FAIL
+    with pytest.raises(TypeError):
+        host._PROBE_CODES["tls_reference_files"][
+            "TLS_PRIVATE_KEY_WORLD_READABLE"
+        ] = PreflightStatus.PASS
+
+    rejected = native.PreflightCheck(
+        "tls_reference_files", PreflightStatus.PASS, "TLS_PRIVATE_KEY_WORLD_READABLE"
+    )
+    with pytest.raises(ValueError):
+        native.NativePreflightReport((rejected,))
+    actual = native.NativePreflightReport((native.PreflightCheck(
+        "tls_reference_files", PreflightStatus.FAIL, "TLS_PRIVATE_KEY_WORLD_READABLE"
+    ),))
+    assert actual.has_failures and actual.to_dict()["can_install"] is False
+    assert not actual.all_verified and not actual.authorizes_installation
+
+
+def test_diagnostic_registry_snapshots_do_not_share_mutable_backing_maps():
+    """Changing a caller-owned construction map never changes the frozen copy."""
+    original = {"tls_reference_files": {
+        "TLS_PRIVATE_KEY_WORLD_READABLE": PreflightStatus.FAIL,
+    }}
+    frozen = native._freeze_diagnostic_registry(original)
+    original["tls_reference_files"]["TLS_PRIVATE_KEY_WORLD_READABLE"] = PreflightStatus.PASS
+    original["extra"] = {}
+    assert frozen["tls_reference_files"]["TLS_PRIVATE_KEY_WORLD_READABLE"] is PreflightStatus.FAIL
+    assert "extra" not in frozen
+    with pytest.raises(TypeError):
+        frozen["tls_reference_files"]["TLS_PRIVATE_KEY_WORLD_READABLE"] = PreflightStatus.PASS
+
+
