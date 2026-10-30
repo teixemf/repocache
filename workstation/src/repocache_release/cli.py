@@ -586,13 +586,23 @@ def environment() -> dict[str, Any]:
         raise OperatorError("UNTRUSTED_SIGNER", "Publisher public key fingerprint mismatch")
     guard_state_dir(state_root())
     private = Path.home() / "repocache-signing/repocache-release-private.pem"
-    if private.exists():
-        if (private.is_symlink() or private.stat().st_uid != os.getuid()
-                or private.stat().st_mode & 0o077 or not private.is_file()):
+    # lstat, unlike exists(), detects dangling symlinks. This is only a
+    # read-only metadata snapshot: do not read or unlock the owner key here.
+    try:
+        signer_info = private.lstat()
+    except FileNotFoundError:
+        signer_present = False
+    except OSError as exc:
+        raise OperatorError("UNSAFE_SIGNER", "Signing key path cannot be inspected") from exc
+    else:
+        if (not stat.S_ISREG(signer_info.st_mode)
+                or signer_info.st_uid != os.getuid()
+                or stat.S_IMODE(signer_info.st_mode) != 0o600):
             raise OperatorError("UNSAFE_SIGNER", "Signing key must be owner-only mode 0600")
+        signer_present = True
     return {"repository": REPO, "public_fingerprint": EXPECTED_FINGERPRINT,
-            "private_key_present": private.is_file(),
-            "status": "ready" if private.is_file() else "signer_missing"}
+            "private_key_present": signer_present,
+            "status": "ready" if signer_present else "signer_missing"}
 
 
 def extract_candidate_zip(archive: Path, assets: Path, version: str) -> None:
