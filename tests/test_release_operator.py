@@ -751,3 +751,95 @@ def test_publish_checks_protected_tag_again_after_server_mutation(monkeypatch):
         release.publish("v0.5.0", 100, publication.fingerprint(release, record))
     assert caught.value.code == "POST_PUBLISH_UNVERIFIED"
     assert len(commands) == 1
+
+
+# #88 pre-signing verification: fixture-only, no key bytes or release operations.
+def _mock_environment_readonly(monkeypatch, tmp_path):
+    """Supply a synthetic owner/trust anchor without signing or a GitHub write."""
+    monkeypatch.setattr(release.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(release.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(release, "root_path", lambda: tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    der = b"synthetic-public-der-not-a-key"
+    monkeypatch.setattr(release, "EXPECTED_FINGERPRINT", hashlib.sha256(der).hexdigest())
+    calls = []
+
+    def fake_command(argv, **kwargs):
+        calls.append(tuple(argv))
+        if argv == ["gh", "api", "user"]:
+            return b'{"login":"teixemf"}'
+        if argv[:3] == ["/usr/bin/openssl", "pkey", "-pubin"]:
+            return der
+        if argv in (["git", "--version"], ["gh", "--version"],
+                    ["/usr/bin/openssl", "version"], ["gh", "auth", "status"]):
+            return b"ok"
+        raise AssertionError("Unexpected command in read-only environment check")
+
+    monkeypatch.setattr(release, "command", fake_command)
+    monkeypatch.setattr(release, "gh_json", lambda endpoint: (
+        {"path": ".github/workflows/release.yml"}
+        if endpoint == f"repos/{release.REPO}/actions/workflows/release.yml"
+        else (_ for _ in ()).throw(AssertionError(endpoint))))
+    signer = tmp_path / "repocache-signing/repocache-release-private.pem"
+    return signer, calls
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_environment_reports_missing_or_private_signer_without_reading_key(
+        monkeypatch, tmp_path, present):
+    signer, calls = _mock_environment_readonly(monkeypatch, tmp_path)
+    if present:
+        signer.parent.mkdir(mode=0o700)
+        signer.write_bytes(b"fixture-only-not-a-private-key")
+        signer.chmod(0o600)
+    result = release.environment()
+    assert result["private_key_present"] is present
+    assert result["status"] == ("ready" if present else "signer_missing")
+    assert ("gh", "auth", "status") in calls
+    assert all(command[:2] != ("gh", "release") for command in calls)
+    assert all("sign" not in command for command in calls)
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o700, 0o400])
+def test_environment_refuses_non_0600_signer_mode(monkeypatch, tmp_path, mode):
+    signer, _ = _mock_environment_readonly(monkeypatch, tmp_path)
+    signer.parent.mkdir(mode=0o700)
+    signer.write_bytes(b"fixture-only")
+    signer.chmod(mode)
+    with pytest.raises(release.OperatorError) as caught:
+        release.environment()
+    assert caught.value.code == "UNSAFE_SIGNER"
+
+
+def test_environment_refuses_existing_signer_symlink(monkeypatch, tmp_path):
+    signer, _ = _mock_environment_readonly(monkeypatch, tmp_path)
+    signer.parent.mkdir(mode=0o700)
+    target = tmp_path / "do-not-read"
+    target.write_bytes(b"fixture-only")
+    target.chmod(0o600)
+    signer.symlink_to(target)
+    with pytest.raises(release.OperatorError) as caught:
+        release.environment()
+    assert caught.value.code == "UNSAFE_SIGNER"
+    assert target.read_bytes() == b"fixture-only"
+
+
+def test_environment_refuses_dangling_signer_symlink(monkeypatch, tmp_path):
+    signer, _ = _mock_environment_readonly(monkeypatch, tmp_path)
+    signer.parent.mkdir(mode=0o700)
+    signer.symlink_to(tmp_path / "nonexistent-private.pem")
+    assert signer.is_symlink() and not signer.exists()
+    with pytest.raises(release.OperatorError) as caught:
+        release.environment()
+    assert caught.value.code == "UNSAFE_SIGNER"
+
+
+def test_environment_rejects_wrong_trust_anchor_before_signer_inspection(
+        monkeypatch, tmp_path):
+    signer, calls = _mock_environment_readonly(monkeypatch, tmp_path)
+    monkeypatch.setattr(release, "EXPECTED_FINGERPRINT", "0" * 64)
+    with pytest.raises(release.OperatorError) as caught:
+        release.environment()
+    assert caught.value.code == "UNTRUSTED_SIGNER"
+    assert not signer.exists()
+    assert all(command[:2] != ("gh", "release") for command in calls)
