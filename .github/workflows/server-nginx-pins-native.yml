@@ -16,6 +16,8 @@ on:
       - 'tests/test_server_bounded_dns_v1.py'
       - 'tests/test_server_dns_refresh_schedule_v1.py'
       - 'tests/test_server_nginx_repository_bundle_v1.py'
+      - 'src/repocache/server_repository_reconcile_v1.py'
+      - 'tests/test_server_repository_reconcile_v1.py'
   push:
     branches: [main]
     paths:
@@ -32,6 +34,8 @@ on:
       - 'tests/test_server_bounded_dns_v1.py'
       - 'tests/test_server_dns_refresh_schedule_v1.py'
       - 'tests/test_server_nginx_repository_bundle_v1.py'
+      - 'src/repocache/server_repository_reconcile_v1.py'
+      - 'tests/test_server_repository_reconcile_v1.py'
 
 permissions:
   contents: read
@@ -86,4 +90,5 @@ jobs:
             tests/test_server_upstream_address_preflight_v1.py \
             tests/test_server_bounded_dns_v1.py \
             tests/test_server_dns_refresh_schedule_v1.py \
-            tests/test_server_nginx_repository_bundle_v1.py
+            tests/test_server_nginx_repository_bundle_v1.py \
+            tests/test_server_repository_reconcile_v1.py
