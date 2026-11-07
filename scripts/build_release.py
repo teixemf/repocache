@@ -32,6 +32,8 @@ ONLINE_FILES = (
     "src/repocache/signed_dependency_staging.py",
     "src/repocache/online_generation.py",
     "src/repocache/application_wheel.py",
+    "src/repocache/candidate_sandbox.py",
+    "src/repocache/candidate_cgroup.py",
 )
 
 
