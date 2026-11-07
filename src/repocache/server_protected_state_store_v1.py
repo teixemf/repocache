@@ -267,6 +267,28 @@ def _recheck_after_mutation(
         _fail("PROTECTED_DIRECTORY_CHANGED")
 
 
+
+# The private proposed v2 fixture store reuses this state lock. V1 must
+# reciprocally refuse *any* proposed v2 file before reading or modifying
+# v1 state, including incomplete/stale files and dangling symlinks.
+# This is a migration safety interlock, NOT authorization to migrate.
+_V2_NAMES = (
+    "state-v2.json", ".state-v2.pending", ".state-v2.pending-tmp",
+    ".state-v2.stage", ".state-v2.rollback",
+)
+
+
+def _refuse_proposed_v2_coexistence(directory: int) -> None:
+    for name in _V2_NAMES:
+        try:
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            _fail("PROTECTED_V2_COHABITATION_UNVERIFIED")
+        _fail("PROTECTED_V2_COHABITATION_REFUSED")
+
+
 @contextmanager
 def _locked(root_fd: int, owner_uid: int) -> Iterator[int]:
     """Fixture-only pinned path. Lock inode must be preprovisioned, never created here."""
@@ -303,6 +325,7 @@ def _locked(root_fd: int, owner_uid: int) -> Iterator[int]:
 
 
 def _read_state(directory: int, uid: int) -> tuple[dict[str, Any] | None, bytes | None]:
+    _refuse_proposed_v2_coexistence(directory)
     raw = _read_file(directory, STATE_NAME, uid, MAX_STATE_BYTES)
     if raw is None:
         return None, None
@@ -433,6 +456,7 @@ def _recover_locked(directory: int, uid: int) -> str:
 def _recover_under_root(root_fd: int, *, owner_uid: int) -> dict[str, Any]:
     """Private, non-activating recovery; refuse unexpected filesystem drift."""
     with _locked(root_fd, owner_uid) as directory:
+        _refuse_proposed_v2_coexistence(directory)
         status = _recover_locked(directory, owner_uid)
         state, _ = _read_state(directory, owner_uid)
         return {"status": status, "state_generation": 0 if state is None
@@ -457,6 +481,7 @@ def _commit_under_root(root_fd: int, candidate: dict[str, Any], *,
     candidate = _json(raw, limit=MAX_STATE_BYTES)
     validate_protected_state(candidate)
     with _locked(root_fd, owner_uid) as directory:
+        _refuse_proposed_v2_coexistence(directory)
         if _read_journal(directory, owner_uid) is not None:
             _fail("PROTECTED_RECOVERY_REQUIRED")
         if (_read_file(directory, STAGE_NAME, owner_uid, MAX_STATE_BYTES) is not None
