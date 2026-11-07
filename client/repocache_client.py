@@ -11,6 +11,7 @@ import configparser
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -25,7 +26,6 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler, HTTPSHandler, ProxyHandler
 
-DEFAULT_SERVER = "https://cache.example.org"
 CONFIG_FILE = Path("/etc/repocache-client/config.json")
 MAX_CATALOG_BYTES = 512_000
 
@@ -42,8 +42,22 @@ def _server(value: str) -> str:
         raise ClientError("Invalid server address") from exc
     if (p.scheme != "https" or not p.hostname or p.username is not None
             or p.password is not None or p.path not in ("", "/")
-            or p.query or p.fragment or (port is not None and port < 1)):
-        raise ClientError("Server must be a HTTPS origin without credentials or paths")
+            or p.query or p.fragment or port == 0 or p.netloc.endswith(":")
+            or any(ord(char) < 33 or ord(char) > 126 for char in value)
+            or "\\" in value or "%" in value
+            or "?" in value or "#" in value):
+        raise ClientError("Server must be a canonical HTTPS origin")
+    hostname = p.hostname
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        labels = hostname.split(".")
+        numeric = re.compile(r"(?:[0-9]+|0[xX][0-9A-Fa-f]+)\Z", re.ASCII)
+        dns_label = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z", re.ASCII)
+        if (len(hostname) > 253 or len(labels) < 2
+                or all(numeric.fullmatch(label) for label in labels)
+                or any(not dns_label.fullmatch(label) for label in labels)):
+            raise ClientError("Server must be a canonical HTTPS origin")
     return value.rstrip("/")
 
 
@@ -641,7 +655,10 @@ def run(argv: list[str] | None = None, root: Path = Path("/")) -> int:
             item = json.loads(cfg.read_text())
             if isinstance(item, dict):
                 configured = str(item.get("server") or "")
-        server = _server(args.server or configured or DEFAULT_SERVER)
+        selected_server = args.server if args.server is not None else configured
+        if not selected_server:
+            raise ClientError("Server must be explicitly configured using --server or config.json")
+        server = _server(selected_server)
         repos = discover(root, server)
         distro = _distro(root)
         if args.command == "check":

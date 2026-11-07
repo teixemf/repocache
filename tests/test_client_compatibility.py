@@ -28,6 +28,9 @@ def root_with_repos(tmp_path):
     (etc / "apt/sources.list.d").mkdir(parents=True)
     (etc / "yum.repos.d").mkdir(parents=True)
     (etc / "os-release").write_text('ID=debian\nVERSION_ID="13"\n')
+    (etc / "repocache-client").mkdir()
+    (etc / "repocache-client/config.json").write_text(
+        json.dumps({"server": "https://cache.example.org"}))
     (etc / "apt/mirrors/debian.txt").write_text(
         "https://cache.example.org/debian/\nhttps://deb.debian.org/debian/\n")
     (etc / "apt/sources.list").write_text(

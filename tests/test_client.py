@@ -12,6 +12,7 @@ spec = importlib.util.spec_from_file_location(
 client = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(client)
+SERVER = "https://cache.example.org"
 
 
 @pytest.fixture
@@ -20,6 +21,9 @@ def host(tmp_path):
     (apt / "sources.list.d").mkdir(parents=True)
     (tmp_path / "etc/yum.repos.d").mkdir(parents=True)
     (tmp_path / "etc/os-release").write_text('ID=debian\nVERSION_ID="13"\n')
+    (tmp_path / "etc/repocache-client").mkdir()
+    (tmp_path / "etc/repocache-client/config.json").write_text(
+        json.dumps({"server": SERVER}))
     (apt / "sources.list").write_text(
         "deb [arch=amd64] https://deb.debian.org/debian trixie main\n")
     (apt / "sources.list.d/disabled.sources").write_text(
@@ -31,7 +35,7 @@ def host(tmp_path):
 
 
 def test_apt_and_dnf_read_only_inventory(host):
-    repos = client.discover(host, client.DEFAULT_SERVER)
+    repos = client.discover(host, SERVER)
     assert len(repos) == 4
     assert {r["name"]: r["route"] for r in repos}["cache"] == "repocache"
     assert not next(r for r in repos if r["name"].startswith("disabled.sources"))["enabled"]
@@ -51,8 +55,8 @@ def test_export_never_includes_url_credentials_or_internal_hosts(host):
     (host / "etc/apt/sources.list").write_text(
         "deb https://guest:synthetic@example.org/repo?session=untrusted stable main\n")
     payload = client._payload(client._distro(host),
-                              client.discover(host, client.DEFAULT_SERVER),
-                              client.DEFAULT_SERVER)
+                              client.discover(host, SERVER),
+                              SERVER)
     serialized = json.dumps(payload)
     assert all(word not in serialized for word in ["synthetic", "session=", "guest", "hostname"])
     assert any(x["url"] == "https://example.org/repo" for x in payload["repositories"])
@@ -104,9 +108,9 @@ def test_mirror_list_is_local_and_fallback_is_preserved(host):
         "https://cache.example.org/debian/\nhttps://deb.debian.org/debian/\n")
     (host / "etc/apt/sources.list").write_text(
         "deb mirror+file:/etc/apt/mirrors/safe.txt trixie main\n")
-    repo = client.discover(host, client.DEFAULT_SERVER)[0]
+    repo = client.discover(host, SERVER)[0]
     assert repo["route"] == "mixed" and len(repo["urls"]) == 2
-    payload = client._payload(client._distro(host), [repo], client.DEFAULT_SERVER)
+    payload = client._payload(client._distro(host), [repo], SERVER)
     assert len(payload["repositories"]) == 1
     assert "cache.example.org" not in payload["repositories"][0]["url"]
 
@@ -116,7 +120,7 @@ def test_repository_sources_are_never_followed_through_file_symlinks(host, tmp_p
     secret.write_text("deb https://outside.example.org/repo stable main\n")
     (host / "etc/apt/sources.list.d/foreign.list").symlink_to(secret)
     assert not any("outside.example" in json.dumps(x)
-                   for x in client.discover(host, client.DEFAULT_SERVER))
+                   for x in client.discover(host, SERVER))
 
 
 def test_sync_apply_refused_before_contacting_catalog(monkeypatch, host):
@@ -124,3 +128,41 @@ def test_sync_apply_refused_before_contacting_catalog(monkeypatch, host):
         raise AssertionError("Unsafe apply should have failed before network access")
     monkeypatch.setattr(client, "_catalog", should_not_call)
     assert client.run(["repos", "sync", "--apply"], root=host) == 2
+
+
+@pytest.mark.parametrize("action", (
+    ("check",), ("repos", "list"), ("repos", "submit"), ("repos", "sync"),
+))
+def test_missing_server_fails_before_source_discovery_or_network(
+        monkeypatch, tmp_path, capsys, action):
+    monkeypatch.setattr(client, "discover", lambda *_: pytest.fail(
+        "Missing server must fail before reading local sources"))
+    monkeypatch.setattr(client, "_connectivity", lambda *_: pytest.fail(
+        "Missing server must not contact network"))
+    assert client.run(["--json", *action], root=tmp_path) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["schema_version"] == 1
+    assert response["ok"] is False
+    assert response["error"]["code"] == "OPERATION_FAILED"
+    assert "explicitly configured" in response["error"]["message"]
+    assert not list(tmp_path.iterdir())
+
+
+def test_explicit_empty_server_does_not_fall_back_to_config(host, capsys):
+    assert client.run(["--json", "repos", "list", "--server", ""], root=host) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["error"]["code"] == "OPERATION_FAILED"
+
+
+@pytest.mark.parametrize("origin", (
+    "https://cache.example.org:", "https://cache.example.org.",
+    "https://bad_host.example.org", "https://cache..example.org",
+    "https://0x7f000001", "https://127.1",
+    "https://cache.example.org%0a.evil.org", "https://☃.example.org",
+    " https://cache.example.org", "https://ca\\che.example.org",
+    "https://cache.example.org?", "https://cache.example.org#",
+    "https://cache.example.org/?", "https://cache.example.org/#",
+))
+def test_server_rejects_ambiguous_or_noncanonical_origin(origin):
+    with pytest.raises(client.ClientError):
+        client._server(origin)

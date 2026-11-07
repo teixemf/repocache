@@ -153,7 +153,9 @@ def test_client_aliases_and_global_option_placement_do_not_mutate(monkeypatch, t
             monkeypatch.setattr(client, "_connectivity", lambda *_: [
                 {"name": "dns", "ok": True, "detail": "ok"}])
             monkeypatch.setattr(client, "_catalog", lambda *_: {"schema": 1, "repositories": []})
-        assert client.run(argv, root=tmp_path) == 0
+        selected = argv if "--server" in argv else [
+            "--server", "https://cache.example.org", *argv]
+        assert client.run(selected, root=tmp_path) == 0
         assert isinstance(json.loads(capsys.readouterr().out), dict)
     assert len(calls) == 5
     assert list(tmp_path.iterdir()) == []
@@ -171,7 +173,7 @@ def test_client_sync_write_opt_in_still_refuses_unsafe_work(monkeypatch, tmp_pat
     monkeypatch.setattr(client, "discover", lambda *_: [])
     monkeypatch.setattr(client, "_distro", lambda *_: "debian")
     monkeypatch.setattr(client, "_catalog", lambda *_: 1 / 0)
-    assert client.run(["repos", "sync", "--apply"], root=tmp_path) == 2
+    assert client.run(["--server", "https://cache.example.org", "repos", "sync", "--apply"], root=tmp_path) == 2
     assert "disabled until reviewed" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
 

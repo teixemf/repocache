@@ -126,13 +126,13 @@ def test_send_does_not_allow_implicit_network_or_alter_sources(monkeypatch, cred
     (root / "etc/os-release").write_text('ID=debian\nVERSION_ID="13"\n')
     source = root / "etc/apt/sources.list"
     source.write_text("deb https://mirror.example.org/debian trixie main\n")
-    assert client.run(["repos", "submit", "--token-file", str(credential)], root=root) == 2
-    assert client.run(["repos", "submit", "--send", "--output", "/tmp/nope",
+    assert client.run(["--server", "https://cache.example.org", "repos", "submit", "--token-file", str(credential)], root=root) == 2
+    assert client.run(["--server", "https://cache.example.org", "repos", "submit", "--send", "--output", "/tmp/nope",
                        "--token-file", str(credential)], root=root) == 2
     before = source.read_bytes()
     monkeypatch.setattr(client, "_send_submission",
                         lambda *args: {"ok": True, "proposal_id": "b"*32})
-    assert client.run(["--json", "repos", "submit", "--send",
+    assert client.run(["--server", "https://cache.example.org", "--json", "repos", "submit", "--send",
                        "--token-file", str(credential)], root=root) == 0
     assert before == source.read_bytes()
 
@@ -208,7 +208,7 @@ def test_remote_submission_cli_v1_exit_json_contract(
         raise client.RemoteSubmissionError(errors[status], symbol)
 
     monkeypatch.setattr(client, "_send_submission", rejected)
-    result = client.run(["--json", "repos", "submit", "--send",
+    result = client.run(["--server", "https://cache.example.org", "--json", "repos", "submit", "--send",
                          "--token-file", str(credential)], root=root)
     output = json.loads(capsys.readouterr().out)
     assert result == 2

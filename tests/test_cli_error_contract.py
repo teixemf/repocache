@@ -83,7 +83,7 @@ def test_client_error_contract_with_no_source_mutation(monkeypatch, tmp_path, ca
     else:
         monkeypatch.setattr(client, "discover", lambda *_a:
                             pytest.fail("Parse errors must not read sources"))
-    result = client.run(argv, root=tmp_path)
+    result = client.run(["--server", "https://cache.example.org", *argv], root=tmp_path)
     assert result == 2
     output = capsys.readouterr()
     doc = assert_error_document(output.out, "OPERATION_FAILED" if
@@ -104,7 +104,7 @@ def test_client_invalid_repository_check_preserves_exit_three(monkeypatch, tmp_p
     ])
     monkeypatch.setattr(client, "_catalog", lambda *_: {"schema": 1, "repositories": []})
     monkeypatch.setattr(client, "_distro", lambda *_: {"ID": "debian", "VERSION_ID": "13"})
-    assert client.run(["check", "--json"], root=tmp_path) == 3
+    assert client.run(["check", "--json", "--server", "https://cache.example.org"], root=tmp_path) == 3
     doc = assert_error_document(capsys.readouterr().out, "REPOSITORY_INVALID")
     assert doc["exit_code"] == 3
     assert doc["compatibility_summary"]["invalid"] == 1
@@ -117,7 +117,7 @@ def test_client_required_check_failure_preserves_exit_one(monkeypatch, tmp_path,
         {"name": "dns", "ok": False, "detail": "offline"},
     ])
     monkeypatch.setattr(client, "_distro", lambda *_: {"ID": "debian"})
-    assert client.run(["--json", "check"], root=tmp_path) == 1
+    assert client.run(["--json", "check", "--server", "https://cache.example.org"], root=tmp_path) == 1
     doc = assert_error_document(capsys.readouterr().out, "REQUIRED_CHECK_FAILED")
     assert doc["exit_code"] == 1
     assert not list(tmp_path.iterdir())
@@ -126,7 +126,7 @@ def test_client_required_check_failure_preserves_exit_one(monkeypatch, tmp_path,
 def test_client_json_success_is_versioned_but_preserves_list_fields(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(client, "discover", lambda *_: [])
     monkeypatch.setattr(client, "_distro", lambda *_: {"ID": "debian"})
-    assert client.run(["--json", "repos", "list"], root=tmp_path) == 0
+    assert client.run(["--json", "repos", "list", "--server", "https://cache.example.org"], root=tmp_path) == 0
     doc = json.loads(capsys.readouterr().out)
     assert doc["schema_version"] == 1
     assert doc["ok"] is True

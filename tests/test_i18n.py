@@ -43,4 +43,6 @@ def test_public_runtime_has_no_private_lan_domain_names():
     for path in sources:
         data = path.read_text(encoding="utf-8")
         assert private_pattern.search(data) is None, path
-    assert client.DEFAULT_SERVER == "https://cache.example.org"
+    # No implicit example server may be embedded in the client runtime.
+    assert not hasattr(client, "DEFAULT_SERVER")
+    assert "DEFAULT_SERVER" not in (ROOT / "client/repocache_client.py").read_text(encoding="utf-8")
